@@ -1,0 +1,19 @@
+{
+  "description": "Validation Agent - Structure, CSS-safe, and VLM visual quality verification",
+  "provider_type": "vlm",
+  "llm": {
+    "model": "gpt-4o",
+    "temperature": 0.1,
+    "max_tokens": 2048,
+    "top_p": 1.0
+  },
+  "validation": {
+    "score_threshold": 3.5,
+    "max_retry_to_code_agent": 2
+  },
+  "retry": {
+    "max_attempts": 3,
+    "backoff_seconds": 1
+  },
+  "output_format": "json"
+}

@@ -1,0 +1,29 @@
+{
+  "name": "documind",
+  "version": "0.2.0",
+  "description": "DocuMind — Agentic AI document generation platform (PPTX/DOCX/PDF/XLSX)",
+  "scripts": {
+    "install:all": "node scripts/install-all.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:kill": "node scripts/dev-kill.mjs",
+    "dev:api": "node scripts/run-api.mjs",
+    "dev:web": "npm run dev --prefix web",
+    "dev:concurrent": "concurrently -n api,web -c blue,green \"npm run dev:api\" \"npm run dev:web\"",
+    "start": "node scripts/dev.mjs",
+    "start:api": "node scripts/run-api.mjs",
+    "start:web": "npm run start --prefix web",
+    "build:web": "npm run build --prefix web",
+    "db:init": "node scripts/run-python.mjs -m alembic upgrade head",
+    "db:migrate": "node scripts/run-python.mjs -m alembic revision --autogenerate -m",
+    "lint": "node scripts/run-python.mjs -m ruff check src/",
+    "format": "node scripts/run-python.mjs -m ruff format src/",
+    "generate": "node scripts/run-python.mjs -m src.cli generate"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "python": ">=3.11",
+    "node": ">=18"
+  }
+}

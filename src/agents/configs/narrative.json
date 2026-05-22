@@ -1,0 +1,15 @@
+{
+  "description": "Narrative Architect - Story structure and slide flow design",
+  "provider_type": "llm",
+  "llm": {
+    "model": "gpt-4o",
+    "temperature": 0.8,
+    "max_tokens": 4096,
+    "top_p": 1.0
+  },
+  "retry": {
+    "max_attempts": 2,
+    "backoff_seconds": 1
+  },
+  "output_format": "json"
+}

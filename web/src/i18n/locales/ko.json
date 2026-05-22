@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "DocuMind — AI 문서 생성 플랫폼",
+    "description": "자연어 요청으로부터 전문가 수준의 문서를 생성하는 Agentic AI 플랫폼"
+  },
+  "auth": {
+    "tagline": "AI 기반 문서 생성 플랫폼",
+    "name": "이름",
+    "namePlaceholder": "홍길동",
+    "email": "이메일",
+    "getStarted": "시작하기",
+    "connecting": "접속 중...",
+    "privacyNotice": "입력하신 정보는 문서 생성 이력 관리에만 사용됩니다.",
+    "errorNameEmailRequired": "이름과 이메일을 모두 입력해주세요.",
+    "errorInvalidEmail": "올바른 이메일 형식을 입력해주세요."
+  },
+  "sidebar": {
+    "newDocument": "새 문서 생성",
+    "newChat": "새 대화",
+    "noHistory": "대화 이력이 없습니다",
+    "loading": "불러오는 중..."
+  },
+  "language": {
+    "label": "언어",
+    "en": "English",
+    "ko": "한국어"
+  },
+  "welcome": {
+    "heroTitle": "어떤 문서를 만들어 드릴까요?",
+    "heroSubtitle": "자연어로 요청하면 전문가 수준의 문서를 자동으로 생성합니다. 아래 예시를 참고하여 시작해보세요.",
+    "examplePrompts": "예시 프롬프트",
+    "features": {
+      "pipelineTitle": "AI 에이전트 파이프라인",
+      "pipelineDesc": "12개 전문 에이전트가 기획부터 검증까지 수행",
+      "formatsTitle": "다양한 포맷 지원",
+      "formatsDesc": "PPTX, DOCX, PDF, HTML, MD, XLSX, HWP",
+      "templateTitle": "템플릿 기반 생성",
+      "templateDesc": "기존 디자인 템플릿을 분석하여 스타일 유지"
+    },
+    "prompts": {
+      "cloudProposal": "클라우드 전환 사업 제안서 12장, 경영진 대상",
+      "techDesign": "신규 서비스 기술 설계서, 개발팀 대상",
+      "salesReport": "2024년 매출 분석 보고서, 재무팀 대상",
+      "apiGuide": "REST API 가이드 문서, 외부 개발자 대상"
+    }
+  },
+  "chat": {
+    "inputPlaceholder": "문서 생성 요청을 입력하세요... (예: 클라우드 전환 사업 제안서 12장)",
+    "docGeneratedSuccess": "문서가 성공적으로 생성되었습니다. 우측 패널에서 확인하실 수 있습니다.",
+    "docGenerationError": "문서 생성 중 오류가 발생했습니다: {{error}}",
+    "genericError": "오류: {{message}}",
+    "viewDocument": "문서 보기",
+    "download": "다운로드"
+  },
+  "progress": {
+    "preparing": "준비 중",
+    "planning": "기획 중",
+    "designing": "디자인 중",
+    "generating": "생성 중",
+    "validating": "검증 중",
+    "converting": "변환 중",
+    "qa": "품질 검사 중",
+    "exporting": "보내기 중",
+    "done": "완료",
+    "complete": "생성 완료",
+    "startLabel": "기획",
+    "endLabel": "완료"
+  },
+  "document": {
+    "generatedTitle": "생성된 문서",
+    "slideCount": "{{count}}장",
+    "previewTitle": "문서 미리보기",
+    "preparing": "문서 준비 중...",
+    "download": "다운로드",
+    "versionHistory": "버전 이력",
+    "noVersions": "버전 이력이 없습니다",
+    "loading": "로딩 중..."
+  },
+  "time": {
+    "justNow": "방금 전",
+    "minutesAgo": "{{count}}분 전",
+    "hoursAgo": "{{count}}시간 전",
+    "daysAgo": "{{count}}일 전"
+  }
+}

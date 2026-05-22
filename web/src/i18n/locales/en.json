@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "title": "DocuMind — AI Document Generation Platform",
+    "description": "Agentic AI platform that generates expert-level documents from natural language requests."
+  },
+  "auth": {
+    "tagline": "AI-powered document generation platform",
+    "name": "Name",
+    "namePlaceholder": "Jane Doe",
+    "email": "Email",
+    "getStarted": "Get Started",
+    "connecting": "Connecting...",
+    "privacyNotice": "Your information is used only to manage document generation history.",
+    "errorNameEmailRequired": "Please enter both name and email.",
+    "errorInvalidEmail": "Please enter a valid email address."
+  },
+  "sidebar": {
+    "newDocument": "New document",
+    "newChat": "New chat",
+    "noHistory": "No conversation history yet",
+    "loading": "Loading..."
+  },
+  "language": {
+    "label": "Language",
+    "en": "English",
+    "ko": "한국어"
+  },
+  "welcome": {
+    "heroTitle": "What document can I create for you?",
+    "heroSubtitle": "Describe your request in natural language and we will generate a professional document. Use the examples below to get started.",
+    "examplePrompts": "Example prompts",
+    "features": {
+      "pipelineTitle": "AI agent pipeline",
+      "pipelineDesc": "12 specialized agents from planning through validation",
+      "formatsTitle": "Multiple formats",
+      "formatsDesc": "PPTX, DOCX, PDF, HTML, MD, XLSX, HWP",
+      "templateTitle": "Template-based generation",
+      "templateDesc": "Analyzes existing design templates to preserve style"
+    },
+    "prompts": {
+      "cloudProposal": "12-slide cloud migration proposal for executives",
+      "techDesign": "New service technical design doc for engineering",
+      "salesReport": "2024 sales analysis report for finance",
+      "apiGuide": "REST API guide for external developers"
+    }
+  },
+  "chat": {
+    "inputPlaceholder": "Enter a document request... (e.g. 12-slide cloud migration proposal)",
+    "docGeneratedSuccess": "Your document was generated successfully. View it in the panel on the right.",
+    "docGenerationError": "An error occurred while generating the document: {{error}}",
+    "genericError": "Error: {{message}}",
+    "viewDocument": "View document",
+    "download": "Download"
+  },
+  "progress": {
+    "preparing": "Preparing",
+    "planning": "Planning",
+    "designing": "Designing",
+    "generating": "Generating",
+    "validating": "Validating",
+    "converting": "Converting",
+    "qa": "Quality check",
+    "exporting": "Exporting",
+    "done": "Done",
+    "complete": "Generation Complete",
+    "startLabel": "Plan",
+    "endLabel": "Done"
+  },
+  "document": {
+    "generatedTitle": "Generated document",
+    "slideCount": "{{count}} slides",
+    "previewTitle": "Document preview",
+    "preparing": "Preparing document...",
+    "download": "Download",
+    "versionHistory": "Version history",
+    "noVersions": "No version history",
+    "loading": "Loading..."
+  },
+  "time": {
+    "justNow": "Just now",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "daysAgo": "{{count}}d ago"
+  }
+}

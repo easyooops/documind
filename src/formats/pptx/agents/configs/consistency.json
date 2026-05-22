@@ -1,0 +1,15 @@
+{
+  "description": "Consistency Enforcer - Cross-slide consistency checks",
+  "provider_type": "llm",
+  "llm": {
+    "model": "gpt-4o",
+    "temperature": 0.2,
+    "max_tokens": 2048,
+    "top_p": 1.0
+  },
+  "retry": {
+    "max_attempts": 2,
+    "backoff_seconds": 1
+  },
+  "output_format": "json"
+}

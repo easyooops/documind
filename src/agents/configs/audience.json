@@ -1,0 +1,15 @@
+{
+  "description": "Audience Analyzer - Determines tone, complexity, and persuasion style",
+  "provider_type": "llm",
+  "llm": {
+    "model": "gpt-4o",
+    "temperature": 0.3,
+    "max_tokens": 1024,
+    "top_p": 1.0
+  },
+  "retry": {
+    "max_attempts": 2,
+    "backoff_seconds": 1
+  },
+  "output_format": "json"
+}
