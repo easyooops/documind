@@ -12,6 +12,10 @@ Determine what images, charts, icons, and decorative elements each slide needs.
 | icon | Small symbolic icons | svg_icon |
 | illustration | Conceptual illustrations | generate, placeholder |
 | decorative | Accent bars, shapes, dividers | css_shape |
+| table | Structured rows/columns | from_data |
+| diagram | Process, architecture, or relationship diagram | css_shape |
+| line | Divider, connector, axis, or flow line | css_shape |
+| arrow | Directional connector or process flow arrow | css_shape |
 
 ## Output Format
 
@@ -19,7 +23,7 @@ Determine what images, charts, icons, and decorative elements each slide needs.
 [
   {
     "slide_index": 1,
-    "asset_type": "photo|chart|icon|illustration|decorative",
+    "asset_type": "photo|chart|icon|illustration|decorative|table|diagram|line|arrow",
     "description": "Detailed description of what is needed",
     "zone": "content-main|sidebar|background|header",
     "dimensions": [400, 300],
@@ -54,9 +58,12 @@ When `asset_type` is "chart", include `data_source`:
 1. Only plan assets that genuinely enhance the message
 2. Cover/hero slides: consider hero imagery
 3. Data slides: always specify chart type and data structure
-4. Keep decorative elements minimal and purposeful
+4. Proposal slides: prefer at least one structured asset plan (table/diagram/KPI/callout/line system) for each non-cover slide
 5. Icons should be from a consistent set (outline OR filled, not mixed)
-6. Maximum 3 assets per slide (avoid visual clutter)
+6. Maximum 4 assets per slide (avoid visual clutter)
 7. Respect the design system's color palette
+8. For process/roadmap/architecture slides, specify connector and arrow requirements explicitly
+9. Use charts sparingly: at most one chart for every 4 slides, and only when numeric trend/comparison data is present
+10. If the data can be read better as a table or KPI card, choose `table` or `decorative`/`diagram` instead of `chart`
 
 **IMPORTANT**: Output ONLY valid JSON array.

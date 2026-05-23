@@ -52,7 +52,7 @@ npm run dev
 
 Uses `python -m uvicorn` (works on Windows without adding `uvicorn` to PATH). Stop with `Ctrl+C`. On re-run, `npm run dev` stops old listeners and picks the next free port if 8000/3000 are stuck (`npm run dev:kill` to clean up manually).
 
-**Backend logs:** written to `data/logs/documind.log` (and echoed in the terminal where `npm run dev` runs). Set `LOG_FILE=` in `.env` to disable the file. For AWS Bedrock, `npm run install:all` installs `langchain-aws` via the `bedrock` extra; if you installed earlier, run `pip install -e ".[bedrock]"`.
+**Backend logs:** written to `data/logs/documind.log` as compact UTF-8 JSON lines and echoed in the terminal where `npm run dev` runs. File logs rotate daily at UTC midnight and keep `LOG_BACKUP_COUNT` days (default: 14). Set `LOG_FILE=` in `.env` to disable the file. For AWS Bedrock, `npm run install:all` installs `langchain-aws` via the `bedrock` extra; if you installed earlier, run `pip install -e ".[bedrock]"`.
 
 ```bash
 npm run dev:api   # Backend only

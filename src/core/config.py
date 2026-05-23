@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     log_file: str = "data/logs/documind.log"
+    log_backup_count: int = 14
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
 
     def get_default_model(self, provider_type: str) -> str | None:

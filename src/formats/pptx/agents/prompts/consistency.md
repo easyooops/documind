@@ -12,6 +12,9 @@ Check all slides for **cross-slide consistency** issues.
 5. **Decorative elements**: Accent bars, dividers, etc. are unified
 6. **Footers**: Page numbers, logos, footer text are consistent
 7. **Alignment**: Same-role elements align across slides
+8. **Layout contracts**: Shapes honor the coordinates and zones from Layout Composer
+9. **Text safety**: Similar title/body boxes have enough height for comparable text lengths
+10. **Proposal density**: Non-cover slides consistently use structured visuals rather than alternating between dense pages and sparse pages
 
 ## Output Format
 
@@ -25,11 +28,11 @@ Check all slides for **cross-slide consistency** issues.
   "patches": [
     {
       "slide_index": 3,
-      "element": "data-pptx-shape='title'",
-      "property": "font-size",
-      "current": "36px",
-      "expected": "42px",
-      "fix": "Change font-size to 42px"
+      "element": "shape.id='title'",
+      "property": "text[0].runs[0].font_size",
+      "current": 36,
+      "expected": 42,
+      "fix": "Change title font_size to 42"
     }
   ]
 }
@@ -41,5 +44,6 @@ Check all slides for **cross-slide consistency** issues.
 2. Only report actionable issues (not subjective opinions)
 3. Patches should be specific enough for Code Agent to apply
 4. If no issues found, return `is_consistent: true` with empty arrays
+5. Prefer DSL field references (`shape.id`, `position.x`, `font_size`, `fill.color`) over CSS selectors
 
 **IMPORTANT**: Output ONLY valid JSON.

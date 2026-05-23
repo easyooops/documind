@@ -6,6 +6,7 @@ import type {
   Template,
   DocumentVersion,
   User,
+  ChatMessage,
 } from "@/types";
 
 const API_URL =
@@ -13,6 +14,41 @@ const API_URL =
 
 const STREAM_API_URL =
   process.env.NEXT_PUBLIC_STREAM_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+
+interface ApiMessage {
+  id?: string;
+  role: ChatMessage["role"];
+  content: string;
+  generation_job_id?: string;
+  created_at?: string;
+}
+
+interface ApiSession {
+  id: string;
+  title: string | null;
+  messages?: ApiMessage[];
+  created_at: string;
+  updated_at: string;
+}
+
+interface ApiJob {
+  id: string;
+  status: GenerationJob["status"];
+  phase: GenerationJob["phase"];
+  progress?: number;
+  slide_count?: number;
+  fidelity_score?: number;
+  error?: GenerationJob["error"];
+  download_url?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+type StreamProgressEvent = Record<string, unknown>;
+
+interface StreamCompleteEvent {
+  job_id?: string;
+}
 
 async function request<T>(
   path: string,
@@ -51,11 +87,11 @@ export async function createSession(userId?: string): Promise<{ id: string; crea
 }
 
 export async function getSession(sessionId: string): Promise<Session> {
-  const data = await request<any>(`/api/v1/chat/sessions/${sessionId}`);
+  const data = await request<ApiSession>(`/api/v1/chat/sessions/${sessionId}`);
   return {
     id: data.id,
     title: data.title,
-    messages: (data.messages || []).map((m: any) => ({
+    messages: (data.messages || []).map((m) => ({
       id: m.id || crypto.randomUUID(),
       role: m.role,
       content: m.content,
@@ -90,7 +126,7 @@ export async function getUserSessions(userId: string): Promise<SessionSummary[]>
 export async function generateDocument(
   req: GenerateRequest
 ): Promise<GenerationJob> {
-  const data = await request<any>("/api/v1/documents/generate", {
+  const data = await request<ApiJob>("/api/v1/documents/generate", {
     method: "POST",
     body: JSON.stringify({
       query: req.query,
@@ -104,7 +140,7 @@ export async function generateDocument(
 }
 
 export async function getJobStatus(jobId: string): Promise<GenerationJob> {
-  const data = await request<any>(`/api/v1/documents/${jobId}/status`);
+  const data = await request<ApiJob>(`/api/v1/documents/${jobId}/status`);
   return mapJob(data);
 }
 
@@ -132,8 +168,19 @@ export async function uploadTemplate(file: File): Promise<Template> {
     method: "POST",
     body: formData,
   });
-  if (!res.ok) throw new Error("Template upload failed");
-  return res.json();
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: "Template upload failed" }));
+    throw new Error(error.detail || "Template upload failed");
+  }
+  const data = await res.json();
+  return {
+    id: data.id,
+    name: data.name,
+    filename: data.filename,
+    status: data.status,
+    sizeBytes: data.size_bytes ?? data.sizeBytes ?? 0,
+    createdAt: data.created_at ?? data.createdAt ?? new Date().toISOString(),
+  };
 }
 
 export async function listTemplates(): Promise<Template[]> {
@@ -147,13 +194,13 @@ export function streamGeneration(
   req: GenerateRequest,
   handlers: {
     onPhaseStart?: (phase: string) => void;
-    onProgress?: (data: any) => void;
-    onComplete?: (data: any) => void;
+    onProgress?: (data: StreamProgressEvent) => void;
+    onComplete?: (data: StreamCompleteEvent) => void;
     onError?: (error: string) => void;
     onMessage?: (content: string) => void;
     onNodeStart?: (data: { node: string; phase: string; description: string }) => void;
-    onNodeComplete?: (data: { node: string; phase: string; description: string; has_errors: boolean; progress?: number; elapsed_seconds?: number }) => void;
-    onNodeActivity?: (data: { node: string; activity: string; description: string; elapsed_seconds: number }) => void;
+    onNodeComplete?: (data: { node: string; phase: string; description: string; summary_items?: string[]; has_errors: boolean; progress?: number; elapsed_seconds?: number }) => void;
+    onNodeActivity?: (data: { node: string; phase?: string; activity: string; description: string; elapsed_seconds: number }) => void;
   }
 ): () => void {
   const url = `${STREAM_API_URL}/api/v1/chat/sessions/${sessionId}/messages/stream`;
@@ -168,6 +215,7 @@ export function streamGeneration(
       format: req.format,
       template_id: req.templateId,
       session_id: req.sessionId,
+      options: req.options || {},
     }),
     signal: controller.signal,
   })
@@ -242,7 +290,7 @@ export function streamGeneration(
 
 // --- Helpers ---
 
-function mapJob(data: any): GenerationJob {
+function mapJob(data: ApiJob): GenerationJob {
   return {
     id: data.id,
     status: data.status,

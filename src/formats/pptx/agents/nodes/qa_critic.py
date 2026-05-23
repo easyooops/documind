@@ -19,11 +19,11 @@ async def qa_critic(state: DocuMindState) -> dict:
     """Validate generated PPTX against DSL source of truth."""
     logger.info("qa_critic.start", iteration=state.get("qa_iterations", 0))
 
-    config = load_agent_config(AGENT_NAME, format_id=FORMAT_ID)
-    qa_config = config.get("qa", {})
+    config = _as_dict(load_agent_config(AGENT_NAME, format_id=FORMAT_ID))
+    qa_config = _as_dict(config.get("qa"))
 
     output_path = state.get("output_path")
-    slides_dsl = state.get("slides_dsl", [])
+    slides_dsl = [_as_dict(item) for item in _as_list(state.get("slides_dsl"))]
 
     if not output_path:
         return {
@@ -38,7 +38,7 @@ async def qa_critic(state: DocuMindState) -> dict:
         fidelity_threshold=qa_config.get("fidelity_threshold", 0.98),
     )
 
-    slides_html = state.get("slides_html", [])
+    slides_html = [_as_dict(item) for item in _as_list(state.get("slides_html"))]
     fidelity_score = await qa.evaluate(output_path, slides_html)
     iterations = state.get("qa_iterations", 0) + 1
 
@@ -58,7 +58,7 @@ async def qa_critic(state: DocuMindState) -> dict:
         issues_count=len(qa_feedback.get("issues", [])),
     )
     return {
-        "fidelity_scores": state.get("fidelity_scores", []) + [fidelity_score],
+        "fidelity_scores": _as_list(state.get("fidelity_scores")) + [fidelity_score],
         "qa_iterations": iterations,
         "qa_feedback": qa_feedback,
         "current_phase": "qa",
@@ -74,16 +74,18 @@ async def _generate_detailed_feedback(
 
         llm = get_llm_for_agent(AGENT_NAME, format_id=FORMAT_ID)
 
+        safe_slides = [_as_dict(item) for item in _as_list(slides_dsl)[:5]]
         dsl_summary = "\n\n".join(
-            f"Slide {s.get('index', i+1)} ({s.get('slide_type', 'content')}):\n{json.dumps(s, ensure_ascii=False)[:1000]}"
-            for i, s in enumerate(slides_dsl[:5])
+            f"Slide {s.get('index', i + 1)} ({s.get('slide_type', 'content')}):\n"
+            f"{json.dumps(s, ensure_ascii=False)[:1000]}"
+            for i, s in enumerate(safe_slides)
         )
 
         ooxml_issues_text = ""
+        ooxml_result = _as_dict(ooxml_result)
         if ooxml_result.get("issues"):
-            ooxml_issues_text = "\n\nOOXML Compliance Issues (programmatic check):\n" + "\n".join(
-                f"- {issue}" for issue in ooxml_result["issues"][:10]
-            )
+            ooxml_issues_text = "\n\nOOXML Compliance Issues (programmatic check):\n"
+            ooxml_issues_text += "\n".join(f"- {issue}" for issue in ooxml_result["issues"][:10])
 
         prompt = f"""PPTX quality scored {score:.2f} (threshold: 0.98).
 OOXML compliance score: {ooxml_result.get('score', 0):.2f}
@@ -98,6 +100,10 @@ Focus on:
 4. Gradient stops that are too close together or use very similar colors
 5. Shadow parameters that may produce poor OOXML results
 6. Shapes with opacity < 0.1 that are effectively invisible
+7. Long titles likely to wrap and clip vertically
+8. Missing proposal-grade structures: tables, chart-like visuals, diagrams, KPI cards, dividers, callouts
+9. Non-premium or inconsistent fonts for Korean business proposal output
+10. Low-quality box treatments: flat gray fills, weak contrast, inconsistent card/callout colors
 
 DSL Slides:
 {dsl_summary}
@@ -146,3 +152,15 @@ Output ONLY valid JSON:
         if ooxml_result.get("issues"):
             feedback["ooxml_issues"] = ooxml_result["issues"][:5]
         return feedback
+
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    return [value]

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.config import settings
 from src.core.logging import get_logger
 from src.infrastructure.database import get_session
 from src.infrastructure.models import Template
@@ -22,27 +22,33 @@ router = APIRouter(prefix="/templates", tags=["templates"])
 
 @router.post("/upload", response_model=TemplateUploadResponse)
 async def upload_template(
-    file: UploadFile,
+    file: UploadFile = File(...),
     db: AsyncSession = Depends(get_session),
 ):
-    """Upload a .pptx template for analysis."""
-    if not file.filename or not file.filename.endswith(".pptx"):
-        raise HTTPException(status_code=400, detail="Only .pptx files are supported")
+    """Upload a PowerPoint template for analysis."""
+    filename = Path(file.filename or "").name
+    extension = Path(filename).suffix.lower()
+    if not filename or extension not in {".pptx", ".potx"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PowerPoint template files (.pptx, .potx) are supported",
+        )
 
     content = await file.read()
-    max_size = settings.max_slides * 1024 * 1024  # crude limit
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded template is empty")
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large (max 50MB)")
 
     template_id = str(uuid.uuid4())
     storage = create_storage_backend()
-    storage_path = f"templates/{template_id}/{file.filename}"
+    storage_path = f"templates/{template_id}/{filename}"
     await storage.save(content, storage_path, file.content_type or "application/octet-stream")
 
     template = Template(
         id=template_id,
-        name=file.filename.rsplit(".", 1)[0],
-        filename=file.filename,
+        name=filename.rsplit(".", 1)[0],
+        filename=filename,
         file_path=storage_path,
         size_bytes=len(content),
         status="uploaded",

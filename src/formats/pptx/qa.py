@@ -536,7 +536,9 @@ class PPTXQualityAssurance:
                 "Evaluate this slide HTML for visual quality and PPTX conversion readiness. "
                 "Score 0.0-1.0. Be strict: check element positioning, typography, color usage, "
                 "professional design quality. Deduct heavily for overlapping text, missing data-pptx attributes, "
-                "or use of forbidden CSS properties. Output ONLY: {\"fidelity\": <float>}\n\n"
+                "likely clipped titles/body text, weak proposal density, lack of charts/tables/diagrams/KPI structures, "
+                "non-premium fonts, low-quality box colors, or use of forbidden CSS properties. "
+                "Output ONLY: {\"fidelity\": <float>}\n\n"
                 f"HTML:\n{all_html}"
             )
 

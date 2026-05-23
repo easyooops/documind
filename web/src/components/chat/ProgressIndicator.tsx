@@ -2,7 +2,7 @@
 
 import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { Loader2, CheckCircle2, AlertCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { JOB_PHASE_I18N_KEYS, type JobPhase } from "@/types";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useSessionStore, type NodeProgress } from "@/stores/session";
@@ -25,7 +25,7 @@ const PHASE_ORDER: JobPhase[] = [
 
 export function ProgressIndicator({ phase, progress }: ProgressIndicatorProps) {
   const { t } = useTranslation();
-  const { currentNode, currentNodeDescription, currentNodeElapsed, completedNodes, isGenerating } =
+  const { completedNodes, isGenerating, toggleNodeExpanded } =
     useSessionStore();
   const currentIndex = phase ? PHASE_ORDER.indexOf(phase as JobPhase) : 0;
   const isDone = phase === "done";
@@ -36,7 +36,7 @@ export function ProgressIndicator({ phase, progress }: ProgressIndicatorProps) {
       ? t(JOB_PHASE_I18N_KEYS[phase as JobPhase])
       : phase ?? t("progress.preparing");
 
-  const recentNodes = completedNodes;
+  const nodeItems = completedNodes;
 
   return (
     <motion.div
@@ -65,35 +65,16 @@ export function ProgressIndicator({ phase, progress }: ProgressIndicatorProps) {
           </span>
         </p>
 
-        {/* Current Node Activity with elapsed time */}
-        <AnimatePresence mode="wait">
-          {currentNodeDescription && isGenerating && (
-            <motion.div
-              key={`${currentNode}-${currentNodeDescription}`}
-              initial={{ opacity: 0, x: -4 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 4 }}
-              transition={{ duration: 0.15 }}
-              className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-lg bg-primary/5 border border-primary/10"
-            >
-              <Loader2 className="w-3 h-3 text-primary animate-spin flex-shrink-0" />
-              <span className="text-xs text-foreground font-medium truncate flex-1">
-                {currentNodeDescription}
-              </span>
-              {currentNodeElapsed > 0 && (
-                <span className="text-[10px] text-muted-foreground tabular-nums flex-shrink-0">
-                  {currentNodeElapsed.toFixed(0)}s
-                </span>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Completed Nodes Log */}
-        {recentNodes.length > 0 && (
-          <div className="space-y-0.5 mb-2">
-            {recentNodes.map((node, i) => (
-              <CompletedNodeItem key={`${node.node}-${i}`} node={node} />
+        {/* Node Activity Accordion */}
+        {nodeItems.length > 0 && (
+          <div className="space-y-1 mb-2">
+            {nodeItems.map((node, i) => (
+              <NodeProgressItem
+                key={`${node.node}-${i}`}
+                node={node}
+                isGenerating={isGenerating}
+                onToggle={() => toggleNodeExpanded(node.node)}
+              />
             ))}
           </div>
         )}
@@ -127,26 +108,83 @@ export function ProgressIndicator({ phase, progress }: ProgressIndicatorProps) {
   );
 }
 
-function CompletedNodeItem({ node }: { node: NodeProgress }) {
+function NodeProgressItem({
+  node,
+  isGenerating,
+  onToggle,
+}: {
+  node: NodeProgress;
+  isGenerating: boolean;
+  onToggle: () => void;
+}) {
+  const isRunning = node.status === "running" && isGenerating;
+  const expanded = isRunning || node.expanded;
+  const StatusIcon = node.status === "completed" ? CheckCircle2 : node.status === "error" ? AlertCircle : Loader2;
+  const summaryItems = node.summaryItems ?? [];
+
   return (
     <motion.div
       initial={{ opacity: 0, height: 0 }}
       animate={{ opacity: 1, height: "auto" }}
-      className="flex items-center gap-1.5 px-1"
+      className={cn(
+        "rounded-lg border transition-colors",
+        isRunning ? "border-primary/15 bg-primary/5" : "border-transparent bg-transparent"
+      )}
     >
-      {node.status === "completed" ? (
-        <CheckCircle2 className="w-3 h-3 text-emerald-500 flex-shrink-0" />
-      ) : (
-        <AlertCircle className="w-3 h-3 text-amber-500 flex-shrink-0" />
-      )}
-      <span className="text-[11px] text-muted-foreground truncate flex-1">
-        {node.description}
-      </span>
-      {node.elapsedSeconds != null && node.elapsedSeconds > 0 && (
-        <span className="text-[10px] text-muted-foreground/70 tabular-nums flex-shrink-0">
-          {node.elapsedSeconds.toFixed(1)}s
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center gap-1.5 px-1.5 py-1 text-left"
+        aria-expanded={expanded}
+      >
+        {expanded ? (
+          <ChevronDown className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+        ) : (
+          <ChevronRight className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+        )}
+        <StatusIcon
+          className={cn(
+            "w-3 h-3 flex-shrink-0",
+            node.status === "completed" && "text-emerald-500",
+            node.status === "error" && "text-amber-500",
+            isRunning && "text-primary animate-spin"
+          )}
+        />
+        <span className={cn(
+          "text-[11px] truncate flex-1",
+          isRunning ? "text-foreground font-medium" : "text-muted-foreground"
+        )}>
+          {node.description}
         </span>
-      )}
+        {node.elapsedSeconds != null && node.elapsedSeconds > 0 && (
+          <span className="text-[10px] text-muted-foreground/70 tabular-nums flex-shrink-0">
+            {node.elapsedSeconds.toFixed(node.status === "running" ? 0 : 1)}s
+          </span>
+        )}
+      </button>
+
+      <AnimatePresence initial={false}>
+        {expanded && summaryItems.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            className="px-6 pb-1.5 space-y-1"
+          >
+            {summaryItems.map((item, i) => (
+              <div key={`${item}-${i}`} className="flex items-start gap-1.5">
+                <span className={cn(
+                  "mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0",
+                  node.status === "error" ? "bg-amber-500" : "bg-muted-foreground/35"
+                )} />
+                <span className="text-[10px] leading-relaxed text-muted-foreground flex-1">
+                  {item}
+                </span>
+              </div>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

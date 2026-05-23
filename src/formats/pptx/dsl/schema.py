@@ -74,19 +74,66 @@ class TextParagraph(BaseModel):
     align: Literal["left", "center", "right", "justify"] = "left"
     line_height: float = Field(ge=0.8, le=3.0, default=1.5)
     spacing_before: int = Field(ge=0, default=0, description="Space before paragraph in px")
+    spacing_after: int = Field(ge=0, default=0, description="Space after paragraph in px")
+
+
+class TableData(BaseModel):
+    headers: list[str] = Field(default_factory=list)
+    rows: list[list[str]] = Field(default_factory=list)
+    header_fill: str = Field(default="17324d", pattern=r"^[0-9a-fA-F]{6}$")
+    header_text_color: str = Field(default="ffffff", pattern=r"^[0-9a-fA-F]{6}$")
+    row_fill: str = Field(default="ffffff", pattern=r"^[0-9a-fA-F]{6}$")
+    alternate_row_fill: str = Field(default="f5f7fa", pattern=r"^[0-9a-fA-F]{6}$")
+    border_color: str = Field(default="d8dee8", pattern=r"^[0-9a-fA-F]{6}$")
+    font_family: str = "Pretendard"
+    font_size: int = Field(ge=8, le=36, default=12)
+
+
+class ChartPoint(BaseModel):
+    label: str
+    value: float
+
+
+class ChartData(BaseModel):
+    chart_type: Literal["bar", "column", "line", "pie", "donut"] = "bar"
+    title: str = ""
+    series_name: str = "Series"
+    data: list[ChartPoint] = Field(min_length=1)
+    value_axis_title: str = ""
+    category_axis_title: str = ""
+    color: str = Field(default="2fb7c8", pattern=r"^[0-9a-fA-F]{6}$")
+    show_legend: bool = False
 
 
 class Shape(BaseModel):
     id: str = Field(min_length=1, description="Unique shape identifier")
-    role: Literal["title", "subtitle", "body", "decorative", "chart", "image", "badge", "kpi", "label"] = "body"
+    role: Literal[
+        "title",
+        "subtitle",
+        "body",
+        "decorative",
+        "chart",
+        "image",
+        "badge",
+        "kpi",
+        "label",
+        "table",
+        "diagram",
+        "line",
+        "arrow",
+        "callout",
+    ] = "body"
     position: ShapePosition
     z_index: int = Field(default=0, description="Stacking order")
     fill: FillType | None = None
     border_radius: int = Field(ge=0, default=0, description="Corner radius in px")
     shadow: Shadow | None = None
     opacity: float = Field(ge=0.0, le=1.0, default=1.0)
+    vertical_align: Literal["top", "middle", "bottom"] = "top"
     border: Border | None = None
     text: list[TextParagraph] | None = None
+    table: TableData | None = None
+    chart: ChartData | None = None
 
     @field_validator("id")
     @classmethod
@@ -98,7 +145,18 @@ class Shape(BaseModel):
 
 class SlideDSL(BaseModel):
     index: int = Field(ge=1)
-    slide_type: Literal["cover", "toc", "content", "data", "comparison", "summary", "cta", "section"] = "content"
+    slide_type: Literal[
+        "cover",
+        "toc",
+        "content",
+        "problem",
+        "solution",
+        "data",
+        "comparison",
+        "summary",
+        "cta",
+        "section",
+    ] = "content"
     shapes: list[Shape] = Field(min_length=1)
 
 

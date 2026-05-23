@@ -33,6 +33,7 @@ export function useSessionSelect(onAfterSelect?: () => void) {
   const setCurrentSession = useSessionStore((s) => s.setCurrentSession);
   const setMessages = useSessionStore((s) => s.setMessages);
   const setLoadingSession = useSessionStore((s) => s.setLoadingSession);
+  const clearProgress = useSessionStore((s) => s.clearProgress);
 
   const selectSession = useCallback(
     async (sessionId: string) => {
@@ -43,6 +44,7 @@ export function useSessionSelect(onAfterSelect?: () => void) {
       }
 
       setLoadingSession(true);
+      clearProgress();
       setCurrentSession(sessionId);
       useDocumentStore.getState().reset();
 
@@ -66,7 +68,7 @@ export function useSessionSelect(onAfterSelect?: () => void) {
         onAfterSelect?.();
       }
     },
-    [setCurrentSession, setMessages, setLoadingSession, onAfterSelect]
+    [setCurrentSession, setMessages, setLoadingSession, clearProgress, onAfterSelect]
   );
 
   return selectSession;

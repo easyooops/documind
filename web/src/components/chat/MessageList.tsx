@@ -17,13 +17,12 @@ export function MessageList() {
   const { currentJob, openPanel } = useDocumentStore();
   const { t } = useTranslation();
   const bottomRef = useRef<HTMLDivElement>(null);
-  const { currentNode, currentNodeElapsed } = useSessionStore();
 
   const showProgress = isGenerating || (currentPhase === "done" && completedNodes.length > 0);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isGenerating, currentPhase, currentNode, currentNodeElapsed]);
+  }, [messages, isGenerating, currentPhase, completedNodes.length]);
 
   return (
     <ScrollArea className="flex-1 min-h-0 px-3 sm:px-4">

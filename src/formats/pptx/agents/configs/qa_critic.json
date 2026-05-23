@@ -8,7 +8,7 @@
     "top_p": 1.0
   },
   "qa": {
-    "fidelity_threshold": 0.75,
+    "fidelity_threshold": 0.88,
     "ssim_pre_gate": 0.70,
     "max_iterations": 2
   },

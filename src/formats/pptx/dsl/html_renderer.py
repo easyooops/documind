@@ -89,12 +89,52 @@ body{{background:#1a1a2e;display:flex;flex-direction:column;align-items:center;g
             styles.append(f"border:{shape.border.width}px {shape.border.style} #{shape.border.color}")
 
         if shape.text:
-            styles.append("display:flex;flex-direction:column;justify-content:center;padding:8px")
+            justify = {
+                "top": "flex-start",
+                "middle": "center",
+                "bottom": "flex-end",
+            }.get(shape.vertical_align, "flex-start")
+            styles.append(f"display:flex;flex-direction:column;justify-content:{justify};padding:8px")
 
         style_str = ";".join(styles)
-        content = self._render_text(shape.text) if shape.text else ""
+        if shape.table:
+            content = self._render_table(shape.table)
+        elif shape.chart:
+            content = self._render_chart(shape.chart)
+        else:
+            content = self._render_text(shape.text) if shape.text else ""
 
         return f'<div data-id="{shape.id}" data-role="{shape.role}" style="{style_str}">{content}</div>'
+
+    def _render_table(self, table) -> str:
+        rows = ([table.headers] if table.headers else []) + table.rows
+        html_rows = []
+        for i, row in enumerate(rows):
+            cells = []
+            for value in row:
+                tag = "th" if i == 0 and table.headers else "td"
+                cells.append(f"<{tag}>{html_lib.escape(str(value))}</{tag}>")
+            html_rows.append(f"<tr>{''.join(cells)}</tr>")
+        return (
+            "<table style='width:100%;height:100%;border-collapse:collapse;font-size:"
+            f"{table.font_size}px;font-family:{table.font_family},sans-serif'>"
+            + "".join(html_rows)
+            + "</table>"
+        )
+
+    def _render_chart(self, chart) -> str:
+        max_value = max((point.value for point in chart.data), default=1)
+        bars = []
+        for point in chart.data:
+            width = max(4, int((point.value / max_value) * 100)) if max_value else 0
+            bars.append(
+                "<div style='display:flex;align-items:center;gap:8px;margin:6px 0'>"
+                f"<span style='width:80px;font-size:11px'>{html_lib.escape(point.label)}</span>"
+                f"<div style='height:14px;width:{width}%;background:#{chart.color}'></div>"
+                f"<span style='font-size:11px'>{point.value:g}</span></div>"
+            )
+        title = f"<strong>{html_lib.escape(chart.title)}</strong>" if chart.title else ""
+        return f"<div style='padding:8px'>{title}{''.join(bars)}</div>"
 
     def _fill_css(self, fill: SolidFill | GradientFill) -> str:
         """Convert fill model to CSS background property."""
@@ -112,6 +152,8 @@ body{{background:#1a1a2e;display:flex;flex-direction:column;align-items:center;g
             p_style = f"text-align:{para.align};line-height:{para.line_height}"
             if para.spacing_before > 0:
                 p_style += f";margin-top:{para.spacing_before}px"
+            if para.spacing_after > 0:
+                p_style += f";margin-bottom:{para.spacing_after}px"
             spans = "".join(self._render_run(r) for r in para.runs)
             parts.append(f'<p style="{p_style}">{spans}</p>')
         return "\n".join(parts)

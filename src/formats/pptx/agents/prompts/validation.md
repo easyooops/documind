@@ -19,6 +19,7 @@ Perform **3-level validation** on generated OOXML-DSL JSON slides. Be extremely 
 | **Whitespace ratio** | 30-40% whitespace, breathing room between elements | 20-30% or 40-50% | <20% (cramped) or >50% (empty) |
 | **Grid logic** | Clear column/row structure (2-col, 3-card, etc.) | Partially structured | No discernible grid |
 | **Overflow/Clipping** | No shape exceeds viewport bounds (960×540) | Minor overflow (decorative only) | Text or content shapes overflow viewport |
+| **Text box fit** | Titles/body have enough width/height for Korean and English line wrapping | Minor tightness | Any likely clipping or cropped ascenders/descenders |
 
 ### 2B. Typography & Readability (Weight: 25%)
 
@@ -29,6 +30,7 @@ Perform **3-level validation** on generated OOXML-DSL JSON slides. Be extremely 
 | **Line height** | Body: 1.5-1.7, Title: 1.1-1.3, readable | Acceptable but tight | Text lines too tight |
 | **Color contrast** | WCAG AA (4.5:1 text-bg ratio minimum) | Some low-contrast areas | Unreadable text on background |
 | **Korean text** | Proper Korean font (Pretendard/Noto Sans KR) | Font specified but may not render | No Korean-capable font |
+| **Premium font quality** | Pretendard/Noto Sans KR/Inter/Aptos/Segoe UI used consistently | Mixed but acceptable | Generic/low-quality fonts |
 
 ### 2C. Color & Visual Identity (Weight: 20%)
 
@@ -48,6 +50,8 @@ Perform **3-level validation** on generated OOXML-DSL JSON slides. Be extremely 
 | **Data emphasis** | Key numbers large (28-42px) | Some emphasis | All same size |
 | **Content density** | 3-5 key points per slide | 6-8 points | >8 points |
 | **Slide purpose clarity** | Instantly obvious | Requires 5+ seconds | Unclear |
+| **Structured artifacts** | Tables, charts, process diagrams, dividers, and callouts used where helpful | One supporting artifact | Mostly paragraphs/bullets |
+| **Proposal rigor** | Dense executive-proposal page with evidence, hierarchy, and analysis | Basic presentation slide | Thin or generic content |
 
 ### 2E. Professional Polish (Weight: 15%)
 
@@ -82,6 +86,8 @@ When reviewing the DSL JSON, pay special attention to:
 5. **Text paragraphs** — Each shape with text has meaningful paragraph/run structure
 6. **Fill consistency** — Background shapes have fills, text-only shapes may not need fills
 7. **Font size range** — Title: 32-48px, Subtitle: 18-24px, Body: 14-18px, Label: 10-13px
+8. **Text clipping risk** — Long Korean titles at large font sizes must have enough box height or be split safely
+9. **Rich visual structure** — Proposal slides should include tables, chart-like grouped shapes, KPI blocks, diagrams, dividers, or callouts, not text alone
 
 ---
 
@@ -154,8 +160,11 @@ overall_score = (
 | Shape exceeds viewport bounds (x+w > 960 or y+h > 540) | -2.0 | layout_composition |
 | No clear title hierarchy (all same font_size) | -1.5 | typography |
 | Poor contrast (light text on light fill) | -1.5 | typography |
+| Any likely clipped title/body text | -2.0 | typography/layout |
+| Generic/non-premium font on Korean proposal slide | -1.0 | typography |
 | More than 5 distinct hues | -1.0 | color_visual |
 | >8 text shapes with body content on one slide | -1.5 | information_design |
+| No structured visual artifact on a non-cover slide | -1.5 | information_design |
 | Inconsistent margins across slides (>20px variance) | -1.0 | professional_polish |
 
 ---

@@ -157,6 +157,7 @@ class DocuMind:
         self._apply_config()
 
         from src.schemas.agents import DocuMindState
+        from src.utils.language import detect_output_language
 
         initial_state: DocuMindState = {
             "user_query": query,
@@ -164,6 +165,8 @@ class DocuMind:
             "template_id": template_id,
             "conversation_history": [],
             "document_format": format,
+            "locale": options.get("locale", "ko"),
+            "output_language": detect_output_language(query),
             "needs_research": needs_research,
             "template_provided": template_id is not None,
             "current_phase": "planning",

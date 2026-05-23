@@ -20,7 +20,8 @@
     "generate": "node scripts/run-python.mjs -m src.cli generate"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "tree-kill": "^1.2.2"
   },
   "engines": {
     "python": ">=3.11",

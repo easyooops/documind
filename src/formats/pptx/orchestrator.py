@@ -39,7 +39,7 @@ def _route_validation(state: DocuMindState) -> str:
 
     Safety: total retries (validation + QA) are capped to prevent infinite loops.
     """
-    result = state.get("validation_result", {})
+    result = _as_dict(state.get("validation_result"))
     if result.get("passed", False):
         return "convert"
 
@@ -60,10 +60,10 @@ def _route_qa(state: DocuMindState) -> str:
     With DSL architecture, PPTX is built directly from DSL so fidelity is
     inherently high. Only retry if score is very low.
     """
-    scores = state.get("fidelity_scores", [])
+    scores = _as_list(state.get("fidelity_scores"))
     iterations = state.get("qa_iterations", 0)
 
-    if scores and scores[-1] >= 0.75:
+    if scores and scores[-1] >= 0.88:
         return "export"
     if iterations >= 1:
         return "export"
@@ -73,6 +73,18 @@ def _route_qa(state: DocuMindState) -> str:
 def _export_node(state: DocuMindState) -> dict:
     """Final export node — marks completion."""
     return {"current_phase": "done"}
+
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    return [value]
 
 
 def build_pptx_pipeline() -> StateGraph:

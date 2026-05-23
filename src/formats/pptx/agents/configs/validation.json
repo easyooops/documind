@@ -8,7 +8,7 @@
     "top_p": 1.0
   },
   "validation": {
-    "score_threshold": 3.5,
+    "score_threshold": 4.2,
     "max_retry_to_code_agent": 2
   },
   "retry": {

@@ -20,6 +20,8 @@ from src.formats.pptx.dsl.schema import (
     Shape,
     SlideDSL,
     SolidFill,
+    TableData,
+    ChartData,
     TextParagraph,
     PX_TO_EMU,
     PT_TO_EMU,
@@ -68,6 +70,14 @@ class DSLtoPPTXBuilder:
         w = shape.position.w * PX_TO_EMU
         h = shape.position.h * PX_TO_EMU
 
+        if shape.table:
+            self._add_table(slide, shape, shape.table)
+            return
+
+        if shape.chart:
+            self._add_chart(slide, shape, shape.chart)
+            return
+
         has_text = shape.text is not None and len(shape.text) > 0
         has_fill = shape.fill is not None and not isinstance(shape.fill, NoFill)
         has_radius = shape.border_radius > 0
@@ -97,7 +107,7 @@ class DSLtoPPTXBuilder:
         if has_text:
             tf = pptx_shape.text_frame
             tf.word_wrap = True
-            self._apply_text(tf, shape.text)
+            self._apply_text(tf, shape.text, shape.vertical_align)
 
     def _apply_fill(self, pptx_shape, fill: SolidFill | GradientFill) -> None:
         """Apply fill (solid or gradient) to a shape."""
@@ -178,7 +188,12 @@ class DSLtoPPTXBuilder:
         line.color.rgb = RGBColor.from_string(border.color)
         line.width = Pt(border.width)
 
-    def _apply_text(self, text_frame, paragraphs: list[TextParagraph]) -> None:
+    def _apply_text(
+        self,
+        text_frame,
+        paragraphs: list[TextParagraph],
+        vertical_align: str = "top",
+    ) -> None:
         """Apply text paragraphs and runs to a text frame."""
         from pptx.util import Pt, Emu
         from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
@@ -188,6 +203,12 @@ class DSLtoPPTXBuilder:
         text_frame.margin_right = Emu(8 * PX_TO_EMU)
         text_frame.margin_top = Emu(4 * PX_TO_EMU)
         text_frame.margin_bottom = Emu(4 * PX_TO_EMU)
+        anchor_map = {
+            "top": MSO_ANCHOR.TOP,
+            "middle": MSO_ANCHOR.MIDDLE,
+            "bottom": MSO_ANCHOR.BOTTOM,
+        }
+        text_frame.vertical_anchor = anchor_map.get(vertical_align, MSO_ANCHOR.TOP)
 
         align_map = {
             "left": PP_ALIGN.LEFT,
@@ -203,6 +224,11 @@ class DSLtoPPTXBuilder:
                 p = text_frame.add_paragraph()
 
             p.alignment = align_map.get(para_dsl.align, PP_ALIGN.LEFT)
+            p.line_spacing = para_dsl.line_height
+            if para_dsl.spacing_before:
+                p.space_before = Pt(para_dsl.spacing_before * 0.75)
+            if para_dsl.spacing_after:
+                p.space_after = Pt(para_dsl.spacing_after * 0.75)
 
             for run_dsl in para_dsl.runs:
                 run = p.add_run()
@@ -216,3 +242,89 @@ class DSLtoPPTXBuilder:
 
                 if run_dsl.font_family:
                     font.name = run_dsl.font_family.split(",")[0].strip().strip("'\"")
+
+    def _add_table(self, slide, shape: Shape, table_data: TableData) -> None:
+        """Add a native PowerPoint table."""
+        from pptx.dml.color import RGBColor
+        from pptx.util import Emu, Pt
+
+        rows = ([table_data.headers] if table_data.headers else []) + table_data.rows
+        if not rows:
+            return
+
+        row_count = len(rows)
+        col_count = max(len(row) for row in rows)
+        pptx_table_shape = slide.shapes.add_table(
+            row_count,
+            col_count,
+            Emu(shape.position.x * PX_TO_EMU),
+            Emu(shape.position.y * PX_TO_EMU),
+            Emu(shape.position.w * PX_TO_EMU),
+            Emu(shape.position.h * PX_TO_EMU),
+        )
+        table = pptx_table_shape.table
+
+        for r_idx, row in enumerate(rows):
+            for c_idx in range(col_count):
+                cell = table.cell(r_idx, c_idx)
+                text = str(row[c_idx]) if c_idx < len(row) else ""
+                is_header = table_data.headers and r_idx == 0
+                fill_color = (
+                    table_data.header_fill
+                    if is_header
+                    else table_data.alternate_row_fill
+                    if r_idx % 2 == 0
+                    else table_data.row_fill
+                )
+                text_color = table_data.header_text_color if is_header else "111827"
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = RGBColor.from_string(fill_color)
+                cell.margin_left = Emu(6 * PX_TO_EMU)
+                cell.margin_right = Emu(6 * PX_TO_EMU)
+                cell.margin_top = Emu(4 * PX_TO_EMU)
+                cell.margin_bottom = Emu(4 * PX_TO_EMU)
+
+                paragraph = cell.text_frame.paragraphs[0]
+                paragraph.text = text
+                run = paragraph.runs[0] if paragraph.runs else paragraph.add_run()
+                run.font.name = table_data.font_family
+                run.font.size = Pt(table_data.font_size * 0.75)
+                run.font.bold = is_header
+                run.font.color.rgb = RGBColor.from_string(text_color)
+
+    def _add_chart(self, slide, shape: Shape, chart_data: ChartData) -> None:
+        """Add a native PowerPoint chart."""
+        from pptx.chart.data import ChartData as PptxChartData
+        from pptx.enum.chart import XL_CHART_TYPE
+        from pptx.util import Emu
+
+        chart_type_map = {
+            "bar": XL_CHART_TYPE.BAR_CLUSTERED,
+            "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
+            "line": XL_CHART_TYPE.LINE,
+            "pie": XL_CHART_TYPE.PIE,
+            "donut": XL_CHART_TYPE.DOUGHNUT,
+        }
+        pptx_data = PptxChartData()
+        pptx_data.categories = [point.label for point in chart_data.data]
+        pptx_data.add_series(chart_data.series_name, [point.value for point in chart_data.data])
+
+        chart_shape = slide.shapes.add_chart(
+            chart_type_map.get(chart_data.chart_type, XL_CHART_TYPE.BAR_CLUSTERED),
+            Emu(shape.position.x * PX_TO_EMU),
+            Emu(shape.position.y * PX_TO_EMU),
+            Emu(shape.position.w * PX_TO_EMU),
+            Emu(shape.position.h * PX_TO_EMU),
+            pptx_data,
+        )
+        chart = chart_shape.chart
+        chart.has_legend = chart_data.show_legend
+        chart.has_title = bool(chart_data.title)
+        if chart.has_title:
+            chart.chart_title.text_frame.text = chart_data.title
+        try:
+            chart.value_axis.has_major_gridlines = False
+            chart.category_axis.tick_labels.font.size = None
+            chart.value_axis.tick_labels.font.size = None
+        except Exception:
+            logger.debug("dsl_builder.chart_axis_style_skipped")

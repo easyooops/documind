@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Menu } from "lucide-react";
 import { useUserStore } from "@/stores/user";
@@ -21,12 +21,9 @@ export function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const isDesktop = useMediaQuery("(min-width: 768px)");
+  const isMobileSidebarOpen = !isDesktop && mobileSidebarOpen;
 
   useSessionsLoader();
-
-  useEffect(() => {
-    if (isDesktop) setMobileSidebarOpen(false);
-  }, [isDesktop]);
 
   if (!isIdentified) {
     return <UserIdentifyModal />;
@@ -40,7 +37,7 @@ export function AppShell() {
 
       {/* Mobile backdrop */}
       <AnimatePresence>
-        {!isDesktop && mobileSidebarOpen && (
+        {isMobileSidebarOpen && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -58,8 +55,8 @@ export function AppShell() {
           "flex-shrink-0 z-50",
           !isDesktop &&
             "fixed inset-y-0 left-0 transition-transform duration-200 ease-out",
-          !isDesktop && !mobileSidebarOpen && "-translate-x-full",
-          !isDesktop && mobileSidebarOpen && "translate-x-0"
+          !isDesktop && !isMobileSidebarOpen && "-translate-x-full",
+          isMobileSidebarOpen && "translate-x-0"
         )}
       >
         <Sidebar

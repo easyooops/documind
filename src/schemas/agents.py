@@ -18,6 +18,8 @@ class DocuMindState(TypedDict, total=False):
     template_id: str | None
     conversation_history: list[dict]
     document_format: str  # "pptx" | "docx" | "pdf" | "xlsx"
+    locale: str  # "ko" | "en"
+    output_language: str  # "en" | "ko_mixed"
 
     # Planning outputs
     research_data: dict | None

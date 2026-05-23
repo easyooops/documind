@@ -154,7 +154,7 @@ NOTE: If OOXML compliance < 0.7, the file is technically broken — always fail 
   "visual_dimensions": {
     "positional_accuracy": {"score": 0.90, "issues": ["Slide 1: title shifted 12px right from reference"]},
     "color_fill_accuracy": {"score": 0.95, "issues": ["Slide 2: gradient angle off by 15°"]},
-    "typography_fidelity": {"score": 0.88, "issues": ["Slide 1: title truncated after '분석'", "Slide 3: body text 2pt too small"]},
+    "typography_fidelity": {"score": 0.88, "issues": ["Slide 1: title truncated", "Slide 3: body text 2pt too small"]},
     "effects_decoration": {"score": 0.92, "issues": ["Slide 2: card shadow missing"]},
     "overall_cohesion": {"score": 0.93, "issues": []}
   },
@@ -165,7 +165,7 @@ NOTE: If OOXML compliance < 0.7, the file is technically broken — always fail 
       "shape_id": "title",
       "category": "typography",
       "severity": "critical",
-      "description": "Title text '메가존클라우드는 규모에서, 베스핀글로벌...' truncated — container width 600px insufficient for 42px Korean text",
+      "description": "Long title text is truncated — container width 600px insufficient for 42px multilingual text",
       "root_cause": "Font size too large for container width. Korean characters are wider than Latin, requiring ~20% more horizontal space.",
       "fix_suggestion": "Reduce font-size from 42px to 34px OR increase container width from 600px to 800px"
     },
@@ -181,7 +181,7 @@ NOTE: If OOXML compliance < 0.7, the file is technically broken — always fail 
     }
   ],
   "fix_instructions": [
-    "Slide 1: Reduce title font-size from 42px to 34px. Root cause: Korean text at 42px overflows 600px container (Korean chars need ~20px/char vs 12px for Latin)",
+    "Slide 1: Reduce title font-size from 42px to 34px. Root cause: multilingual title at 42px overflows 600px container",
     "Slide 2: Change box-shadow from complex multi-shadow to single shadow: '0 4px 20px rgba(0,0,0,0.08)'. Root cause: multi-layer shadows don't convert to OOXML outerShdw"
   ],
   "verdict": "fail",

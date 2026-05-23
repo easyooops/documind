@@ -7,6 +7,8 @@ export interface NodeProgress {
   description: string;
   status: "running" | "completed" | "error";
   elapsedSeconds?: number;
+  summaryItems?: string[];
+  expanded?: boolean;
 }
 
 interface SessionState {
@@ -35,6 +37,8 @@ interface SessionState {
   setSelectedFormat: (format: DocumentFormat) => void;
   setCurrentNode: (node: string | null, description?: string | null, elapsed?: number) => void;
   addCompletedNode: (node: NodeProgress) => void;
+  addNodeActivity: (node: string, description: string, elapsed?: number, phase?: string) => void;
+  toggleNodeExpanded: (node: string) => void;
   clearProgress: () => void;
   reset: () => void;
 }
@@ -66,9 +70,62 @@ export const useSessionStore = create<SessionState>((set) => ({
   setProgress: (progress) => set({ progress }),
   setSelectedFormat: (format) => set({ selectedFormat: format }),
   setCurrentNode: (node, description = null, elapsed = 0) =>
-    set({ currentNode: node, currentNodeDescription: description, currentNodeElapsed: elapsed }),
+    set((state) => {
+      if (!node) {
+        return { currentNode: null, currentNodeDescription: null, currentNodeElapsed: 0 };
+      }
+      const existing = state.completedNodes.find((item) => item.node === node);
+      const nextNode: NodeProgress = {
+        node,
+        phase: existing?.phase ?? state.currentPhase ?? "planning",
+        description: description ?? existing?.description ?? node,
+        status: "running",
+        elapsedSeconds: elapsed,
+        summaryItems: existing?.summaryItems ?? [],
+        expanded: true,
+      };
+      return {
+        currentNode: node,
+        currentNodeDescription: description,
+        currentNodeElapsed: elapsed,
+        completedNodes: upsertNodeProgress(state.completedNodes, nextNode),
+      };
+    }),
   addCompletedNode: (node) =>
-    set((state) => ({ completedNodes: [...state.completedNodes, node] })),
+    set((state) => ({
+      currentNode: state.currentNode === node.node ? null : state.currentNode,
+      currentNodeDescription: state.currentNode === node.node ? null : state.currentNodeDescription,
+      currentNodeElapsed: state.currentNode === node.node ? 0 : state.currentNodeElapsed,
+      completedNodes: upsertNodeProgress(state.completedNodes, {
+        ...node,
+        summaryItems: node.summaryItems ?? state.completedNodes.find((item) => item.node === node.node)?.summaryItems ?? [],
+        expanded: false,
+      }),
+    })),
+  addNodeActivity: (node, description, elapsed = 0, phase) =>
+    set((state) => {
+      const existing = state.completedNodes.find((item) => item.node === node);
+      return {
+        currentNode: node,
+        currentNodeDescription: description,
+        currentNodeElapsed: elapsed,
+        completedNodes: upsertNodeProgress(state.completedNodes, {
+          node,
+          phase: phase ?? existing?.phase ?? state.currentPhase ?? "planning",
+          description: existing?.description ?? description,
+          status: "running",
+          elapsedSeconds: elapsed,
+          summaryItems: existing?.summaryItems ?? [],
+          expanded: true,
+        }),
+      };
+    }),
+  toggleNodeExpanded: (node) =>
+    set((state) => ({
+      completedNodes: state.completedNodes.map((item) =>
+        item.node === node ? { ...item, expanded: !item.expanded } : item
+      ),
+    })),
   clearProgress: () =>
     set({
       currentPhase: null,
@@ -91,3 +148,18 @@ export const useSessionStore = create<SessionState>((set) => ({
       completedNodes: [],
     }),
 }));
+
+function upsertNodeProgress(nodes: NodeProgress[], next: NodeProgress): NodeProgress[] {
+  const index = nodes.findIndex((item) => item.node === next.node);
+  if (index === -1) return [...nodes, next];
+  return nodes.map((item, i) =>
+    i === index
+      ? {
+          ...item,
+          ...next,
+          summaryItems: next.summaryItems ?? item.summaryItems,
+          expanded: next.expanded ?? item.expanded,
+        }
+      : item
+  );
+}
