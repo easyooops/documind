@@ -5,11 +5,11 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolvePython, platform } from "./lib.mjs";
+import { platform, pythonInstallEnv, resolvePython } from "./lib.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isWin = platform.isWin;
-const python = resolvePython();
+const python = resolvePython(root);
 const args = process.argv.slice(2);
 
 if (args[0] !== "-m") {
@@ -21,7 +21,7 @@ const result = spawnSync(python, args, {
   cwd: root,
   stdio: "inherit",
   shell: isWin,
-  env: process.env,
+  env: pythonInstallEnv(process.env, root),
 });
 
 process.exit(result.status ?? 1);

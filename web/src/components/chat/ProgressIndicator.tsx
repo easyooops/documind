@@ -31,7 +31,7 @@ export function ProgressIndicator({ phase, progress }: ProgressIndicatorProps) {
   const isDone = phase === "done";
 
   const phaseLabel = isDone
-    ? t("progress.complete") ?? "완료"
+    ? t("progress.complete") ?? "Complete"
     : phase && phase in JOB_PHASE_I18N_KEYS
       ? t(JOB_PHASE_I18N_KEYS[phase as JobPhase])
       : phase ?? t("progress.preparing");

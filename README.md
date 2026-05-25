@@ -9,11 +9,11 @@
 ### 1. Prerequisites
 
 - Python **3.11+** and Node.js **18+**
-- Recommended: Python virtual environment (`.venv`)
+- On Windows: clone this repo to an **ASCII-only path** (e.g. `C:\dev\documind`). Non-English characters in the user profile or project path can break Python tooling.
 
 ### 2. Install (from repo root)
 
-**Windows (PowerShell)** — after activating venv if you use one:
+**Windows (PowerShell):**
 
 ```powershell
 copy .env.example .env
@@ -24,11 +24,12 @@ npm run install:all
 
 ```bash
 cp .env.example .env
-python3 -m venv .venv && source .venv/bin/activate
 npm run install:all
 ```
 
-`install:all` installs Python packages, Playwright Chromium, and `web/` npm dependencies using cross-platform Node scripts (`scripts/install-all.mjs`).
+`install:all` creates a project-local `.venv`, installs Python packages (editable + dev + bedrock), runs `pip-audit`, installs Playwright Chromium, and installs `web/` npm dependencies (`scripts/install-all.mjs`). No manual venv setup is required; `npm run dev` and other scripts use `.venv` automatically when present.
+
+**Playwright TLS errors** (`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`): common behind corporate SSL inspection. `install:all` sets `NODE_USE_SYSTEM_CA=1` automatically. If the browser step still fails, run `npm run install:playwright` or set `NODE_EXTRA_CA_CERTS` to your company root CA bundle (see [Playwright proxy/TLS docs](https://playwright.dev/docs/browsers#install-behind-a-firewall-or-a-proxy)).
 
 ### 3. Environment
 

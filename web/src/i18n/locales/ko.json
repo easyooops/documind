@@ -50,7 +50,11 @@
     "docGenerationError": "문서 생성 중 오류가 발생했습니다: {{error}}",
     "genericError": "오류: {{message}}",
     "viewDocument": "문서 보기",
-    "download": "다운로드"
+    "download": "다운로드",
+    "templateButton": "템플릿",
+    "templateHelp": "PowerPoint 템플릿은 첫 메시지 전 한 번만 첨부할 수 있습니다.",
+    "templateAttachHint": "첫 메시지 전 .pptx 또는 .potx 템플릿만 첨부할 수 있습니다.",
+    "templateBasis": "템플릿 기준"
   },
   "progress": {
     "preparing": "준비 중",

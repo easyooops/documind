@@ -6,18 +6,25 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { platform, resolvePython, tryFreePort, isPortAvailable } from "./lib.mjs";
+import {
+  isPortAvailable,
+  platform,
+  pythonInstallEnv,
+  resolvePython,
+  tryFreePort,
+} from "./lib.mjs";
 
 const require = createRequire(import.meta.url);
 const treeKill = require("tree-kill");
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isWin = platform.isWin;
-const python = resolvePython();
+const python = resolvePython(root);
+const pyEnv = pythonInstallEnv(process.env, root);
 
 const children = [];
 
-function run(name, cmd, args, cwd = root, env = process.env) {
+function run(name, cmd, args, cwd = root, env = pyEnv) {
   const child = spawn(cmd, args, {
     cwd,
     stdio: "inherit",

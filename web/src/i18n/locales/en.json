@@ -50,7 +50,11 @@
     "docGenerationError": "An error occurred while generating the document: {{error}}",
     "genericError": "Error: {{message}}",
     "viewDocument": "View document",
-    "download": "Download"
+    "download": "Download",
+    "templateButton": "Template",
+    "templateHelp": "PowerPoint template can be attached only before the first message.",
+    "templateAttachHint": "Attach a .pptx or .potx template only before the first message.",
+    "templateBasis": "Template basis"
   },
   "progress": {
     "preparing": "Preparing",

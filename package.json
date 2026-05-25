@@ -4,6 +4,7 @@
   "description": "DocuMind — Agentic AI document generation platform (PPTX/DOCX/PDF/XLSX)",
   "scripts": {
     "install:all": "node scripts/install-all.mjs",
+    "install:playwright": "node scripts/install-playwright.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:kill": "node scripts/dev-kill.mjs",
     "dev:api": "node scripts/run-api.mjs",

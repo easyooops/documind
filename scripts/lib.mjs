@@ -1,13 +1,70 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 
 const isWin = process.platform === "win32";
 
+/** Project-local venv (ASCII path under repo root; avoids user-profile encoding issues on Windows). */
+export function projectVenvDir(repoRoot) {
+  return path.join(repoRoot, ".venv");
+}
+
+export function venvPythonExecutable(venvDir) {
+  return path.join(venvDir, isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python");
+}
+
 /**
- * Resolve a working Python executable (Windows: python / py / python3).
- * Override with PYTHON=py or PYTHON=python3.12
+ * Environment for Python subprocesses: UTF-8 mode and caches under repo `.cache/`
+ * (keeps temp/pip paths off non-ASCII user profile directories when possible).
  */
-export function resolvePython() {
+export function pythonInstallEnv(base = process.env, repoRoot) {
+  const cacheDir = path.join(repoRoot, ".cache");
+  const tmpDir = path.join(cacheDir, "tmp");
+  const pipCache = path.join(cacheDir, "pip");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.mkdirSync(pipCache, { recursive: true });
+
+  return {
+    ...base,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+    PIP_CACHE_DIR: pipCache,
+    TEMP: tmpDir,
+    TMP: tmpDir,
+    TMPDIR: tmpDir,
+  };
+}
+
+/**
+ * Env for `python -m playwright install` (Node downloader).
+ * Uses OS trust store on Windows corporate networks (Zscaler, etc.).
+ */
+export function playwrightInstallEnv(base = process.env, repoRoot, venvPython) {
+  const env = pythonInstallEnv(base, repoRoot);
+  env.NODE_USE_SYSTEM_CA = "1";
+
+  if (base.NODE_EXTRA_CA_CERTS) {
+    return env;
+  }
+
+  const cert = spawnSync(venvPython, ["-m", "certifi"], {
+    encoding: "utf8",
+    env,
+    shell: isWin,
+  });
+  const caPath = cert.stdout?.trim();
+  if (cert.status === 0 && caPath && fs.existsSync(caPath)) {
+    env.NODE_EXTRA_CA_CERTS = caPath;
+  }
+
+  return env;
+}
+
+/**
+ * System Python (never the project venv). Override with PYTHON=py or PYTHON=python3.12.
+ */
+export function resolveSystemPython() {
   if (process.env.PYTHON) return process.env.PYTHON;
 
   const candidates = isWin
@@ -18,6 +75,7 @@ export function resolvePython() {
     const r = spawnSync(cmd, ["--version"], {
       stdio: "ignore",
       shell: isWin,
+      env: { ...process.env, PYTHONUTF8: "1" },
     });
     if (r.status === 0) return cmd;
   }
@@ -25,6 +83,36 @@ export function resolvePython() {
   throw new Error(
     "Python not found. Install Python 3.11+ and ensure it is on PATH, or set PYTHON (e.g. PYTHON=py on Windows)."
   );
+}
+
+/**
+ * Prefer project `.venv` when present; otherwise fall back to system Python.
+ */
+export function resolvePython(repoRoot) {
+  const venvPy = venvPythonExecutable(projectVenvDir(repoRoot));
+  if (fs.existsSync(venvPy)) return venvPy;
+  return resolveSystemPython();
+}
+
+/** Create `.venv` under repo root if missing; return path to venv python executable. */
+export function ensureProjectVenv(repoRoot) {
+  const venvDir = projectVenvDir(repoRoot);
+  const venvPy = venvPythonExecutable(venvDir);
+  if (fs.existsSync(venvPy)) return venvPy;
+
+  const systemPython = resolveSystemPython();
+  console.log(`\n> create project venv (${venvDir})\n`);
+  const env = pythonInstallEnv(process.env, repoRoot);
+  const result = spawnSync(systemPython, ["-m", "venv", venvDir], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    shell: isWin,
+    env,
+  });
+  if (result.status !== 0 || !fs.existsSync(venvPy)) {
+    throw new Error(`Failed to create virtual environment at ${venvDir}`);
+  }
+  return venvPy;
 }
 
 export const platform = {
@@ -143,7 +231,6 @@ export async function resolveDevPort(label, preferred) {
 export async function tryFreePort(label, port) {
   if (await isPortAvailable(port)) return true;
 
-  // Aggressively kill all processes on this port
   const pids = getAllListeningPids(port);
   if (pids.length > 0) {
     console.log(`[documind] Stopping previous ${label} on port ${port} (PIDs: ${pids.join(", ")})...`);
@@ -152,7 +239,6 @@ export async function tryFreePort(label, port) {
     }
   }
 
-  // Windows: also try PowerShell-based kill as a belt-and-suspenders approach
   if (isWin) {
     spawnSync("powershell", [
       "-NoProfile",
@@ -203,7 +289,6 @@ export function getListeningPid(port) {
 export function getAllListeningPids(port) {
   try {
     if (isWin) {
-      // Try PowerShell Get-NetTCPConnection first
       const r = spawnSync(
         "powershell",
         [
@@ -215,7 +300,6 @@ export function getAllListeningPids(port) {
       );
       let pids = r.stdout?.trim().split(/\r?\n/).filter(p => /^\d+$/.test(p)) ?? [];
 
-      // Fallback to netstat if PowerShell found nothing
       if (pids.length === 0) {
         const nr = spawnSync("cmd", ["/c", `netstat -ano | findstr LISTENING`], {
           encoding: "utf8",
@@ -253,7 +337,7 @@ export function getAllListeningPids(port) {
  */
 export function killAllOnPort(port) {
   if (!isWin) return;
-  const r = spawnSync(
+  spawnSync(
     "powershell",
     [
       "-NoProfile",

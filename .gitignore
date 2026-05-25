@@ -16,6 +16,9 @@ build/
 venv/
 env/
 
+# Install/runtime cache (ASCII paths under repo; used by install scripts on Windows)
+.cache/
+
 # Node.js
 node_modules/
 npm-debug.log*

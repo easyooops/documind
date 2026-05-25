@@ -77,11 +77,10 @@ export function MessageInput() {
   const FormatIcon = FORMAT_ICONS[selectedFormat];
   const isFirstTurn = !currentSessionId && messages.length === 0 && !isGenerating;
   const canAttachTemplate = selectedFormat === "pptx" && isFirstTurn;
-  const templateButtonLabel = locale === "en" ? "Template" : "템플릿";
-  const templateHelpText =
-    locale === "en"
-      ? "PowerPoint template can be attached only before the first message."
-      : "PowerPoint 템플릿은 첫 메시지 전 한 번만 첨부할 수 있습니다.";
+  const templateButtonLabel = t("chat.templateButton", { defaultValue: "Template" });
+  const templateHelpText = t("chat.templateHelp", {
+    defaultValue: "PowerPoint template can be attached only before the first message.",
+  });
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -238,9 +237,9 @@ export function MessageInput() {
     const extension = file.name.split(".").pop()?.toLowerCase();
     if (!canAttachTemplate || !["pptx", "potx"].includes(extension || "")) {
       setUploadError(
-        locale === "en"
-          ? "Attach a .pptx or .potx template before the first message."
-          : "첫 메시지 전 .pptx 또는 .potx 템플릿만 첨부할 수 있습니다."
+        t("chat.templateAttachHint", {
+          defaultValue: "Attach a .pptx or .potx template before the first message.",
+        })
       );
       e.target.value = "";
       return;
@@ -274,7 +273,7 @@ export function MessageInput() {
           <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-lg border border-primary/20 bg-primary/5 w-fit max-w-full">
             <Presentation className="w-4 h-4 text-primary flex-shrink-0" />
             <span className="text-xs font-medium text-primary flex-shrink-0">
-              {locale === "en" ? "Template basis" : "템플릿 기준"}
+              {t("chat.templateBasis", { defaultValue: "Template basis" })}
             </span>
             <span className="text-xs text-foreground truncate max-w-[14rem] sm:max-w-[24rem]">
               {attachedTemplate.filename}
