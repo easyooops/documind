@@ -20,6 +20,12 @@
     "noHistory": "대화 이력이 없습니다",
     "loading": "불러오는 중..."
   },
+  "navigation": {
+    "processingTitle": "문서 생성이 진행 중입니다",
+    "processingDescription": "다른 대화나 화면으로 이동하면 현재 진행 상황을 확인하기 어려울 수 있습니다. 계속 이동하시겠습니까?",
+    "stay": "계속 기다리기",
+    "leave": "이동하기"
+  },
   "language": {
     "label": "언어",
     "en": "English",
@@ -83,7 +89,9 @@
     "download": "다운로드",
     "versionHistory": "버전 이력",
     "noVersions": "버전 이력이 없습니다",
-    "loading": "로딩 중..."
+    "loading": "로딩 중...",
+    "qualityScore": "품질 {{score}}%",
+    "qualityScoreHelp": "생성 결과의 품질 점수입니다. 레이아웃 규칙 검사와 렌더링된 PPTX의 시각 품질 평가를 합산합니다."
   },
   "time": {
     "justNow": "방금 전",

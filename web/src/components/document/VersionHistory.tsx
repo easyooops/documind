@@ -67,9 +67,14 @@ export function VersionHistory({ jobId }: VersionHistoryProps) {
               <div className="min-w-0">
                 <p className="text-xs font-medium truncate">
                   v{v.versionNumber}
-                  {v.fidelityScore && (
-                    <span className="text-muted-foreground ml-1">
-                      ({Math.round(v.fidelityScore * 100)}%)
+                  {v.fidelityScore !== undefined && v.fidelityScore !== null && (
+                    <span
+                      className="text-muted-foreground ml-1"
+                      title={t("document.qualityScoreHelp")}
+                    >
+                      ({t("document.qualityScore", {
+                        score: Math.round(v.fidelityScore * 100),
+                      })})
                     </span>
                   )}
                 </p>

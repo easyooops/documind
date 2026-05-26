@@ -94,11 +94,12 @@ class CSStoOOXMLEngine:
             slide = prs.slides.add_slide(layout)
             elements = parse_slide_html(html)
             slide_type = slide_data.get("metadata", {}).get("slide_type", "content")
-            native_title_applied = (
-                using_template
-                and slide_type not in {"cover", "section"}
-                and self._apply_native_title(slide, elements)
-            )
+            template_background_is_dark = None
+            if using_template:
+                # Generated HTML already includes its own title. Populating a template
+                # title placeholder duplicates that title and can inherit oversized fonts.
+                self._remove_slide_placeholders(slide)
+                template_background_is_dark = self._template_background_is_dark(slide)
 
             for element in elements:
                 try:
@@ -109,13 +110,13 @@ class CSStoOOXMLEngine:
                         # Template footers belong to the native master/layout,
                         # rather than generated overlay HTML.
                         continue
-                    if native_title_applied and self._is_generated_header(element):
-                        # Native title placeholders and master chrome replace
-                        # synthetic header shapes.
-                        continue
                     if self._is_background_element(element):
                         self._apply_slide_background(slide, element)
                         continue
+                    if using_template:
+                        self._prepare_element_for_template(
+                            element, slide_type, template_background_is_dark
+                        )
                     self._add_element(slide, element)
                 except Exception as e:
                     logger.warning(
@@ -150,6 +151,78 @@ class CSStoOOXMLEngine:
         for slide_id in list(slide_ids):
             presentation.part.drop_rel(slide_id.rId)
             slide_ids.remove(slide_id)
+
+    def _remove_slide_placeholders(self, slide) -> None:
+        """Remove empty cloned placeholders before generated content is overlaid."""
+        for placeholder in list(slide.placeholders):
+            element = placeholder._element
+            parent = element.getparent()
+            if parent is not None:
+                parent.remove(element)
+
+    def _template_background_is_dark(self, slide) -> bool:
+        """Infer template backdrop contrast, defaulting to PowerPoint's white canvas."""
+        slide_width = 960 * PX_TO_EMU
+        slide_height = 540 * PX_TO_EMU
+        shape_sources = (
+            list(getattr(slide.slide_layout, "shapes", []))
+            + list(getattr(slide.slide_layout.slide_master, "shapes", []))
+        )
+        for shape in reversed(shape_sources):
+            if (
+                getattr(shape, "width", 0) < slide_width * 0.9
+                or getattr(shape, "height", 0) < slide_height * 0.9
+            ):
+                continue
+            color = self._shape_fill_color(shape)
+            if color:
+                return self._is_dark_color(color)
+        try:
+            color = str(slide.background.fill.fore_color.rgb)
+            if color:
+                return self._is_dark_color(color)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        return False
+
+    def _shape_fill_color(self, shape) -> str | None:
+        try:
+            rgb = shape.fill.fore_color.rgb
+            return str(rgb).lower() if rgb else None
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _prepare_element_for_template(
+        self, element: ParsedElement, slide_type: str, background_is_dark: bool | None
+    ) -> None:
+        """Make generated overlays legible against an inherited template backdrop."""
+        if background_is_dark is None:
+            return
+
+        is_exposed_heading = slide_type in {"cover", "section"} or self._is_generated_header(
+            element
+        )
+        if is_exposed_heading and element.pptx_type == "textbox":
+            if not self._has_background(element.styles):
+                color = self._extract_color(element.styles.get("color", ""))
+                if color and self._is_dark_color(color) == background_is_dark:
+                    element.styles["color"] = "#ffffff" if background_is_dark else "#1e293b"
+
+        if background_is_dark or self._is_background_element(element):
+            return
+        if element.pptx_type not in {"shape", "textbox"}:
+            return
+        if "border" in element.styles:
+            return
+        pos = element.position
+        if pos.get("width", 0) < 80 or pos.get("height", 0) < 32:
+            return
+        fill_color = self._extract_color(
+            element.styles.get("background-color", "")
+            or element.styles.get("background", "")
+        )
+        if fill_color and not self._is_dark_color(fill_color):
+            element.styles["border"] = "1px solid #e2e8f0"
 
     def _apply_native_title(self, slide, elements: list[ParsedElement]) -> bool:
         """Fill a template title placeholder using generated heading text."""
@@ -606,7 +679,7 @@ class CSStoOOXMLEngine:
         container_w = element.position.get("width", 0)
 
         if container_w > 0 and container_h > 0 and text:
-            usable_w = container_w - pad_left - pad_right
+            usable_w = max(1.0, container_w - pad_left - pad_right)
             usable_h = container_h - pad_top - pad_bottom
 
             paragraphs_for_calc = [p for p in text.split("\n") if p.strip()]
@@ -618,7 +691,11 @@ class CSStoOOXMLEngine:
             if any('\uac00' <= c <= '\ud7a3' for c in text):
                 char_width_ratio = 0.85
 
-            chars_per_line = int(usable_w / (font_size_px * char_width_ratio)) if font_size_px > 0 else 999
+            chars_per_line = (
+                max(1, int(usable_w / (font_size_px * char_width_ratio)))
+                if font_size_px > 0
+                else 999
+            )
             actual_lines = 0
             for para in paragraphs_for_calc:
                 lines_needed = max(1, -(-len(para) // chars_per_line))

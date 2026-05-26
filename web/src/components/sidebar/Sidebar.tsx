@@ -16,6 +16,13 @@ import {
   Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSessionStore } from "@/stores/session";
 import { useUserStore } from "@/stores/user";
@@ -63,6 +70,7 @@ export function Sidebar({
     sessions,
     currentSessionId,
     isLoadingSession,
+    isGenerating,
     reset,
   } = useSessionStore();
   const { user, clearUser } = useUserStore();
@@ -70,11 +78,36 @@ export function Sidebar({
   const locale = useLocaleStore((s) => s.locale);
   const { t } = useTranslation();
   const selectSession = useSessionSelect(onSessionSelect);
+  const [pendingNavigation, setPendingNavigation] = React.useState<
+    (() => void | Promise<void>) | null
+  >(null);
 
-  const handleNewChat = () => {
+  const requestNavigation = (action: () => void | Promise<void>) => {
+    if (isGenerating) {
+      setPendingNavigation(() => action);
+      return;
+    }
+    void action();
+  };
+
+  const handleNewChat = () => requestNavigation(() => {
     reset();
     documentStore.reset();
     onSessionSelect?.();
+  });
+
+  const handleSessionSelect = (sessionId: string) => {
+    if (sessionId === currentSessionId) {
+      onSessionSelect?.();
+      return;
+    }
+    requestNavigation(() => selectSession(sessionId));
+  };
+
+  const continueNavigation = () => {
+    const action = pendingNavigation;
+    setPendingNavigation(null);
+    if (action) void action();
   };
 
   const sidebarWidth = collapsed && !isMobile ? 60 : 280;
@@ -155,7 +188,7 @@ export function Sidebar({
             <button
               key={session.id}
               type="button"
-              onClick={() => selectSession(session.id)}
+              onClick={() => handleSessionSelect(session.id)}
               disabled={isLoadingSession}
               className={cn(
                 "w-full min-w-0 text-left rounded-lg text-sm transition-colors duration-150",
@@ -232,7 +265,7 @@ export function Sidebar({
               variant="ghost"
               size="icon"
               className="h-7 w-7 flex-shrink-0"
-              onClick={clearUser}
+              onClick={() => requestNavigation(clearUser)}
               aria-label="Log out"
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -240,6 +273,25 @@ export function Sidebar({
           </div>
         </div>
       )}
+      <Dialog
+        open={pendingNavigation !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingNavigation(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t("navigation.processingTitle")}</DialogTitle>
+            <DialogDescription>{t("navigation.processingDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setPendingNavigation(null)}>
+              {t("navigation.stay")}
+            </Button>
+            <Button onClick={continueNavigation}>{t("navigation.leave")}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </motion.aside>
   );
 }

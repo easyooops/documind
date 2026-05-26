@@ -58,7 +58,8 @@ ALWAYS include font-family:'Pretendard' in style. Use ONLY these sizes and weigh
 
 ### Color Usage (THEME-BOUND with VARIATIONS)
 You will receive design_tokens from the design system:
-1. Card backgrounds: use card_fills array + #FFFFFF is ALLOWED for contrast variety
+1. Card backgrounds: use card_fills array; #FFFFFF is allowed only with a visible
+   1px neutral border on a white or near-white slide background
 2. Create depth by mixing: dark cards (primary/secondary) + light cards (tints) + white cards
 3. Text on dark backgrounds: use text_on_dark token
 4. Text on light/white backgrounds: use text_primary or text_secondary
@@ -92,6 +93,7 @@ Apply box-shadow on cards that need emphasis:
 - All cards the same shade (monotone)
 - No visual hierarchy (everything same size + color)
 - Ignoring gradients entirely (flat looks cheap)
+- White cards without a boundary on white slide backgrounds
 
 ## Text Overflow Prevention (CRITICAL — elements must NOT exceed bounds)
 
@@ -167,12 +169,13 @@ When creating nested cards, ALWAYS place in this order:
 - Body text: starts at container.top + header_height + 8px padding
 - Text inside cards: use LINE BREAKS (\n) between bullets, NOT middle dots (·)
 - Each bullet line: max 20 characters (Korean) or 25 characters (English)
-- Cards NEVER have visible borders — use background-color contrast only
+- Prefer background-color contrast; on white template backgrounds, white cards MUST
+  use a subtle 1px neutral border so their boundary remains visible
 - Calculate card height: (lines × font_size × line_height) + header_height + padding
 
 ## Border & Line Rules
 
-1. ALL borders: NONE (use background-color differences)
+1. Card borders: normally none; use 1px #E2E8F0 only when a light card would disappear into a light background
 2. Separator lines: height:1px, background:#E2E8F0 (only between major sections)
 3. Table borders: 0.5px #E2E8F0
 4. Accent bars: width:48px, height:3px (title only)
@@ -212,6 +215,7 @@ rect, rounded_rect, oval, chevron, right_arrow, left_arrow, diamond
 - Only textbox elements (no visual variety)
 - No icons anywhere on slide
 - Slides without at least one non-text visual element (table, chart, KPI, or process flow)
+- Overlapping independent tables, charts, or cards; leave at least 12px between them
 
 ## Icon Usage (Iconify API — 100+ icons available)
 

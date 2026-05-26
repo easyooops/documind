@@ -101,13 +101,16 @@ async def unified_planner(state: DocuMindState) -> dict:
             "header, footer, slide order, and all content that the request does not explicitly "
             "change. "
             "Return `changed_slide_indices` containing ONLY slides that must be regenerated. "
+            "Return `removed_slide_indices` only when the user explicitly requests deletion. "
             "Also return `revision_scope` as one of `minimal_patch`, `slide_rewrite`, or "
             "`layout_redesign`. Use `minimal_patch` for small factual/wording corrections; "
             "`slide_rewrite` when the user asks to replace, substantially update, or rewrite a "
             "slide's contents; and `layout_redesign` when composition or visual elements must "
             "change. A changed slide may be fully rewritten when the selected scope requires it. "
             "Keep unchanged slide blueprints identical and preserve the global header/footer/style "
-            "unless the product explicitly permits a separate global style edit.\n"
+            "unless the product explicitly permits a separate global style edit. Do not add, "
+            "delete, reorder, or redesign slides unless that action is explicitly requested. "
+            "If the request is ambiguous, prefer no structural change and a minimal patch.\n"
             f"Selected parent version: v{base_version.get('version_number')}\n"
             f"Parent title and slide plan:\n"
             f"{json.dumps(base_version.get('slide_plan', []), ensure_ascii=False, indent=2)[:7000]}"
@@ -186,7 +189,7 @@ async def unified_planner(state: DocuMindState) -> dict:
     changed_indices = result.get("changed_slide_indices")
     if base_version:
         if not isinstance(changed_indices, list):
-            changed_indices = [bp.get("index") for bp in slide_blueprints]
+            changed_indices = []
         changed_indices = [
             int(index) for index in changed_indices
             if isinstance(index, int) or (isinstance(index, str) and index.isdigit())
@@ -201,15 +204,27 @@ async def unified_planner(state: DocuMindState) -> dict:
             bp for bp in base_version.get("slide_plan", []) if isinstance(bp, dict)
         ]
         parent_indices = {bp.get("index") for bp in parent_plan}
+        allow_additions = _requests_slide_addition(user_query)
+        allow_deletions = _requests_slide_deletion(user_query)
+        removed_indices = (
+            set(_normalize_indices(result.get("removed_slide_indices")))
+            if allow_deletions
+            else set()
+        )
+        if not allow_additions:
+            changed_set &= parent_indices
+            changed_indices = [index for index in changed_indices if index in parent_indices]
         merged_plan = [
             generated_by_index.get(bp.get("index"), bp)
             if bp.get("index") in changed_set else bp
             for bp in parent_plan
+            if bp.get("index") not in removed_indices
         ]
-        merged_plan.extend(
-            bp for bp in slide_blueprints
-            if bp.get("index") not in parent_indices and bp.get("index") in changed_set
-        )
+        if allow_additions:
+            merged_plan.extend(
+                bp for bp in slide_blueprints
+                if bp.get("index") not in parent_indices and bp.get("index") in changed_set
+            )
         slide_blueprints = _normalize_blueprints(merged_plan)
 
     revision_scope = (
@@ -255,6 +270,38 @@ def _normalize_revision_scope(value: object, user_query: str) -> str:
     if any(signal in text for signal in rewrite_signals):
         return "slide_rewrite"
     return "minimal_patch"
+
+
+def _normalize_indices(value: object) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    return [
+        int(index)
+        for index in value
+        if isinstance(index, int) or (isinstance(index, str) and index.isdigit())
+    ]
+
+
+def _requests_slide_addition(user_query: str) -> bool:
+    text = user_query.lower()
+    return any(
+        signal in text
+        for signal in (
+            "슬라이드 추가", "페이지 추가", "장 추가", "한 장 더", "새 슬라이드",
+            "add slide", "add a slide", "new slide", "append slide",
+        )
+    )
+
+
+def _requests_slide_deletion(user_query: str) -> bool:
+    text = user_query.lower()
+    return any(
+        signal in text
+        for signal in (
+            "슬라이드 삭제", "페이지 삭제", "장 삭제", "슬라이드 제거", "페이지 제거",
+            "remove slide", "delete slide", "drop slide",
+        )
+    )
 
 
 def _normalize_blueprints(slides: list) -> list[dict]:

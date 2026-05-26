@@ -20,6 +20,12 @@
     "noHistory": "No conversation history yet",
     "loading": "Loading..."
   },
+  "navigation": {
+    "processingTitle": "Document generation is in progress",
+    "processingDescription": "Moving to another conversation or screen can make the current progress harder to track. Do you want to continue?",
+    "stay": "Stay here",
+    "leave": "Continue"
+  },
   "language": {
     "label": "Language",
     "en": "English",
@@ -83,7 +89,9 @@
     "download": "Download",
     "versionHistory": "Version history",
     "noVersions": "No version history",
-    "loading": "Loading..."
+    "loading": "Loading...",
+    "qualityScore": "Quality {{score}}%",
+    "qualityScoreHelp": "Quality score combining layout-rule checks and visual evaluation of the rendered PowerPoint output."
   },
   "time": {
     "justNow": "Just now",

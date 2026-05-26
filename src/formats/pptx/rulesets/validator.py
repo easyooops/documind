@@ -737,28 +737,22 @@ class DesignQualityEvaluator:
         pos_a = el_a.get("position", {})
         pos_b = el_b.get("position", {})
 
-        a_inside_b = (
-            pos_a.get("left", 0) >= pos_b.get("left", 0) - 2
-            and pos_a.get("top", 0) >= pos_b.get("top", 0) - 2
-            and pos_a.get("left", 0) + pos_a.get("width", 0) <= pos_b.get("left", 0) + pos_b.get("width", 0) + 2
-            and pos_a.get("top", 0) + pos_a.get("height", 0) <= pos_b.get("top", 0) + pos_b.get("height", 0) + 2
-        )
-        b_inside_a = (
-            pos_b.get("left", 0) >= pos_a.get("left", 0) - 2
-            and pos_b.get("top", 0) >= pos_a.get("top", 0) - 2
-            and pos_b.get("left", 0) + pos_b.get("width", 0) <= pos_a.get("left", 0) + pos_a.get("width", 0) + 2
-            and pos_b.get("top", 0) + pos_b.get("height", 0) <= pos_a.get("top", 0) + pos_a.get("height", 0) + 2
-        )
-
-        if a_inside_b or b_inside_a:
-            return True
-
         for el in all_elements:
             if el.get("pptx_type") == "shape":
                 shape_pos = el.get("position", {})
                 sl, st = shape_pos.get("left", 0), shape_pos.get("top", 0)
                 sr = sl + shape_pos.get("width", 0)
                 sb = st + shape_pos.get("height", 0)
+                canvas = self._ruleset.canvas.get("canvas", {})
+                canvas_w = canvas.get("width_px", 960)
+                canvas_h = canvas.get("height_px", 540)
+                if (
+                    shape_pos.get("width", 0) >= canvas_w * 0.9
+                    and shape_pos.get("height", 0) >= canvas_h * 0.9
+                ):
+                    # The injected slide background contains every object and must
+                    # not turn real table/card collisions into intentional nesting.
+                    continue
 
                 a_in_shape = (pos_a.get("left", 0) >= sl - 2 and pos_a.get("top", 0) >= st - 2
                               and pos_a.get("left", 0) + pos_a.get("width", 0) <= sr + 2

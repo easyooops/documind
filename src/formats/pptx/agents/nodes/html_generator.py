@@ -431,12 +431,21 @@ Heading Font: {font_heading}
 Body Font: {font_body}
 
 CRITICAL COLOR RULES:
-- Card backgrounds: pick from Card Fills ONLY — never use #FFFFFF
+- Card backgrounds: pick from Card Fills. White is allowed only with a visible
+  1px neutral boundary when it sits on a white or near-white background.
 - Text on dark cards: use Text On Dark color ({text_on_dark})
 - Section labels and accent bars: use Accent color
 - Body text: use Text Primary or Text Secondary
 - Cover: use Cover Background gradient
 - Use Heading Font and Body Font exactly; do not substitute a default font
+"""
+        if master_context.get("source") == "template":
+            design_section += """
+## Uploaded Template Legibility Rules
+- The final PPTX inherits the uploaded template backdrop, which may be white.
+- Never place white or pale text directly on a light cover/background.
+- Keep independent content boxes, tables, and charts separated by at least 12px.
+- Do not create a second title element in the body; the header title is injected once.
 """
         hf = design_system.get("header_footer", {})
         if hf:
@@ -554,6 +563,7 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
     hf = design_system.get("header_footer", {})
     section_label = blueprint.get("section_label", "")
     title_text = blueprint.get("title", "")
+    title_font_size = _header_title_font_size(title_text)
     footer_left = hf.get("footer_left", "") if hf else ""
     footer_right_tpl = hf.get("footer_right", "Page {n}") if hf else "Page {n}"
     # Ensure single-line page number
@@ -571,7 +581,7 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
         f"width:300px;height:14px;font-size:11px;font-weight:500;font-family:'{font_body}';color:{accent}\">"
         f'{section_label}</div>\n'
         f'  <div data-pptx-region="header" data-pptx-type="textbox" style="position:absolute;left:40px;top:32px;'
-        f"width:860px;height:30px;font-size:22px;font-weight:700;font-family:'{font_heading}';color:{text_primary}\">"
+        f"width:860px;height:30px;font-size:{title_font_size}px;font-weight:700;font-family:'{font_heading}';color:{text_primary}\">"
         f'{title_text}</div>\n'
         f'  <div data-pptx-region="header" data-pptx-type="shape" data-pptx-shape="rect" style="position:absolute;'
         f'left:40px;top:68px;width:48px;height:3px;background-color:{accent}"></div>'
@@ -603,6 +613,16 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
     parts.append("</div>")
 
     return "".join(parts)
+
+
+def _header_title_font_size(title: str) -> int:
+    """Keep assertive, long Korean headings within the one-line template header."""
+    title_length = len(title.strip())
+    if title_length <= 36:
+        return 22
+    if title_length <= 48:
+        return 20
+    return 18
 
 
 def _extract_body_only(html: str) -> list[str]:

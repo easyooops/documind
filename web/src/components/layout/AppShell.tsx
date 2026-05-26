@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useSessionsLoader } from "@/hooks/useSessions";
+import { useSessionStore } from "@/stores/session";
 
 export function AppShell() {
   const { isIdentified } = useUserStore();
@@ -22,8 +23,19 @@ export function AppShell() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const isMobileSidebarOpen = !isDesktop && mobileSidebarOpen;
+  const isGenerating = useSessionStore((s) => s.isGenerating);
 
   useSessionsLoader();
+
+  React.useEffect(() => {
+    if (!isGenerating) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [isGenerating]);
 
   if (!isIdentified) {
     return <UserIdentifyModal />;
