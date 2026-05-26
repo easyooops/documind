@@ -1,0 +1,203 @@
+{
+  "$id": "color_themes",
+  "version": "1.0.0",
+  "description": "Predefined high-quality color themes with controlled variations. Each theme defines a strict palette; slides vary ONLY within the defined tints/shades.",
+
+  "selection_rule": "Pick ONE theme per presentation. All slides use ONLY colors from that theme's palette. Variations allowed only within defined 'tints' and 'shades' ranges.",
+
+  "themes": {
+    "corporate_navy": {
+      "name": "Corporate Navy",
+      "mood": "Professional, authoritative, trustworthy",
+      "tokens": {
+        "primary": "#1E293B",
+        "secondary": "#334155",
+        "accent": "#3B82F6",
+        "background": "#F8FAFC",
+        "surface": "#FFFFFF",
+        "text_primary": "#0F172A",
+        "text_secondary": "#64748B",
+        "text_on_dark": "#F1F5F9"
+      },
+      "card_fills": ["#F1F5F9", "#E2E8F0", "#DBEAFE", "#1E293B", "#334155"],
+      "accent_variants": ["#2563EB", "#3B82F6", "#60A5FA", "#93C5FD"],
+      "chart_colors": ["#3B82F6", "#1E293B", "#10B981", "#F59E0B"],
+      "semantic": {"positive": "#10B981", "negative": "#EF4444", "warning": "#F59E0B"},
+      "cover_background": "linear-gradient(135deg, #0F172A, #1E293B)",
+      "body_background": "#F8FAFC"
+    },
+
+    "forest_green": {
+      "name": "Forest Green",
+      "mood": "Growth, sustainability, innovation",
+      "tokens": {
+        "primary": "#064E3B",
+        "secondary": "#065F46",
+        "accent": "#10B981",
+        "background": "#F0FDF4",
+        "surface": "#FFFFFF",
+        "text_primary": "#022C22",
+        "text_secondary": "#4B5563",
+        "text_on_dark": "#ECFDF5"
+      },
+      "card_fills": ["#ECFDF5", "#D1FAE5", "#A7F3D0", "#064E3B", "#065F46"],
+      "accent_variants": ["#059669", "#10B981", "#34D399", "#6EE7B7"],
+      "chart_colors": ["#10B981", "#064E3B", "#3B82F6", "#F59E0B"],
+      "semantic": {"positive": "#10B981", "negative": "#EF4444", "warning": "#F59E0B"},
+      "cover_background": "linear-gradient(135deg, #022C22, #064E3B)",
+      "body_background": "#F0FDF4"
+    },
+
+    "midnight_indigo": {
+      "name": "Midnight Indigo",
+      "mood": "Innovation, technology, depth",
+      "tokens": {
+        "primary": "#1E1B4B",
+        "secondary": "#312E81",
+        "accent": "#6366F1",
+        "background": "#F5F3FF",
+        "surface": "#FFFFFF",
+        "text_primary": "#1E1B4B",
+        "text_secondary": "#6B7280",
+        "text_on_dark": "#E0E7FF"
+      },
+      "card_fills": ["#EEF2FF", "#E0E7FF", "#C7D2FE", "#1E1B4B", "#312E81"],
+      "accent_variants": ["#4F46E5", "#6366F1", "#818CF8", "#A5B4FC"],
+      "chart_colors": ["#6366F1", "#1E1B4B", "#EC4899", "#F59E0B"],
+      "semantic": {"positive": "#10B981", "negative": "#EF4444", "warning": "#F59E0B"},
+      "cover_background": "linear-gradient(135deg, #0F0A3C, #1E1B4B)",
+      "body_background": "#F5F3FF"
+    },
+
+    "warm_amber": {
+      "name": "Warm Amber",
+      "mood": "Energy, creativity, warmth",
+      "tokens": {
+        "primary": "#78350F",
+        "secondary": "#92400E",
+        "accent": "#F59E0B",
+        "background": "#FFFBEB",
+        "surface": "#FFFFFF",
+        "text_primary": "#451A03",
+        "text_secondary": "#6B7280",
+        "text_on_dark": "#FEF3C7"
+      },
+      "card_fills": ["#FEF3C7", "#FDE68A", "#FCD34D", "#78350F", "#92400E"],
+      "accent_variants": ["#D97706", "#F59E0B", "#FBBF24", "#FCD34D"],
+      "chart_colors": ["#F59E0B", "#78350F", "#3B82F6", "#EF4444"],
+      "semantic": {"positive": "#10B981", "negative": "#EF4444", "warning": "#F59E0B"},
+      "cover_background": "linear-gradient(135deg, #451A03, #78350F)",
+      "body_background": "#FFFBEB"
+    },
+
+    "ocean_teal": {
+      "name": "Ocean Teal",
+      "mood": "Calm, clarity, expertise",
+      "tokens": {
+        "primary": "#134E4A",
+        "secondary": "#115E59",
+        "accent": "#14B8A6",
+        "background": "#F0FDFA",
+        "surface": "#FFFFFF",
+        "text_primary": "#042F2E",
+        "text_secondary": "#4B5563",
+        "text_on_dark": "#CCFBF1"
+      },
+      "card_fills": ["#CCFBF1", "#99F6E4", "#5EEAD4", "#134E4A", "#115E59"],
+      "accent_variants": ["#0D9488", "#14B8A6", "#2DD4BF", "#5EEAD4"],
+      "chart_colors": ["#14B8A6", "#134E4A", "#6366F1", "#F59E0B"],
+      "semantic": {"positive": "#10B981", "negative": "#EF4444", "warning": "#F59E0B"},
+      "cover_background": "linear-gradient(135deg, #042F2E, #134E4A)",
+      "body_background": "#F0FDFA"
+    },
+
+    "slate_rose": {
+      "name": "Slate Rose",
+      "mood": "Elegant, sophisticated, modern",
+      "tokens": {
+        "primary": "#1C1917",
+        "secondary": "#292524",
+        "accent": "#F43F5E",
+        "background": "#FAFAF9",
+        "surface": "#FFFFFF",
+        "text_primary": "#0C0A09",
+        "text_secondary": "#78716C",
+        "text_on_dark": "#FFF1F2"
+      },
+      "card_fills": ["#F5F5F4", "#E7E5E4", "#FFE4E6", "#1C1917", "#292524"],
+      "accent_variants": ["#E11D48", "#F43F5E", "#FB7185", "#FDA4AF"],
+      "chart_colors": ["#F43F5E", "#1C1917", "#3B82F6", "#10B981"],
+      "semantic": {"positive": "#10B981", "negative": "#EF4444", "warning": "#F59E0B"},
+      "cover_background": "linear-gradient(135deg, #0C0A09, #1C1917)",
+      "body_background": "#FAFAF9"
+    },
+
+    "royal_purple": {
+      "name": "Royal Purple",
+      "mood": "Premium, creative, visionary",
+      "tokens": {
+        "primary": "#3B0764",
+        "secondary": "#581C87",
+        "accent": "#A855F7",
+        "background": "#FAF5FF",
+        "surface": "#FFFFFF",
+        "text_primary": "#1A0033",
+        "text_secondary": "#6B7280",
+        "text_on_dark": "#F3E8FF"
+      },
+      "card_fills": ["#F3E8FF", "#E9D5FF", "#D8B4FE", "#3B0764", "#581C87"],
+      "accent_variants": ["#7C3AED", "#A855F7", "#C084FC", "#D8B4FE"],
+      "chart_colors": ["#A855F7", "#3B0764", "#F43F5E", "#14B8A6"],
+      "semantic": {"positive": "#10B981", "negative": "#EF4444", "warning": "#F59E0B"},
+      "cover_background": "linear-gradient(135deg, #1A0033, #3B0764)",
+      "body_background": "#FAF5FF"
+    },
+
+    "steel_blue": {
+      "name": "Steel Blue",
+      "mood": "Technical, reliable, systematic",
+      "tokens": {
+        "primary": "#1E3A5F",
+        "secondary": "#2C5282",
+        "accent": "#4299E1",
+        "background": "#EBF8FF",
+        "surface": "#FFFFFF",
+        "text_primary": "#1A365D",
+        "text_secondary": "#4A5568",
+        "text_on_dark": "#BEE3F8"
+      },
+      "card_fills": ["#BEE3F8", "#90CDF4", "#63B3ED", "#1E3A5F", "#2C5282"],
+      "accent_variants": ["#2B6CB0", "#4299E1", "#63B3ED", "#90CDF4"],
+      "chart_colors": ["#4299E1", "#1E3A5F", "#48BB78", "#ED8936"],
+      "semantic": {"positive": "#48BB78", "negative": "#FC8181", "warning": "#ED8936"},
+      "cover_background": "linear-gradient(135deg, #1A365D, #1E3A5F)",
+      "body_background": "#EBF8FF"
+    }
+  },
+
+  "color_variation_rules": {
+    "max_deviation_from_token": "10%",
+    "allow_opacity_variation": true,
+    "opacity_range": [0.7, 1.0],
+    "tint_generation": "Lighten primary by 85-95% for light tints",
+    "shade_generation": "Darken accent by 10-20% for emphasis",
+    "forbidden": ["Pure #FFFFFF as card backgrounds (use theme's card_fills)", "Random colors not in theme palette", "More than 2 off-theme colors per deck"]
+  },
+
+  "usage_guidelines": {
+    "cover_slide": {
+      "background": "Use cover_background (gradient)",
+      "text": "Use text_on_dark for all text",
+      "accent_bar": "Not needed on cover"
+    },
+    "content_slide": {
+      "background": "Use body_background (light subtle tint)",
+      "card_backgrounds": "Rotate through card_fills array — dark cards (primary/secondary) for headers, light cards for body",
+      "text": "Use text_primary for headings, text_secondary for body on light backgrounds",
+      "accent_elements": "Use accent for section labels, accent bars, badges, KPI highlights",
+      "charts": "Use chart_colors in order"
+    },
+    "dark_card_ratio": "At least 1-2 dark-background cards per content slide for visual depth",
+    "white_usage": "Pure white (#FFFFFF) limited to surface token ONLY — never as primary card background"
+  }
+}

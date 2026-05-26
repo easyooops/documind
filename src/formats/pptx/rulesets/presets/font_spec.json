@@ -1,0 +1,268 @@
+{
+  "$id": "font_spec",
+  "version": "1.0.0",
+  "description": "Precise font specification for every text role in the presentation. Ensures HTML→PPTX conversion maintains exact font styling.",
+
+  "font_roles": {
+    "cover_title": {
+      "font_family": "Pretendard",
+      "font_size_px": 42,
+      "font_weight": 800,
+      "line_height": 1.15,
+      "letter_spacing_px": -0.5,
+      "color_source": "theme.text_on_dark",
+      "text_align": "left",
+      "max_lines": 2,
+      "max_chars_per_line": 18
+    },
+    "cover_subtitle": {
+      "font_family": "Pretendard",
+      "font_size_px": 16,
+      "font_weight": 400,
+      "line_height": 1.5,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_on_dark",
+      "text_align": "left",
+      "max_lines": 2,
+      "max_chars_per_line": 40
+    },
+    "cover_author": {
+      "font_family": "Pretendard",
+      "font_size_px": 12,
+      "font_weight": 400,
+      "line_height": 1.4,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_on_dark",
+      "text_align": "left",
+      "max_lines": 1,
+      "max_chars_per_line": 30
+    },
+    "cover_date": {
+      "font_family": "Pretendard",
+      "font_size_px": 11,
+      "font_weight": 400,
+      "line_height": 1.3,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_on_dark",
+      "text_align": "left",
+      "max_lines": 1,
+      "max_chars_per_line": 20
+    },
+
+    "section_label": {
+      "font_family": "Pretendard",
+      "font_size_px": 11,
+      "font_weight": 500,
+      "line_height": 1.2,
+      "letter_spacing_px": 0.3,
+      "color_source": "theme.accent",
+      "text_align": "left",
+      "max_lines": 1,
+      "max_chars_per_line": 30
+    },
+    "slide_title": {
+      "font_family": "Pretendard",
+      "font_size_px": 22,
+      "font_weight": 700,
+      "line_height": 1.2,
+      "letter_spacing_px": -0.3,
+      "color_source": "theme.text_primary",
+      "text_align": "left",
+      "max_lines": 2,
+      "max_chars_per_line": 35
+    },
+    "section_title": {
+      "font_family": "Pretendard",
+      "font_size_px": 28,
+      "font_weight": 700,
+      "line_height": 1.2,
+      "letter_spacing_px": -0.3,
+      "color_source": "theme.text_on_dark",
+      "text_align": "left",
+      "max_lines": 2,
+      "max_chars_per_line": 25
+    },
+
+    "card_header": {
+      "font_family": "Pretendard",
+      "font_size_px": 14,
+      "font_weight": 700,
+      "line_height": 1.3,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_on_dark",
+      "text_align": "left",
+      "max_lines": 1,
+      "max_chars_per_line": 20
+    },
+    "card_title": {
+      "font_family": "Pretendard",
+      "font_size_px": 13,
+      "font_weight": 600,
+      "line_height": 1.3,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_primary",
+      "text_align": "left",
+      "max_lines": 2,
+      "max_chars_per_line": 25
+    },
+    "card_body": {
+      "font_family": "Pretendard",
+      "font_size_px": 11,
+      "font_weight": 400,
+      "line_height": 1.5,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_secondary",
+      "text_align": "left",
+      "max_lines": 6,
+      "max_chars_per_line": 30
+    },
+
+    "body": {
+      "font_family": "Pretendard",
+      "font_size_px": 13,
+      "font_weight": 400,
+      "line_height": 1.5,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_primary",
+      "text_align": "left",
+      "max_lines": 8,
+      "max_chars_per_line": 45
+    },
+    "body_bold": {
+      "font_family": "Pretendard",
+      "font_size_px": 13,
+      "font_weight": 700,
+      "line_height": 1.5,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_primary",
+      "text_align": "left",
+      "max_lines": 8,
+      "max_chars_per_line": 45
+    },
+    "subtitle": {
+      "font_family": "Pretendard",
+      "font_size_px": 15,
+      "font_weight": 400,
+      "line_height": 1.4,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_secondary",
+      "text_align": "left",
+      "max_lines": 2,
+      "max_chars_per_line": 50
+    },
+
+    "kpi_value": {
+      "font_family": "Pretendard",
+      "font_size_px": 32,
+      "font_weight": 700,
+      "line_height": 1.1,
+      "letter_spacing_px": -0.5,
+      "color_source": "theme.accent",
+      "text_align": "center",
+      "max_lines": 1,
+      "max_chars_per_line": 8
+    },
+    "kpi_label": {
+      "font_family": "Pretendard",
+      "font_size_px": 10,
+      "font_weight": 400,
+      "line_height": 1.3,
+      "letter_spacing_px": 0.2,
+      "color_source": "theme.text_secondary",
+      "text_align": "center",
+      "max_lines": 1,
+      "max_chars_per_line": 15
+    },
+
+    "caption": {
+      "font_family": "Pretendard",
+      "font_size_px": 10,
+      "font_weight": 400,
+      "line_height": 1.3,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_secondary",
+      "text_align": "left",
+      "max_lines": 2,
+      "max_chars_per_line": 50
+    },
+    "footer_text": {
+      "font_family": "Pretendard",
+      "font_size_px": 9,
+      "font_weight": 400,
+      "line_height": 1.2,
+      "letter_spacing_px": 0,
+      "color_source": "#94A3B8",
+      "text_align": "left",
+      "max_lines": 1,
+      "max_chars_per_line": 40
+    },
+    "badge": {
+      "font_family": "Pretendard",
+      "font_size_px": 10,
+      "font_weight": 600,
+      "line_height": 1.2,
+      "letter_spacing_px": 0.5,
+      "color_source": "theme.text_on_dark",
+      "text_align": "center",
+      "max_lines": 1,
+      "max_chars_per_line": 12
+    },
+    "table_header": {
+      "font_family": "Pretendard",
+      "font_size_px": 10,
+      "font_weight": 700,
+      "line_height": 1.3,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_on_dark",
+      "text_align": "left",
+      "max_lines": 1,
+      "max_chars_per_line": 15
+    },
+    "table_cell": {
+      "font_family": "Pretendard",
+      "font_size_px": 10,
+      "font_weight": 400,
+      "line_height": 1.3,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_primary",
+      "text_align": "left",
+      "max_lines": 2,
+      "max_chars_per_line": 18
+    },
+    "chart_label": {
+      "font_family": "Pretendard",
+      "font_size_px": 9,
+      "font_weight": 400,
+      "line_height": 1.2,
+      "letter_spacing_px": 0,
+      "color_source": "theme.text_secondary",
+      "text_align": "center",
+      "max_lines": 1,
+      "max_chars_per_line": 12
+    }
+  },
+
+  "conversion_rules": {
+    "px_to_pt": 0.75,
+    "apply_letter_spacing": true,
+    "apply_line_height": true,
+    "font_name_mapping": {
+      "Pretendard": "Pretendard",
+      "Inter": "Inter",
+      "system-ui": "Segoe UI"
+    },
+    "fallback_font": "Segoe UI",
+    "bold_threshold": 600,
+    "enforce_max_chars": true,
+    "overflow_action": "reduce_font_size",
+    "min_font_size_px": 8
+  },
+
+  "consistency_enforcement": {
+    "same_role_same_style": true,
+    "no_mixed_weights_in_paragraph": false,
+    "title_always_bold": true,
+    "body_never_bold_unless_inline": true,
+    "description": "All text with the same role must have identical font-size, weight, and line-height across slides"
+  }
+}

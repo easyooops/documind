@@ -1,0 +1,59 @@
+{
+  "$id": "shapes",
+  "version": "1.0.0",
+  "description": "Shape rules — all OOXML AutoShape properties and constraints",
+  "categories": {
+    "basic": {
+      "types": ["rect", "rounded_rect", "oval", "triangle", "diamond", "pentagon", "hexagon", "octagon", "parallelogram", "trapezoid"],
+      "description": "Basic shapes"
+    },
+    "arrows": {
+      "types": ["right_arrow", "left_arrow", "up_arrow", "down_arrow", "bent_arrow", "circular_arrow", "u_turn_arrow", "striped_right_arrow", "notched_right_arrow", "chevron"],
+      "description": "Arrow/directional shapes"
+    },
+    "callouts": {
+      "types": ["thought_bubble", "rounded_callout", "wedge_rect_callout", "wedge_ellipse_callout", "cloud"],
+      "description": "Speech bubbles/callouts"
+    },
+    "stars_banners": {
+      "types": ["star_4", "star_5", "star_6", "star_8", "ribbon", "ribbon_2", "explosion_1", "explosion_2"],
+      "description": "Stars/banners/explosions"
+    },
+    "flowchart": {
+      "types": ["flowchart_process", "flowchart_decision", "flowchart_terminator", "flowchart_data", "flowchart_document", "flowchart_connector", "flowchart_merge"],
+      "description": "Flowchart shapes"
+    },
+    "decorative": {
+      "types": ["heart", "lightning_bolt", "sun", "moon", "block_arc", "donut", "frame", "bevel", "fold_corner", "cross", "plus"],
+      "description": "Decorative/icon shapes"
+    }
+  },
+  "constraints": {
+    "min_size_px": { "width": 16, "height": 16 },
+    "max_size_px": { "width": 960, "height": 540 },
+    "border_radius": {
+      "min_px": 0,
+      "max_px": 50,
+      "applies_to": ["rect", "rounded_rect"],
+      "ooxml_max_adjustment": 50000
+    },
+    "rotation": {
+      "min_degrees": 0,
+      "max_degrees": 360,
+      "ooxml_unit": 60000
+    },
+    "fill_types": ["solid", "gradient", "pattern", "none"],
+    "outline": {
+      "min_width_px": 0.5,
+      "max_width_px": 10,
+      "styles": ["solid", "dash", "dot", "dash_dot"]
+    }
+  },
+  "usage_guidelines": {
+    "max_shapes_per_slide": 15,
+    "min_diversity_per_deck": 4,
+    "decorative_max_ratio": 0.4,
+    "functional_min_ratio": 0.3,
+    "description": "Decorative shapes must not exceed 40%; functional shapes must be at least 30%"
+  }
+}

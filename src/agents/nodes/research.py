@@ -33,11 +33,8 @@ async def research_agent(state: DocuMindState) -> dict:
     current_year = now.strftime("%Y")
     query = state["user_query"]
 
-    search_queries = [
-        f"{query} latest data statistics {current_year_month}",
-        f"{query} market trend case study {current_year}",
-        f"{query} benchmark report {current_year} {current_year_month}",
-    ]
+    search_queries = await _generate_search_queries(llm, query, current_year_month)
+
     search_results: list[dict[str, str]] = []
     for search_query in search_queries:
         try:
@@ -119,3 +116,41 @@ def _as_list(value: object) -> list:
     if value in (None, ""):
         return []
     return [value]
+
+
+async def _generate_search_queries(llm, user_query: str, year_month: str) -> list[str]:
+    """Use LLM to extract focused search keywords from user's query."""
+    extraction_prompt = f"""Analyze the following user request and generate 3-5 optimized web search queries
+to find relevant data, statistics, and case studies for a presentation.
+
+User request: {user_query}
+Current date: {year_month}
+
+Rules:
+- Each query should target different aspects (data/statistics, trends, case studies, industry reports)
+- Use concise keyword phrases, not full sentences
+- Include the current year or year-month where appropriate
+- If the user's query is in Korean, generate search queries in BOTH Korean and English
+- Focus on specific, searchable terms that will yield high-quality results
+
+Output ONLY a JSON array of search query strings. Example:
+["AI market size 2026", "생성AI 시장 규모 전망 2026", "generative AI enterprise adoption case study"]"""
+
+    try:
+        response = await llm.ainvoke([
+            {"role": "system", "content": "You generate optimized search queries. Output ONLY a JSON array."},
+            {"role": "human", "content": extraction_prompt},
+        ])
+        queries = parse_llm_json(response.content, fallback=[])
+        if isinstance(queries, list) and len(queries) >= 2:
+            logger.info("research_agent.queries_generated", count=len(queries), queries=queries[:5])
+            return queries[:5]
+    except Exception as exc:
+        logger.warning("research_agent.query_generation_failed", error=str(exc)[:200])
+
+    year = year_month.split("-")[0]
+    return [
+        f"{user_query} latest data statistics {year_month}",
+        f"{user_query} market trend case study {year}",
+        f"{user_query} benchmark report {year}",
+    ]

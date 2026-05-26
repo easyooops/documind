@@ -1,0 +1,68 @@
+{
+  "$id": "effects",
+  "version": "1.0.0",
+  "description": "Effects rules — shadow, gradient, border, and 3D effect constraints",
+  "shadow": {
+    "types": ["outer_soft", "outer_hard", "inner", "none"],
+    "outer_soft": {
+      "blur_radius_range_px": [4, 20],
+      "distance_range_px": [2, 10],
+      "angle_range_deg": [0, 360],
+      "opacity_range": [0.1, 0.5],
+      "color": "rgba(0,0,0,alpha)",
+      "ooxml_blur_unit": 12700,
+      "ooxml_dist_unit": 12700,
+      "ooxml_angle_unit": 60000
+    },
+    "outer_hard": {
+      "blur_radius_range_px": [0, 4],
+      "distance_range_px": [1, 6],
+      "opacity_range": [0.3, 0.8]
+    },
+    "inner": {
+      "blur_radius_range_px": [2, 10],
+      "distance_range_px": [1, 4],
+      "opacity_range": [0.1, 0.4]
+    },
+    "max_shadows_per_element": 1,
+    "allowed_on": ["shape", "textbox", "image", "group"]
+  },
+  "gradient": {
+    "type": "linear",
+    "angle": { "min": 0, "max": 360, "common": [0, 45, 90, 135, 180, 225, 270, 315] },
+    "stops": {
+      "min": 2,
+      "max": 4,
+      "position_range": [0, 100]
+    },
+    "ooxml_mapping": {
+      "element": "a:gradFill",
+      "stop_element": "a:gs",
+      "linear_element": "a:lin",
+      "angle_unit": 60000,
+      "position_unit": 1000
+    }
+  },
+  "border": {
+    "width_range_px": [0.5, 6],
+    "styles": ["solid", "dash", "dot", "dash_dot"],
+    "radius_range_px": [0, 50],
+    "ooxml_mapping": {
+      "width_unit": 12700,
+      "radius_formula": "radius / max_radius * 50000",
+      "radius_cap": 50000,
+      "dash_styles": {
+        "solid": "solid",
+        "dash": "dash",
+        "dot": "sysDot",
+        "dash_dot": "dashDot"
+      }
+    }
+  },
+  "usage_guidelines": {
+    "max_effects_per_element": 2,
+    "max_shadowed_elements_per_slide": 6,
+    "gradient_reserved_for": ["background", "header_shape", "card_accent"],
+    "avoid_combining": ["shadow + border > 3px", "gradient + pattern"]
+  }
+}

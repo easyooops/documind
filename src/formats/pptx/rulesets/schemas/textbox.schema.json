@@ -1,0 +1,66 @@
+{
+  "$id": "textbox",
+  "version": "1.0.0",
+  "description": "Textbox rules — text container properties and constraints",
+  "types": {
+    "title": {
+      "region": "header",
+      "font_scale": "title",
+      "alignment": ["left", "center"],
+      "max_lines": 2,
+      "required_on": ["content", "data", "comparison", "toc", "problem", "solution", "summary"]
+    },
+    "subtitle": {
+      "region": "header",
+      "font_scale": "subheading",
+      "alignment": ["left", "center"],
+      "max_lines": 2
+    },
+    "body": {
+      "region": "body",
+      "font_scale": "body",
+      "alignment": ["left", "justify"],
+      "max_lines": 8
+    },
+    "bullet_list": {
+      "region": "body",
+      "font_scale": "body",
+      "alignment": ["left"],
+      "max_items": 7,
+      "bullet_indent_px": 20,
+      "item_spacing_px": 8
+    },
+    "kpi_value": {
+      "region": "body",
+      "font_scale": "kpi_value",
+      "alignment": ["center"],
+      "max_lines": 1
+    },
+    "caption": {
+      "region": "body",
+      "font_scale": "caption",
+      "alignment": ["left", "center"],
+      "max_lines": 2
+    },
+    "label": {
+      "font_scale": "label",
+      "alignment": ["center", "left"],
+      "max_lines": 1
+    }
+  },
+  "constraints": {
+    "min_width_px": 60,
+    "min_height_px": 20,
+    "internal_padding_px": { "top": 6, "bottom": 6, "left": 8, "right": 8 },
+    "vertical_anchor": ["top", "middle", "bottom"],
+    "word_wrap": true,
+    "auto_fit": false,
+    "description": "Textboxes have fixed sizes; overflow is handled by truncation/shrinking"
+  },
+  "ooxml_mapping": {
+    "anchor_types": { "top": "t", "middle": "ctr", "bottom": "b" },
+    "align_types": { "left": "l", "center": "ctr", "right": "r", "justify": "just" },
+    "margin_unit": "emu",
+    "margin_default_emu": 91440
+  }
+}

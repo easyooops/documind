@@ -1,0 +1,29 @@
+{
+  "$id": "preset/data",
+  "version": "1.0.0",
+  "slide_type": "data",
+  "description": "Data slide — chart/KPI/statistics focused",
+  "layout": {
+    "use_regions": true,
+    "header": { "required": true, "elements": ["title"], "y_range": [36, 100] },
+    "body": { "required": true, "layouts": ["chart_dominant", "kpi_grid", "mixed", "dashboard"], "y_range": [108, 480] },
+    "footer": { "required": true, "elements": ["page_number", "source_citation"], "y_range": [488, 526] }
+  },
+  "required_elements": ["title", "data_visualization"],
+  "optional_elements": ["chart", "kpi_card", "table", "caption", "source_citation", "trend_indicator", "icon"],
+  "constraints": {
+    "at_least_one_data_viz": true,
+    "data_viz_types": ["chart", "table", "kpi_card"],
+    "chart_must_have_data": true,
+    "kpi_value_must_be_numeric": true,
+    "source_citation_recommended": true,
+    "decorative_shapes_max": 1,
+    "no_text_overlap": true
+  },
+  "body_layouts": {
+    "chart_dominant": { "chart_width_ratio": 0.7, "annotation_side": "right" },
+    "kpi_grid": { "max_kpis": 6, "kpi_card_min_width_px": 160, "grid_gap_px": 16 },
+    "mixed": { "chart_ratio": 0.5, "supporting_elements_ratio": 0.45 },
+    "dashboard": { "regions": ["kpi_row", "chart_area", "detail_table"], "flexible": true }
+  }
+}

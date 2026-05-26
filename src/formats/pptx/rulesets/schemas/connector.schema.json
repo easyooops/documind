@@ -1,0 +1,47 @@
+{
+  "$id": "connector",
+  "version": "1.0.0",
+  "description": "Connector/line rules — connection types, styling, and placement constraints",
+  "types": {
+    "straight": { "ooxml": "STRAIGHT", "use_case": "Direct connection, timeline" },
+    "elbow": { "ooxml": "ELBOW", "use_case": "Org chart, flowchart" },
+    "curved": { "ooxml": "CURVE", "use_case": "Flow emphasis, smooth connection" }
+  },
+  "styling": {
+    "width_range_px": [1, 4],
+    "default_width_px": 2,
+    "color_tokens": ["primary", "secondary", "text_secondary"],
+    "dash_styles": ["solid", "dash", "dot"],
+    "arrow_head": {
+      "types": ["none", "triangle", "stealth", "diamond", "oval"],
+      "positions": ["start", "end", "both"]
+    }
+  },
+  "constraints": {
+    "min_length_px": 20,
+    "max_per_slide": 8,
+    "must_connect_elements": false,
+    "preferred_angles": [0, 45, 90, 135, 180],
+    "snap_to_element_edges": true
+  },
+  "line_types": {
+    "horizontal_divider": {
+      "width": "full_body_width",
+      "height_px": 1,
+      "color_token": "text_secondary",
+      "opacity": 0.3,
+      "use_case": "Section divider"
+    },
+    "accent_bar": {
+      "width_px": [3, 6],
+      "height_range_px": [20, 100],
+      "color_token": "accent",
+      "use_case": "Visual emphasis"
+    }
+  },
+  "ooxml_mapping": {
+    "element": "p:cxnSp",
+    "connector_type_attr": "prst",
+    "width_unit": 12700
+  }
+}

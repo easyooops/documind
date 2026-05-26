@@ -1,0 +1,39 @@
+{
+  "$id": "preset/content",
+  "version": "1.0.0",
+  "slide_type": "content",
+  "description": "General content slide — title + body structure with consistent header/footer",
+  "layout": {
+    "use_regions": true,
+    "header": { "required": true, "elements": ["title"], "y_range": [36, 100] },
+    "body": { "required": true, "layouts": ["single_column", "two_column", "three_column", "grid_3", "grid_4", "bullet_with_visual", "dashboard"], "y_range": [108, 480] },
+    "footer": { "required": true, "elements": ["page_number", "source_citation"], "y_range": [488, 526] }
+  },
+  "required_elements": ["title", "body_content"],
+  "optional_elements": ["subtitle", "bullet_list", "icon", "kpi_card", "callout", "table", "chart", "numbered_list", "timeline"],
+  "constraints": {
+    "title_in_header_region": true,
+    "body_content_in_body_region": true,
+    "min_body_elements": 4,
+    "max_body_elements": 12,
+    "visual_element_recommended": true,
+    "no_text_overlap": true,
+    "min_element_gap_px": 12,
+    "decorative_shapes_max": 2
+  },
+  "body_layouts": {
+    "single_column": { "content_width_ratio": 0.85, "alignment": "left" },
+    "two_column": { "left_ratio": 0.48, "right_ratio": 0.48, "gap_px": 24 },
+    "three_column": { "col_ratio": 0.30, "gap_px": 20 },
+    "grid_3": { "cols": 3, "rows": 1, "gap_px": 16 },
+    "grid_4": { "cols": 2, "rows": 2, "gap_px": 16 },
+    "bullet_with_visual": { "text_ratio": 0.55, "visual_ratio": 0.40, "gap_px": 20 },
+    "dashboard": { "regions": ["kpi_row", "chart_area", "detail_area"], "flexible": true }
+  },
+  "header_footer_consistency": {
+    "description": "Header and footer must be identical across all non-cover slides",
+    "header_height_px": 64,
+    "footer_height_px": 38,
+    "enforce_on_all_content_slides": true
+  }
+}

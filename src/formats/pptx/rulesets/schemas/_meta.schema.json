@@ -1,0 +1,23 @@
+{
+  "$id": "_meta",
+  "version": "1.0.0",
+  "description": "DocuMind OOXML Rule-Sets — Strict design rule system for slide generation and evaluation",
+  "compatibility": {
+    "min_engine_version": "0.2.0",
+    "pptx_target": "Office 2016+"
+  },
+  "schemas": [
+    "canvas",
+    "layout",
+    "typography",
+    "color",
+    "shapes",
+    "textbox",
+    "table",
+    "chart",
+    "effects",
+    "connector",
+    "image",
+    "evaluation"
+  ]
+}

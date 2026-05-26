@@ -1,0 +1,22 @@
+{
+  "$id": "preset/cover",
+  "version": "1.0.0",
+  "slide_type": "cover",
+  "description": "Cover slide — full-screen background with prominent title",
+  "layout": {
+    "use_regions": false,
+    "full_bleed": true,
+    "title_position": { "x": 80, "y": 180, "width": 800, "height": 120 },
+    "subtitle_position": { "x": 80, "y": 310, "width": 600, "height": 60 }
+  },
+  "required_elements": ["background_shape", "title"],
+  "optional_elements": ["subtitle", "decorative_shape", "date", "author"],
+  "constraints": {
+    "background_must_cover_canvas": true,
+    "title_font_scale": "title",
+    "max_elements": 8,
+    "no_header_footer_regions": true,
+    "gradient_background_preferred": true
+  },
+  "design_notes": "Cover should have impactful visuals with gradient background and large title"
+}

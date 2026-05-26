@@ -39,6 +39,8 @@ dependencies = [
     "python-pptx>=1.0",
     "lxml>=6.1.0",
     "Pillow>=12.2.0",
+    "svglib>=0.9",
+    "reportlab>=4.0",
 
     # Browser automation
     "playwright>=1.44",
@@ -67,6 +69,7 @@ postgres = ["asyncpg>=0.29"]
 s3 = ["boto3>=1.34"]
 gcs = ["google-cloud-storage>=2.16"]
 vlm-qa = ["scikit-image>=0.23"]
+icons = ["cairosvg>=2.7"]
 
 # All providers bundle
 all-providers = [

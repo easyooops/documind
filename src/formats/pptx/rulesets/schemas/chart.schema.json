@@ -1,0 +1,49 @@
+{
+  "$id": "chart",
+  "version": "1.0.0",
+  "description": "Chart rules — types, data formats, and styling constraints",
+  "types": {
+    "bar": { "ooxml": "BAR_CLUSTERED", "min_categories": 2, "max_categories": 10, "max_series": 4 },
+    "column": { "ooxml": "COLUMN_CLUSTERED", "min_categories": 2, "max_categories": 12, "max_series": 4 },
+    "line": { "ooxml": "LINE", "min_categories": 3, "max_categories": 12, "max_series": 5 },
+    "pie": { "ooxml": "PIE", "min_categories": 2, "max_categories": 8, "max_series": 1 },
+    "doughnut": { "ooxml": "DOUGHNUT", "min_categories": 2, "max_categories": 8, "max_series": 1 },
+    "area": { "ooxml": "AREA", "min_categories": 3, "max_categories": 12, "max_series": 3 }
+  },
+  "data_format": {
+    "structure": "array_of_objects",
+    "required_fields": ["label", "value"],
+    "optional_fields": ["series", "color"],
+    "value_types": ["number", "percentage"],
+    "example": [{"label": "Q1", "value": 42}, {"label": "Q2", "value": 58}]
+  },
+  "sizing": {
+    "min_width_px": 250,
+    "max_width_px": 600,
+    "min_height_px": 180,
+    "max_height_px": 400,
+    "preferred_region": "body",
+    "aspect_ratio_range": { "min": 0.6, "max": 1.8 }
+  },
+  "styling": {
+    "title_visible": true,
+    "legend_position": ["bottom", "right", "none"],
+    "grid_lines": "major_only",
+    "data_labels": { "show": true, "position": "outside_end" },
+    "colors_from_palette": true,
+    "bar_gap_percent": 50,
+    "pie_start_angle": 0
+  },
+  "validation": {
+    "values_must_be_numeric": true,
+    "labels_max_length": 20,
+    "no_empty_values": true,
+    "pie_values_must_be_positive": true,
+    "sum_check": false
+  },
+  "ooxml_mapping": {
+    "namespace": "c:",
+    "chart_space": "c:chartSpace",
+    "plot_area": "c:plotArea"
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "$id": "table",
+  "version": "1.0.0",
+  "description": "Table rules — structure, styling, and size constraints",
+  "structure": {
+    "min_rows": 2,
+    "max_rows": 10,
+    "min_columns": 2,
+    "max_columns": 7,
+    "header_row_required": true,
+    "description": "Tables must have 2-10 rows and 2-7 columns"
+  },
+  "sizing": {
+    "min_width_px": 300,
+    "max_width_px": 844,
+    "min_height_px": 100,
+    "max_height_px": 356,
+    "min_row_height_px": 28,
+    "min_column_width_px": 60,
+    "preferred_region": "body"
+  },
+  "styling": {
+    "header": {
+      "fill_color_token": "primary",
+      "text_color": "#FFFFFF",
+      "font_weight": 700,
+      "font_size_px": 12,
+      "alignment": "center",
+      "height_px": 36
+    },
+    "body_rows": {
+      "fill_color_token": "surface",
+      "alt_fill_color_token": "background",
+      "text_color_token": "text_primary",
+      "font_weight": 400,
+      "font_size_px": 11,
+      "alignment": "left",
+      "alternate_row_fill": true
+    },
+    "border": {
+      "color": "#E5E7EB",
+      "width_px": 0.5,
+      "style": "solid"
+    },
+    "cell_padding_px": { "top": 4, "bottom": 4, "left": 8, "right": 8 }
+  },
+  "content": {
+    "max_cell_text_length": 50,
+    "numeric_alignment": "right",
+    "text_alignment": "left",
+    "header_alignment": "center",
+    "truncation": "ellipsis"
+  },
+  "ooxml_mapping": {
+    "element_type": "a:tbl",
+    "banding": true,
+    "first_row_style": true
+  }
+}

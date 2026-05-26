@@ -1,0 +1,28 @@
+{
+  "$id": "preset/comparison",
+  "version": "1.0.0",
+  "slide_type": "comparison",
+  "description": "Comparison slide — 2-4 items shown side by side",
+  "layout": {
+    "use_regions": true,
+    "header": { "required": true, "elements": ["title"], "y_range": [36, 100] },
+    "body": { "required": true, "layouts": ["grid_equal", "table_layout", "cards_row"], "y_range": [108, 480] },
+    "footer": { "required": true, "elements": ["page_number", "source_citation"], "y_range": [488, 526] }
+  },
+  "required_elements": ["title", "comparison_items"],
+  "optional_elements": ["table", "rating_indicators", "highlight_marker", "icon", "kpi_card"],
+  "constraints": {
+    "min_comparison_items": 2,
+    "max_comparison_items": 4,
+    "items_must_have_equal_width": true,
+    "visual_consistency_between_items": true,
+    "table_or_cards_required": true,
+    "decorative_shapes_max": 1,
+    "no_text_overlap": true
+  },
+  "body_layouts": {
+    "grid_equal": { "columns": "auto_from_items", "gap_px": 16, "card_style": true },
+    "table_layout": { "full_width": true, "header_row_for_categories": true },
+    "cards_row": { "card_height_px": 280, "card_radius_px": 8, "card_shadow": "outer_soft" }
+  }
+}

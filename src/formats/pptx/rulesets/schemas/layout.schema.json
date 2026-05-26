@@ -1,0 +1,45 @@
+{
+  "$id": "layout",
+  "version": "1.0.0",
+  "description": "Layout rules — grid alignment, element placement, and spacing constraints",
+  "alignment": {
+    "snap_to_grid": true,
+    "snap_tolerance_px": 4,
+    "allowed_positions": "grid_columns_or_exact_px",
+    "vertical_rhythm_px": 12,
+    "description": "All elements must align to the 12-column grid or have exact px coordinates"
+  },
+  "spacing": {
+    "min_element_gap_px": 8,
+    "recommended_element_gap_px": 16,
+    "title_to_body_gap_px": 16,
+    "section_gap_px": 24,
+    "padding_inside_shape_px": { "min": 8, "max": 24, "default": 12 }
+  },
+  "overlap_rules": {
+    "allow_decorative_overlap": true,
+    "allow_content_overlap": false,
+    "max_overlap_percentage": 15,
+    "description": "Decorative elements may overlap up to 15%; content elements must not overlap"
+  },
+  "balance": {
+    "max_empty_quadrant_ratio": 0.6,
+    "min_content_coverage_ratio": 0.35,
+    "max_content_coverage_ratio": 0.85,
+    "whitespace_target_ratio": { "min": 0.25, "max": 0.45 },
+    "description": "25-45% of the slide must be whitespace; content must not be biased to one side"
+  },
+  "hierarchy": {
+    "title_must_be_largest_text": true,
+    "max_hierarchy_levels": 4,
+    "size_ratio_between_levels": { "min": 1.2, "max": 1.8 },
+    "description": "Title must be the largest text; visual hierarchy must be clear"
+  },
+  "element_count": {
+    "min_per_slide": 3,
+    "max_per_slide": 20,
+    "recommended_range": [5, 12],
+    "min_unique_types_per_slide": 2,
+    "description": "Minimum 3, maximum 20 elements per slide. At least 2 different element types required"
+  }
+}

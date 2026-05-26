@@ -1,0 +1,17 @@
+{
+  "description": "HTML Generator - produces Constrained HTML per slide (parallel)",
+  "provider_type": "llm",
+  "llm": {
+    "model": "gpt-4o",
+    "temperature": 0.4,
+    "max_tokens": 4096,
+    "top_p": 1.0
+  },
+  "parallel": {
+    "max_concurrent": 4
+  },
+  "retry": {
+    "max_attempts": 2,
+    "backoff_seconds": 1
+  }
+}

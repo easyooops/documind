@@ -1,0 +1,397 @@
+{
+  "$id": "layout_patterns",
+  "version": "1.0.0",
+  "description": "Comprehensive library of 40+ slide layout patterns for diverse, high-quality compositions",
+
+  "categories": {
+    "process": {
+      "description": "Sequential steps or workflow patterns",
+      "patterns": [
+        {
+          "id": "process_3col",
+          "name": "3-Step Process",
+          "columns": 3,
+          "structure": "header + 3 equal cards (270×300) + arrows between",
+          "element_count": {"min": 9, "max": 12},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "process_4col",
+          "name": "4-Step Process",
+          "columns": 4,
+          "structure": "header + 4 equal cards (195×280) + arrows between",
+          "element_count": {"min": 12, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "process_5col",
+          "name": "5-Step Process",
+          "columns": 5,
+          "structure": "header + 5 narrow cards (155×260) + arrows between",
+          "element_count": {"min": 14, "max": 20},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "process_vertical",
+          "name": "Vertical Process Flow",
+          "columns": 1,
+          "structure": "Left timeline + 4-5 horizontal step cards stacked",
+          "element_count": {"min": 10, "max": 15},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "process_chevron",
+          "name": "Chevron Process",
+          "columns": 4,
+          "structure": "4 chevron shapes in row with labels inside",
+          "element_count": {"min": 8, "max": 12},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "process_circular",
+          "name": "Circular Process",
+          "columns": 1,
+          "structure": "Center circle + 4-6 items arranged around it with connectors",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        }
+      ]
+    },
+
+    "grid": {
+      "description": "Equal-sized card grids for comparison or listing",
+      "patterns": [
+        {
+          "id": "grid_2x2",
+          "name": "2×2 Grid",
+          "columns": 2,
+          "structure": "4 equal cards (420×190) in 2 rows",
+          "element_count": {"min": 8, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "grid_3x1",
+          "name": "3-Column Single Row",
+          "columns": 3,
+          "structure": "3 tall cards (270×380) side by side",
+          "element_count": {"min": 9, "max": 15},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "grid_3x2",
+          "name": "3×2 Grid",
+          "columns": 3,
+          "structure": "6 cards (270×185) in 2 rows of 3",
+          "element_count": {"min": 12, "max": 20},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "grid_4x1",
+          "name": "4-Column Single Row",
+          "columns": 4,
+          "structure": "4 cards (205×360) side by side",
+          "element_count": {"min": 12, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "grid_4x2",
+          "name": "4×2 Grid",
+          "columns": 4,
+          "structure": "8 small cards (205×185) in 2 rows of 4",
+          "element_count": {"min": 16, "max": 24},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "grid_icon_3x2",
+          "name": "Icon Grid 3×2",
+          "columns": 3,
+          "structure": "6 icon+title+description blocks in 2 rows",
+          "element_count": {"min": 12, "max": 18},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        }
+      ]
+    },
+
+    "asymmetric": {
+      "description": "Unequal split layouts for emphasis",
+      "patterns": [
+        {
+          "id": "split_60_40",
+          "name": "60/40 Split",
+          "columns": 2,
+          "structure": "Left main (520px) + Right sidebar (340px)",
+          "element_count": {"min": 8, "max": 14},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "split_70_30",
+          "name": "70/30 Split",
+          "columns": 2,
+          "structure": "Left wide (600px) + Right narrow (260px)",
+          "element_count": {"min": 8, "max": 14},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "split_30_70",
+          "name": "30/70 Split (Reverse)",
+          "columns": 2,
+          "structure": "Left sidebar (260px) + Right main (600px)",
+          "element_count": {"min": 8, "max": 14},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "split_40_30_30",
+          "name": "40/30/30 Triple",
+          "columns": 3,
+          "structure": "Left featured (340px) + 2 smaller (255px each)",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "split_50_25_25",
+          "name": "50/25/25 Feature + Details",
+          "columns": 3,
+          "structure": "Left large card (430px) + 2 small stacked (210px×190 each)",
+          "element_count": {"min": 10, "max": 14},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        }
+      ]
+    },
+
+    "dashboard": {
+      "description": "Data-rich dashboard-style layouts",
+      "patterns": [
+        {
+          "id": "dashboard_kpi_top",
+          "name": "KPI Row + Detail",
+          "columns": 4,
+          "structure": "Top: 4 KPI cards (205×80) | Bottom: large content area (880×300)",
+          "element_count": {"min": 12, "max": 18},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "dashboard_chart_sidebar",
+          "name": "Chart + Sidebar",
+          "columns": 2,
+          "structure": "Left: chart (560×380) | Right: 3-4 stat cards (290×90 each)",
+          "element_count": {"min": 10, "max": 14},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "dashboard_quad",
+          "name": "Quad Dashboard",
+          "columns": 2,
+          "structure": "4 equal panels (420×190): 2 charts + 2 tables",
+          "element_count": {"min": 8, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "dashboard_scorecard",
+          "name": "Scorecard Dashboard",
+          "columns": 3,
+          "structure": "Top: 3 large KPIs (270×120) | Bottom: horizontal bar chart (880×240)",
+          "element_count": {"min": 10, "max": 14},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        }
+      ]
+    },
+
+    "comparison": {
+      "description": "Side-by-side comparison layouts",
+      "patterns": [
+        {
+          "id": "compare_vs",
+          "name": "VS Comparison",
+          "columns": 2,
+          "structure": "Left panel (420×380) vs Right panel (420×380) with divider",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "compare_before_after",
+          "name": "Before/After",
+          "columns": 2,
+          "structure": "Left (problem/before) red-tinted + Right (solution/after) green-tinted",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "compare_triple",
+          "name": "3-Option Comparison",
+          "columns": 3,
+          "structure": "3 vertical panels (270×380) with checkmarks/crosses",
+          "element_count": {"min": 12, "max": 20},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "compare_matrix",
+          "name": "2×2 Matrix",
+          "columns": 2,
+          "structure": "Axis labels + 4 quadrants with content in each",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        }
+      ]
+    },
+
+    "hierarchy": {
+      "description": "Hierarchical or nested information layouts",
+      "patterns": [
+        {
+          "id": "nested_cards",
+          "name": "Nested Cards",
+          "columns": 1,
+          "structure": "Large container (860×360) with 3-4 inner cards",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "tree_structure",
+          "name": "Tree/Org Chart",
+          "columns": 1,
+          "structure": "Top: 1 parent | Middle: 3-4 children | Connectors between",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "pyramid_3",
+          "name": "3-Level Pyramid",
+          "columns": 1,
+          "structure": "Top narrow (200px) + Middle medium (400px) + Bottom wide (600px)",
+          "element_count": {"min": 8, "max": 12},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "layers_stacked",
+          "name": "Stacked Layers",
+          "columns": 1,
+          "structure": "4-5 horizontal bars stacked with labels and values",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        }
+      ]
+    },
+
+    "content_heavy": {
+      "description": "Text-heavy informational layouts",
+      "patterns": [
+        {
+          "id": "numbered_list_card",
+          "name": "Numbered List + Card",
+          "columns": 2,
+          "structure": "Left: numbered items (500px) + Right: summary card (360px)",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "bullet_columns",
+          "name": "Multi-Column Bullets",
+          "columns": 3,
+          "structure": "3 bullet columns (270px each) with category headers",
+          "element_count": {"min": 10, "max": 18},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "callout_sidebar",
+          "name": "Callout + Sidebar",
+          "columns": 2,
+          "structure": "Left: large callout/quote card (540px) + Right: supporting bullets (320px)",
+          "element_count": {"min": 8, "max": 12},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "timeline_horizontal",
+          "name": "Horizontal Timeline",
+          "columns": 1,
+          "structure": "Line across middle + 4-5 milestones above/below alternating",
+          "element_count": {"min": 12, "max": 18},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "table_full",
+          "name": "Full-Width Table",
+          "columns": 1,
+          "structure": "Description text (880×40) + full-width table (880×340)",
+          "element_count": {"min": 4, "max": 8},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "fact_sheet",
+          "name": "Fact Sheet",
+          "columns": 2,
+          "structure": "Left: key-value pairs list + Right: supporting data/chart",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        }
+      ]
+    },
+
+    "mixed": {
+      "description": "Complex mixed-content layouts",
+      "patterns": [
+        {
+          "id": "hero_text_top",
+          "name": "Hero Statement + Grid",
+          "columns": 1,
+          "structure": "Top: large statement text (880×60) + Bottom: 3 cards (270×300)",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "kpi_detail",
+          "name": "KPI + Detail Explanation",
+          "columns": 2,
+          "structure": "Left: 2 large KPI (420×180 each) + Right: detail card (420×380)",
+          "element_count": {"min": 10, "max": 14},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "infographic_row",
+          "name": "Infographic Row",
+          "columns": 5,
+          "structure": "5 icon-stat pairs (160×200) in a row with connecting line below",
+          "element_count": {"min": 12, "max": 20},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "waterfall",
+          "name": "Waterfall Steps",
+          "columns": 4,
+          "structure": "4 descending blocks left-to-right with arrows",
+          "element_count": {"min": 10, "max": 14},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "hub_spoke",
+          "name": "Hub and Spoke",
+          "columns": 1,
+          "structure": "Center large card + 4-6 surrounding smaller cards with connectors",
+          "element_count": {"min": 12, "max": 18},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        },
+        {
+          "id": "accordion",
+          "name": "Accordion Stack",
+          "columns": 1,
+          "structure": "4-5 expandable rows full-width with title + content",
+          "element_count": {"min": 10, "max": 16},
+          "body_region": {"x": 40, "y": 80, "w": 880, "h": 420}
+        }
+      ]
+    }
+  },
+
+  "total_patterns": 42,
+  "selection_rules": {
+    "no_consecutive_same_category": true,
+    "prefer_variety_across_deck": true,
+    "match_content_type": {
+      "steps/process": ["process"],
+      "comparison": ["comparison", "asymmetric"],
+      "data/metrics": ["dashboard"],
+      "listing/features": ["grid", "content_heavy"],
+      "architecture/hierarchy": ["hierarchy"],
+      "mixed/general": ["mixed", "grid", "asymmetric"]
+    }
+  }
+}

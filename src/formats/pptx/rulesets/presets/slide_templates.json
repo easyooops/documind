@@ -1,0 +1,122 @@
+{
+  "$id": "slide_templates",
+  "version": "1.0.0",
+  "description": "Fixed slide template definitions — header, footer, and background positions are LOCKED once set. All content slides must use identical template layout.",
+
+  "template_types": {
+    "cover": {
+      "description": "Full-bleed cover slide with no header/footer",
+      "background": {
+        "type": "gradient",
+        "source": "theme.cover_background",
+        "fixed": true
+      },
+      "header": null,
+      "footer": null,
+      "body_region": {
+        "x": 80, "y": 100, "w": 800, "h": 380
+      },
+      "elements": {
+        "title": {"x": 80, "y": 160, "w": 700, "h": 80, "font_role": "cover_title"},
+        "subtitle": {"x": 80, "y": 260, "w": 700, "h": 40, "font_role": "cover_subtitle"},
+        "author": {"x": 80, "y": 420, "w": 300, "h": 20, "font_role": "cover_author"},
+        "date": {"x": 80, "y": 450, "w": 200, "h": 16, "font_role": "cover_date"}
+      }
+    },
+
+    "content": {
+      "description": "Standard content slide with FIXED header and footer",
+      "background": {
+        "type": "solid",
+        "source": "theme.body_background",
+        "fixed": true
+      },
+      "header": {
+        "fixed": true,
+        "region": {"x": 0, "y": 0, "w": 960, "h": 72},
+        "elements": {
+          "section_label": {
+            "x": 40, "y": 16, "w": 300, "h": 14,
+            "font_role": "section_label",
+            "color_source": "theme.accent",
+            "fixed_position": true
+          },
+          "slide_title": {
+            "x": 40, "y": 32, "w": 860, "h": 30,
+            "font_role": "slide_title",
+            "color_source": "theme.text_primary",
+            "fixed_position": true
+          },
+          "accent_bar": {
+            "x": 40, "y": 68, "w": 48, "h": 3,
+            "type": "shape",
+            "shape": "rect",
+            "color_source": "theme.accent",
+            "fixed_position": true
+          }
+        }
+      },
+      "footer": {
+        "fixed": true,
+        "region": {"x": 0, "y": 520, "w": 960, "h": 20},
+        "elements": {
+          "footer_left": {
+            "x": 40, "y": 522, "w": 400, "h": 14,
+            "font_role": "footer_text",
+            "color_source": "#94A3B8",
+            "content": "deck_title",
+            "fixed_position": true
+          },
+          "footer_right": {
+            "x": 890, "y": 522, "w": 40, "h": 14,
+            "font_role": "footer_text",
+            "color_source": "#94A3B8",
+            "content": "page_number",
+            "text_align": "right",
+            "fixed_position": true
+          }
+        }
+      },
+      "body_region": {
+        "x": 40, "y": 78, "w": 880, "h": 436,
+        "description": "Content area between header and footer"
+      }
+    },
+
+    "section": {
+      "description": "Section divider slide — no header/footer, center-aligned",
+      "background": {
+        "type": "solid",
+        "source": "theme.primary",
+        "fixed": true
+      },
+      "header": null,
+      "footer": null,
+      "body_region": {
+        "x": 120, "y": 150, "w": 720, "h": 240
+      },
+      "elements": {
+        "section_number": {"x": 120, "y": 160, "w": 60, "h": 50, "font_role": "kpi_value"},
+        "section_title": {"x": 120, "y": 220, "w": 720, "h": 50, "font_role": "section_title"},
+        "section_subtitle": {"x": 120, "y": 280, "w": 720, "h": 30, "font_role": "body"}
+      }
+    }
+  },
+
+  "consistency_rules": {
+    "header_position_locked": true,
+    "footer_position_locked": true,
+    "background_locked_per_type": true,
+    "accent_bar_color_uniform": true,
+    "section_label_style_uniform": true,
+    "footer_text_style_uniform": true,
+    "tolerance_px": 0,
+    "description": "Once the template is initialized for a deck, ALL content slides must use the EXACT same header/footer positions, colors, and font styles. Zero tolerance for deviation."
+  },
+
+  "enforcement": {
+    "pre_generation": "Pass template definition to LLM as MANDATORY structure",
+    "post_generation": "Validate and auto-correct header/footer positions using template",
+    "evaluation": "Score 0 for slides missing template header/footer elements"
+  }
+}

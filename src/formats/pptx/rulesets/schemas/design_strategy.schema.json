@@ -1,0 +1,100 @@
+{
+  "$id": "design_strategy",
+  "version": "1.0.0",
+  "description": "DocuMind PPT Design Strategy — our proprietary quality standard for slide generation",
+  "philosophy": {
+    "core_principle": "Dense, content-rich strategy deck — every pixel serves a purpose",
+    "visual_identity": "Clean consulting-firm aesthetic with structured hierarchy",
+    "target_quality": "McKinsey/BCG-level visual density and information architecture"
+  },
+  "layout_strategy": {
+    "header": {
+      "total_height_px": 70,
+      "components": ["section_label_11px", "title_24px_bold", "accent_bar_3px"],
+      "rule": "Compact and consistent across all content slides"
+    },
+    "body": {
+      "start_y": 76,
+      "end_y": 516,
+      "available_height_px": 440,
+      "usable_width_px": 880,
+      "fill_ratio_minimum": 0.80,
+      "rule": "Must be 80%+ filled with content elements"
+    },
+    "footer": {
+      "total_height_px": 20,
+      "start_y": 520,
+      "components": ["deck_title_left_9px", "page_number_right_9px"],
+      "rule": "Minimal — barely visible, never compete with content"
+    }
+  },
+  "content_density": {
+    "min_elements_per_slide": 8,
+    "max_elements_per_slide": 20,
+    "content_blocks_per_slide": "3-5",
+    "items_per_block": "3-5",
+    "text_detail_level": "Full sentences with specifics, not just labels",
+    "empty_space_tolerance": "Maximum 20% of body area can be empty"
+  },
+  "typography_scale": {
+    "section_label": {"size_px": 11, "weight": 500, "color": "accent"},
+    "slide_title": {"size_px": 24, "weight": 700, "color": "text_primary", "max_chars": 40},
+    "subtitle": {"size_px": 14, "weight": 400, "color": "text_secondary"},
+    "card_header": {"size_px": 13, "weight": 700, "color": "white_on_dark_bg"},
+    "body": {"size_px": 13, "weight": 400, "color": "text_primary"},
+    "caption": {"size_px": 10, "weight": 400, "color": "text_secondary"},
+    "footer": {"size_px": 9, "weight": 400, "color": "#94A3B8"}
+  },
+  "color_usage": {
+    "card_header_bg": "primary or secondary (dark, saturated)",
+    "card_body_bg": "surface (white or very light gray)",
+    "accent_bar": "accent color, 48×3px under title",
+    "text_on_dark": "#FFFFFF",
+    "text_on_light": "text_primary",
+    "callout_bg": "accent with 15% opacity",
+    "badge_colors": "Use 2-3 distinct colors for category differentiation"
+  },
+  "border_rules": {
+    "card_borders": "NONE — differentiate with background-color only",
+    "table_borders": "0.5px #E2E8F0 (barely visible)",
+    "separator_lines": "1px height, subtle gray",
+    "accent_bar": "3px height, accent color, 48px wide"
+  },
+  "layout_patterns": {
+    "process_flow": {
+      "description": "4-5 equal-width cards in horizontal row with small arrow connectors",
+      "card_arrangement": "equal width, 8px gap, small arrows between",
+      "density": "Each card has: icon + title + 3-4 bullet items + bottom badge"
+    },
+    "grid_comparison": {
+      "description": "3 equal columns with colored header strips",
+      "card_arrangement": "equal width columns, each with header_badge + content_list",
+      "density": "Each column has: colored header + 3-4 item rows"
+    },
+    "asymmetric_split": {
+      "description": "60/40 or 70/30 split with main content + sidebar",
+      "left_panel": "Primary content (numbered list or cards)",
+      "right_panel": "Summary card, callout, or supporting data"
+    },
+    "nested_cards": {
+      "description": "Large container with 3-4 inner cards",
+      "outer": "Full-width container with subtle background",
+      "inner": "Smaller cards with icon + title + description"
+    },
+    "dashboard": {
+      "description": "KPI row on top + large visualization below",
+      "top_row": "3-4 KPI metric cards",
+      "main_area": "Chart or table filling remaining space"
+    }
+  },
+  "quality_checklist": {
+    "text_overflow": "No text may exceed its container bounds",
+    "element_overlap": "No content elements may overlap (except bg shapes behind text)",
+    "header_footer_consistency": "Pixel-identical across all content slides",
+    "content_fill": "Body area must be 80%+ utilized",
+    "font_consistency": "Maximum 2 font families across entire deck",
+    "color_harmony": "All colors must come from design_tokens palette",
+    "border_thickness": "No borders thicker than 1px (prefer 0.5px or none)",
+    "visual_hierarchy": "Clear 4-level hierarchy: section_label > title > body > caption"
+  }
+}

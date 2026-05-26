@@ -1,0 +1,158 @@
+{
+  "$id": "evaluation",
+  "version": "1.0.0",
+  "description": "Design quality evaluation criteria — category score distribution, check items, and thresholds",
+  "pass_threshold": 0.88,
+  "max_iterations": 2,
+  "categories": {
+    "layout_compliance": {
+      "weight": 0.25,
+      "checks": {
+        "region_placement": {
+          "description": "Whether elements are placed in the correct region (header/body/footer)",
+          "severity": "critical",
+          "penalty_per_violation": 0.15
+        },
+        "grid_alignment": {
+          "description": "Whether element left edges align to the 12-column grid (tolerance: 4px)",
+          "severity": "minor",
+          "penalty_per_violation": 0.03
+        },
+        "safe_area": {
+          "description": "Whether essential content is within the safe area",
+          "severity": "major",
+          "penalty_per_violation": 0.10
+        },
+        "overlap_detection": {
+          "description": "Whether there are no abnormal overlaps between content elements",
+          "severity": "critical",
+          "penalty_per_violation": 0.20
+        }
+      }
+    },
+    "typography_compliance": {
+      "weight": 0.20,
+      "checks": {
+        "font_allowed": {
+          "description": "Whether only allowed fonts are used",
+          "severity": "major",
+          "penalty_per_violation": 0.10
+        },
+        "size_in_range": {
+          "description": "Whether font sizes per role are within the allowed range",
+          "severity": "minor",
+          "penalty_per_violation": 0.05
+        },
+        "text_overflow": {
+          "description": "Whether text does not overflow its container",
+          "severity": "major",
+          "penalty_per_violation": 0.12
+        },
+        "hierarchy_valid": {
+          "description": "Whether title > subtitle > body size hierarchy is maintained",
+          "severity": "minor",
+          "penalty_per_violation": 0.05
+        }
+      }
+    },
+    "color_compliance": {
+      "weight": 0.15,
+      "checks": {
+        "palette_usage": {
+          "description": "Whether only design system palette colors are used",
+          "severity": "minor",
+          "penalty_per_violation": 0.04
+        },
+        "contrast_aa": {
+          "description": "Whether text-background contrast meets WCAG AA standard (4.5:1)",
+          "severity": "major",
+          "penalty_per_violation": 0.10
+        },
+        "color_consistency": {
+          "description": "Whether the same color is used for the same role across slides",
+          "severity": "minor",
+          "penalty_per_violation": 0.03
+        }
+      }
+    },
+    "element_completeness": {
+      "weight": 0.15,
+      "checks": {
+        "required_elements_present": {
+          "description": "Whether all required elements for the slide type are present",
+          "severity": "major",
+          "penalty_per_violation": 0.10
+        },
+        "min_element_diversity": {
+          "description": "Whether at least 2 different element types are used per slide",
+          "severity": "minor",
+          "penalty_per_violation": 0.05
+        },
+        "data_viz_accuracy": {
+          "description": "Whether chart/table data is valid and complete",
+          "severity": "major",
+          "penalty_per_violation": 0.08
+        }
+      }
+    },
+    "visual_balance": {
+      "weight": 0.15,
+      "checks": {
+        "whitespace_ratio": {
+          "description": "Whether whitespace ratio is within the 25-45% range",
+          "severity": "minor",
+          "penalty_per_violation": 0.05
+        },
+        "element_distribution": {
+          "description": "Whether elements are evenly distributed without being biased to one side",
+          "severity": "minor",
+          "penalty_per_violation": 0.04
+        },
+        "hierarchy_clarity": {
+          "description": "Whether visual hierarchy is clear (differentiated by size/weight/color)",
+          "severity": "minor",
+          "penalty_per_violation": 0.04
+        }
+      }
+    },
+    "ooxml_validity": {
+      "weight": 0.10,
+      "checks": {
+        "shape_type_valid": {
+          "description": "Whether used shape names are valid MSO_SHAPE types",
+          "severity": "critical",
+          "penalty_per_violation": 0.15
+        },
+        "emu_bounds": {
+          "description": "Whether converted EMU values are within valid bounds",
+          "severity": "major",
+          "penalty_per_violation": 0.08
+        },
+        "effect_params_valid": {
+          "description": "Whether effect parameters (blur, distance, etc.) are within valid ranges",
+          "severity": "minor",
+          "penalty_per_violation": 0.03
+        },
+        "data_attribute_valid": {
+          "description": "Whether data-pptx-* attributes have correct format",
+          "severity": "major",
+          "penalty_per_violation": 0.10
+        }
+      }
+    }
+  },
+  "cross_slide_checks": {
+    "color_consistency": {
+      "description": "Same color used for same role across all slides",
+      "weight": 0.4
+    },
+    "font_consistency": {
+      "description": "Same font/size used for same role across all slides",
+      "weight": 0.3
+    },
+    "spacing_consistency": {
+      "description": "Consistent margins/spacing in same regions across all slides",
+      "weight": 0.3
+    }
+  }
+}

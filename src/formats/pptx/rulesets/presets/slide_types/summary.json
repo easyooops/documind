@@ -1,0 +1,24 @@
+{
+  "$id": "preset/summary",
+  "version": "1.0.0",
+  "slide_type": "summary",
+  "description": "Summary/conclusion slide — key takeaways",
+  "layout": {
+    "use_regions": true,
+    "header": { "required": true, "elements": ["title"] },
+    "body": { "required": true, "layouts": ["key_points", "recommendation_cards", "action_items"] }
+  },
+  "required_elements": ["title", "summary_content"],
+  "optional_elements": ["bullet_list", "numbered_list", "callout_box", "next_steps", "cta_button"],
+  "constraints": {
+    "max_key_points": 5,
+    "concise_text_required": true,
+    "visual_hierarchy_critical": true,
+    "action_oriented_language": true
+  },
+  "body_layouts": {
+    "key_points": { "bullet_style": "numbered_or_icon", "max_items": 5, "indent_px": 0 },
+    "recommendation_cards": { "max_cards": 3, "card_height_px": 120, "highlight_primary": true },
+    "action_items": { "checklist_style": true, "max_items": 4 }
+  }
+}

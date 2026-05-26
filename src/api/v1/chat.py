@@ -173,6 +173,93 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
     if node_name == "export":
         return ["Final file is ready to export."] if is_en else ["최종 파일을 내보낼 준비를 완료했습니다."]
 
+    # v2 pipeline nodes
+    if node_name == "init_context":
+        return ["Initialized design context and constraints."] if is_en else ["디자인 컨텍스트 및 제약 조건을 초기화했습니다."]
+
+    if node_name == "plan":
+        blueprints = _as_list(node_output.get("slide_blueprints"))
+        title = node_output.get("title", "")
+        design = _as_dict(node_output.get("design_system"))
+        items = []
+        items.append(
+            f"Planned {len(blueprints)} slides: \"{_compact_text(title)}\""
+            if is_en else
+            f"{len(blueprints)}장 슬라이드를 설계했습니다: \"{_compact_text(title)}\""
+        )
+        items.append("── 콘텐츠 ──" if not is_en else "── Content ──")
+        for bp in blueprints[:6]:
+            bp_dict = _as_dict(bp)
+            s_type = bp_dict.get("slide_type", "content")
+            s_title = _compact_text(bp_dict.get("title", ""))
+            s_key = _compact_text(bp_dict.get("key_message", ""))
+            elements = bp_dict.get("suggested_elements", [])
+            el_text = f" — {', '.join(elements[:3])}" if elements else ""
+            line = f"  {bp_dict.get('index', '?')}. [{s_type}] {s_title}"
+            if s_key:
+                line += f" — {s_key}"
+            line += el_text
+            items.append(line)
+        if design:
+            colors = f"{design.get('primary', '')} / {design.get('accent', '')} / {design.get('background', '')}"
+            font = design.get("font_heading", "Pretendard")
+            items.append("── 디자인 ──" if not is_en else "── Design ──")
+            items.append(f"  팔레트: {colors} | 폰트: {font}" if not is_en else f"  Palette: {colors} | Font: {font}")
+        layout_hints = [f"{_as_dict(bp).get('slide_type', '?')}:{_as_dict(bp).get('layout_hint', '?')}" for bp in blueprints[:6]]
+        if layout_hints:
+            items.append("── 레이아웃 ──" if not is_en else "── Layout ──")
+            items.append(f"  {', '.join(layout_hints)}")
+        return items
+
+    if node_name == "generate_html":
+        slides = _as_list(node_output.get("slides_html"))
+        usage = _as_dict(node_output.get("element_usage"))
+        used = _as_list(usage.get("used"))
+        if is_en:
+            return [f"Generated HTML for {len(slides)} slides.", f"Elements used: {_compact_text(', '.join(used[:6]))}"]
+        return [f"{len(slides)}개 슬라이드 HTML을 생성했습니다.", f"사용 요소: {_compact_text(', '.join(used[:6]))}"]
+
+    if node_name == "render_convert":
+        output = node_output.get("output_path", "")
+        screenshots = node_output.get("screenshots_count", 0)
+        if is_en:
+            return [f"Rendered and converted to PowerPoint." + (f" ({screenshots} screenshots)" if screenshots else "")]
+        return [f"PowerPoint로 렌더링 및 변환을 완료했습니다." + (f" (스크린샷 {screenshots}장)" if screenshots else "")]
+
+    if node_name == "vlm_qa" or node_name == "design_evaluate":
+        scores = _as_list(node_output.get("fidelity_scores"))
+        feedback = _as_dict(node_output.get("qa_feedback"))
+        passed = feedback.get("passed", False)
+        latest = scores[-1] if scores else None
+        issues = _as_list(feedback.get("fix_instructions"))
+        category_scores = _as_dict(feedback.get("category_scores"))
+        status = "passed" if passed else "refinement needed"
+        status_ko = "통과" if passed else "보완 필요"
+        items = []
+        if is_en:
+            items.append(f"Design quality: {status}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
+        else:
+            items.append(f"디자인 품질 평가: {status_ko}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
+        if category_scores:
+            cat_parts = []
+            cat_labels = {
+                "layout_compliance": "Layout" if is_en else "레이아웃",
+                "typography_compliance": "Typo" if is_en else "타이포",
+                "color_compliance": "Color" if is_en else "색상",
+                "element_completeness": "Elements" if is_en else "요소",
+                "visual_balance": "Balance" if is_en else "밸런스",
+                "ooxml_validity": "OOXML",
+            }
+            for cat, label in cat_labels.items():
+                val = category_scores.get(cat)
+                if isinstance(val, (int, float)):
+                    cat_parts.append(f"{label}: {val:.2f}")
+            if cat_parts:
+                items.append("  " + " | ".join(cat_parts))
+        for issue in issues[:2]:
+            items.append(f"  - {_compact_text(issue)}")
+        return items
+
     return []
 
 
@@ -290,7 +377,15 @@ async def stream_generation(
         }
 
         NODE_PHASE_MAP = {
+            # v2 pipeline nodes
+            "init_context": "planning",
             "research": "planning",
+            "plan": "planning",
+            "generate_html": "generating",
+            "render_convert": "converting",
+            "design_evaluate": "qa",
+            "export": "exporting",
+            # v1 pipeline nodes (legacy)
             "narrative": "planning",
             "content_writer": "planning",
             "audience": "planning",
@@ -303,13 +398,21 @@ async def stream_generation(
             "validate": "validating",
             "convert": "converting",
             "qa_critic": "qa",
-            "export": "exporting",
+            "vlm_qa": "qa",
         }
 
         locale = str(request_options.get("locale", "ko"))
         NODE_DESCRIPTIONS_BY_LOCALE = {
             "ko": {
+                # v2 pipeline nodes
+                "init_context": "컨텍스트 초기화",
                 "research": "웹 리서치 및 데이터 수집",
+                "plan": "슬라이드 구조 및 디자인 계획",
+                "generate_html": "슬라이드 HTML 생성",
+                "render_convert": "PPTX 렌더링 및 변환",
+                "design_evaluate": "디자인 품질 평가",
+                "export": "최종 내보내기",
+                # v1 pipeline nodes (legacy)
                 "narrative": "내러티브 구조 설계",
                 "content_writer": "슬라이드 콘텐츠 작성",
                 "audience": "청중 분석 및 톤 결정",
@@ -322,10 +425,18 @@ async def stream_generation(
                 "validate": "생성 전 구조/품질 검증",
                 "convert": "PPTX 파일 변환",
                 "qa_critic": "품질 평가 (QA)",
-                "export": "최종 내보내기",
+                "vlm_qa": "디자인 품질 평가",
             },
             "en": {
+                # v2 pipeline nodes
+                "init_context": "Context Initialization",
                 "research": "Web Research and Data Collection",
+                "plan": "Slide Structure and Design Planning",
+                "generate_html": "Slide HTML Generation",
+                "render_convert": "PPTX Rendering and Conversion",
+                "design_evaluate": "Design Quality Assessment",
+                "export": "Final Export",
+                # v1 pipeline nodes (legacy)
                 "narrative": "Narrative Structure",
                 "content_writer": "Slide Content Writing",
                 "audience": "Audience and Tone Analysis",
@@ -338,7 +449,7 @@ async def stream_generation(
                 "validate": "Pre-Export Structure and Quality Check",
                 "convert": "PowerPoint File Conversion",
                 "qa_critic": "Quality Assessment (QA)",
-                "export": "Final Export",
+                "vlm_qa": "Design Quality Assessment",
             },
         }
         NODE_DESCRIPTIONS = NODE_DESCRIPTIONS_BY_LOCALE.get(locale, NODE_DESCRIPTIONS_BY_LOCALE["ko"])
@@ -437,6 +548,12 @@ async def stream_generation(
                     }
                     active_node = None
                     last_heartbeat = now
+
+                elif kind == "on_chain_end" and name not in NODE_DESCRIPTIONS and name not in ("__start__", "__end__", ""):
+                    event_data = _as_dict(event.get("data"))
+                    node_output = event_data.get("output", {})
+                    if isinstance(node_output, dict):
+                        final_state = {**final_state, **node_output}
 
                 # --- LLM call lifecycle (real-time activity within nodes) ---
                 elif kind == "on_chat_model_start":

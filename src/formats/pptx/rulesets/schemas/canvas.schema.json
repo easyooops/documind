@@ -1,0 +1,58 @@
+{
+  "$id": "canvas",
+  "version": "1.0.0",
+  "description": "Slide canvas base constraints — size, grid, and region definitions",
+  "canvas": {
+    "width_px": 960,
+    "height_px": 540,
+    "aspect_ratio": "16:9",
+    "px_to_emu": 9525,
+    "width_emu": 9144000,
+    "height_emu": 5143500
+  },
+  "safe_area": {
+    "top": 24,
+    "bottom": 14,
+    "left": 40,
+    "right": 40,
+    "description": "All essential content must be placed within the safe_area (matches 40px side margins)"
+  },
+  "grid": {
+    "columns": 12,
+    "gutter_px": 14.4,
+    "column_width_px": 70.3,
+    "margin_left_px": 58,
+    "margin_right_px": 58,
+    "snap_tolerance_px": 4
+  },
+  "regions": {
+    "header": {
+      "y_min": 36,
+      "y_max": 112,
+      "height": 76,
+      "required_on": ["content", "data", "comparison", "toc", "problem", "solution"],
+      "elements": ["title", "subtitle", "slide_number"]
+    },
+    "body": {
+      "y_min": 128,
+      "y_max": 484,
+      "height": 356,
+      "description": "Main content region"
+    },
+    "footer": {
+      "y_min": 500,
+      "y_max": 526,
+      "height": 26,
+      "elements": ["page_number", "date", "copyright"]
+    }
+  },
+  "z_order": {
+    "background": 0,
+    "decorative_back": 1,
+    "content_shapes": 2,
+    "data_viz": 3,
+    "text_content": 4,
+    "decorative_front": 5,
+    "overlay": 6
+  }
+}

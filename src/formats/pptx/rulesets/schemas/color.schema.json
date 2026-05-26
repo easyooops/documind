@@ -1,0 +1,44 @@
+{
+  "$id": "color",
+  "version": "1.0.0",
+  "description": "Color rules — palette, contrast, gradients, and usage constraints",
+  "palette_structure": {
+    "required_tokens": ["primary", "secondary", "accent", "background", "surface", "text_primary", "text_secondary"],
+    "optional_tokens": ["tint", "success", "warning", "error", "info"]
+  },
+  "contrast": {
+    "text_on_background_min": 4.5,
+    "text_on_surface_min": 4.5,
+    "large_text_min": 3.0,
+    "large_text_threshold_px": 24,
+    "description": "WCAG AA standard: normal text 4.5:1, large text (24px+) 3:1 minimum"
+  },
+  "usage_rules": {
+    "background_colors": ["background", "surface", "primary", "secondary"],
+    "text_colors": ["text_primary", "text_secondary", "surface"],
+    "accent_max_usage_ratio": 0.15,
+    "max_unique_colors_per_slide": 6,
+    "max_unique_colors_per_deck": 8,
+    "description": "Accent color must not exceed 15% of total area; maximum 6 colors per slide"
+  },
+  "gradient": {
+    "max_stops": 4,
+    "min_angle": 0,
+    "max_angle": 360,
+    "allowed_types": ["linear"],
+    "min_contrast_between_stops": 10,
+    "description": "Only linear gradients allowed; maximum 4 stops; minimum contrast of 10 between adjacent colors"
+  },
+  "shape_fills": {
+    "card_background": ["surface", "background", "tint"],
+    "header_shape": ["primary", "secondary"],
+    "decorative": ["accent", "tint", "primary"],
+    "opacity_range": { "min": 0.05, "max": 1.0 }
+  },
+  "reserved_semantics": {
+    "positive": "#10B981",
+    "negative": "#EF4444",
+    "neutral": "#6B7280",
+    "highlight": "accent"
+  }
+}
