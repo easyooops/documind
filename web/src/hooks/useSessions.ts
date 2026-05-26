@@ -5,7 +5,7 @@ import { getUserSessions, getSession } from "@/lib/api";
 import { useUserStore } from "@/stores/user";
 import { useSessionStore } from "@/stores/session";
 import { useDocumentStore } from "@/stores/document";
-import { getJobStatus } from "@/lib/api";
+import { getDocumentVersions, getJobStatus } from "@/lib/api";
 
 export function useSessionsLoader() {
   const user = useUserStore((s) => s.user);
@@ -59,6 +59,8 @@ export function useSessionSelect(onAfterSelect?: () => void) {
           const job = await getJobStatus(lastJobMsg.generationJobId);
           if (job.status === "completed") {
             useDocumentStore.getState().setCurrentJob(job);
+            const versions = await getDocumentVersions(lastJobMsg.generationJobId);
+            useDocumentStore.getState().setVersions(versions);
           }
         }
       } catch {

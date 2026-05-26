@@ -1,8 +1,4 @@
-"""Phase C: Design Quality Evaluator — rule-based slide quality assessment.
-
-Replaces VLM QA with deterministic, rule-based evaluation against OOXML Rule-Sets.
-No image comparison needed — validates HTML structure directly against design rules.
-"""
+"""Deterministic slide checks that complement the visual LLM Judge."""
 
 from __future__ import annotations
 
@@ -15,54 +11,43 @@ logger = get_logger(__name__)
 
 
 async def design_quality_evaluator(state: DocuMindState) -> dict:
-    """Evaluate generated slides against OOXML rule-sets.
-
-    Input: slides_html, design_system, qa_iterations
-    Output: qa_feedback, fidelity_scores, qa_iterations
-    """
+    """Evaluate HTML structure and expose its result to the visual QA node."""
     iteration = state.get("qa_iterations", 0)
     logger.info("design_evaluator.start", iteration=iteration)
 
     slides_html = state.get("slides_html", [])
     design_system = state.get("design_system", {})
-
     if not slides_html:
-        logger.warning("design_evaluator.no_slides")
         return {
-            "qa_feedback": {"passed": True, "fix_instructions": []},
-            "fidelity_scores": [0.0],
-            "qa_iterations": iteration + 1,
+            "rule_based_feedback": {"passed": True, "fix_instructions": []},
+            "rule_based_scores": state.get("rule_based_scores", []) + [0.0],
             "current_phase": "qa",
         }
 
-    ruleset = get_ruleset()
-    evaluator = DesignQualityEvaluator(ruleset)
+    evaluator = DesignQualityEvaluator(get_ruleset())
     result: EvaluationResult = evaluator.evaluate(slides_html, design_system)
-
-    fidelity_scores = state.get("fidelity_scores", [])
-    fidelity_scores.append(result.score)
+    feedback = {
+        "passed": result.passed,
+        "score": result.score,
+        "fix_instructions": result.fix_instructions,
+        "category_scores": result.category_scores,
+        "per_slide_scores": [
+            {"index": slide["index"], "score": slide["score"]}
+            for slide in result.per_slide
+        ],
+    }
 
     logger.info(
         "design_evaluator.complete",
         score=round(result.score, 3),
         passed=result.passed,
-        issues_count=sum(len(s.get("issues", [])) for s in result.per_slide),
-        iteration=iteration + 1,
+        issues_count=sum(len(slide.get("issues", [])) for slide in result.per_slide),
+        iteration=iteration,
         category_scores=result.category_scores,
     )
-
     return {
-        "qa_feedback": {
-            "passed": result.passed,
-            "score": result.score,
-            "fix_instructions": result.fix_instructions,
-            "category_scores": result.category_scores,
-            "per_slide_scores": [
-                {"index": s["index"], "score": s["score"]}
-                for s in result.per_slide
-            ],
-        },
-        "fidelity_scores": fidelity_scores,
-        "qa_iterations": iteration + 1,
+        "rule_based_feedback": feedback,
+        "rule_based_scores": state.get("rule_based_scores", []) + [result.score],
+        "qa_feedback": feedback,
         "current_phase": "qa",
     }

@@ -14,7 +14,7 @@ import { ProgressIndicator } from "./ProgressIndicator";
 
 export function MessageList() {
   const { messages, isGenerating, currentPhase, progress, completedNodes } = useSessionStore();
-  const { currentJob, openPanel } = useDocumentStore();
+  const { currentJob, selectedVersionNumber, openPanel } = useDocumentStore();
   const { t } = useTranslation();
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -71,7 +71,7 @@ export function MessageList() {
                     asChild
                   >
                     <a
-                      href={getDownloadUrl(msg.generationJobId)}
+                      href={getDownloadUrl(msg.generationJobId, selectedVersionNumber)}
                       download
                     >
                       <FileDown className="w-3 h-3 mr-1" />

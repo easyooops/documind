@@ -78,6 +78,7 @@ export interface DocumentVersion {
   slideCount?: number;
   downloadUrl?: string;
   createdAt: string;
+  isLatest?: boolean;
 }
 
 export interface Template {
@@ -89,11 +90,22 @@ export interface Template {
   createdAt: string;
 }
 
+export interface ImageAttachment {
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  width?: number;
+  height?: number;
+  createdAt: string;
+}
+
 export interface GenerateRequest {
   query: string;
   format: DocumentFormat;
   templateId?: string;
   sessionId?: string;
+  imageAttachmentIds?: string[];
   options?: Record<string, unknown>;
 }
 

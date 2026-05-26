@@ -62,11 +62,28 @@ class PPTXFormatEngine(FormatEngine):
 
     async def validate(self, output_path: Path, reference_html: list[dict]) -> float:
         """Validate PPTX output quality via VLM QA."""
+        from src.formats.pptx.agents.nodes.render_convert import _capture_slides
         from src.formats.pptx.agents.nodes.vlm_qa import vlm_quality_gate
+        from src.formats.pptx.visual_renderer import render_pptx_images
+
+        html_screenshots = await _capture_slides(reference_html)
+        pptx_render_info = await render_pptx_images(
+            output_path,
+            output_path.parent / "captures",
+            prefix="validate",
+        )
 
         state = {
             "output_path": str(output_path),
-            "html_screenshots": [],
+            "slides_html": reference_html,
+            "html_screenshots": html_screenshots,
+            "pptx_screenshots": pptx_render_info.get("paths", []),
+            "pptx_render_info": pptx_render_info,
+            "rule_based_feedback": {
+                "passed": True,
+                "score": 1.0,
+                "fix_instructions": [],
+            },
             "qa_iterations": 0,
             "fidelity_scores": [],
         }

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.logging import get_logger
 from src.infrastructure.database import get_session
-from src.infrastructure.models import GenerationJob, JobStatus
+from src.infrastructure.models import DocumentVersion, GenerationJob, JobStatus
 from src.schemas.api import GenerateRequest, JobStatusResponse
 
 logger = get_logger(__name__)
@@ -73,13 +75,26 @@ async def get_job_status(
     if job.status == JobStatus.COMPLETED.value and job.file:
         download_url = f"/api/v1/documents/{job_id}/download"
 
+    version_result = await db.execute(
+        select(DocumentVersion)
+        .where(DocumentVersion.document_id == job_id)
+        .options(selectinload(DocumentVersion.slide_versions))
+        .order_by(DocumentVersion.version_number.desc())
+        .limit(1)
+    )
+    latest_version = version_result.scalar_one_or_none()
+
     return JobStatusResponse(
         id=job.id,
         status=job.status,
         phase=job.phase,
         progress=job.progress or 0.0,
-        fidelity_score=job.file.fidelity_score if job.file else None,
-        slide_count=job.file.slide_count if job.file else None,
+        fidelity_score=latest_version.fidelity_score if latest_version else (
+            job.file.fidelity_score if job.file else None
+        ),
+        slide_count=len(latest_version.slide_versions) if latest_version else (
+            job.file.slide_count if job.file else None
+        ),
         error=job.error,
         download_url=download_url,
         created_at=job.created_at,
@@ -90,6 +105,7 @@ async def get_job_status(
 @router.get("/{job_id}/download")
 async def download_document(
     job_id: str,
+    version: int | None = None,
     db: AsyncSession = Depends(get_session),
 ):
     """Download the generated document file."""
@@ -108,13 +124,29 @@ async def download_document(
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status != JobStatus.COMPLETED.value:
         raise HTTPException(status_code=400, detail="Document not ready")
-    if not job.file:
+    version_stmt = select(DocumentVersion).where(DocumentVersion.document_id == job_id)
+    if version is None:
+        version_stmt = version_stmt.order_by(DocumentVersion.version_number.desc()).limit(1)
+    else:
+        version_stmt = version_stmt.where(DocumentVersion.version_number == version)
+    version_result = await db.execute(version_stmt)
+    selected_version = version_result.scalar_one_or_none()
+    if version is not None and not selected_version:
+        raise HTTPException(status_code=404, detail="Document version not found")
+
+    path = selected_version.file_path if selected_version else (
+        job.file.storage_path if job.file else None
+    )
+    if not path:
         raise HTTPException(status_code=404, detail="File not found")
+    filename = job.file.filename if job.file else "document.pptx"
+    if selected_version:
+        filename = f"{Path(filename).stem}-v{selected_version.version_number}{Path(filename).suffix}"
 
     return FileResponse(
-        path=job.file.storage_path,
-        filename=job.file.filename,
-        media_type=job.file.mime_type,
+        path=path,
+        filename=filename,
+        media_type=job.file.mime_type if job.file else "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )
 
 
@@ -126,8 +158,8 @@ async def get_document_versions(
     """Get all versions of a generated document."""
     from sqlalchemy import select
 
-    from src.infrastructure.models import DocumentVersion
     from src.schemas.api import DocumentVersionResponse
+    from sqlalchemy.orm import selectinload
 
     result = await db.execute(select(GenerationJob).where(GenerationJob.id == job_id))
     job = result.scalar_one_or_none()
@@ -137,6 +169,7 @@ async def get_document_versions(
     versions_result = await db.execute(
         select(DocumentVersion)
         .where(DocumentVersion.document_id == job_id)
+        .options(selectinload(DocumentVersion.slide_versions))
         .order_by(DocumentVersion.version_number.desc())
     )
     versions = versions_result.scalars().all()
@@ -148,9 +181,10 @@ async def get_document_versions(
             trigger=v.trigger,
             user_instruction=v.user_instruction,
             fidelity_score=v.fidelity_score,
-            slide_count=None,
+            slide_count=len(v.slide_versions),
             download_url=f"/api/v1/documents/{job_id}/download?version={v.version_number}",
             created_at=v.created_at,
+            is_latest=v.version_number == versions[0].version_number,
         )
         for v in versions
     ]
@@ -159,6 +193,7 @@ async def get_document_versions(
 @router.get("/{job_id}/preview")
 async def preview_document(
     job_id: str,
+    version: int | None = None,
     db: AsyncSession = Depends(get_session),
 ):
     """Return an HTML preview page for the generated document."""
@@ -186,8 +221,54 @@ async def preview_document(
             content = await storage.load(job.file.storage_path)
             return HTMLResponse(content=content)
 
-    slides = job.slides or []
-    sorted_slides = sorted(slides, key=lambda s: s.slide_number)
+    version_stmt = (
+        select(DocumentVersion)
+        .where(DocumentVersion.document_id == job_id)
+        .options(selectinload(DocumentVersion.slide_versions))
+    )
+    if version is None:
+        version_stmt = version_stmt.order_by(DocumentVersion.version_number.desc()).limit(1)
+    else:
+        version_stmt = version_stmt.where(DocumentVersion.version_number == version)
+    version_result = await db.execute(version_stmt)
+    selected_version = version_result.scalar_one_or_none()
+    if version is not None and not selected_version:
+        raise HTTPException(status_code=404, detail="Document version not found")
+    if selected_version:
+        sorted_slides = sorted(selected_version.slide_versions, key=lambda s: s.slide_index)
+        slide_html = [slide.html for slide in sorted_slides]
+        pipeline_data = selected_version.pipeline_data or {}
+        screenshot_paths = pipeline_data.get("pptx_screenshots", [])
+        if pipeline_data.get("native_template_output") and screenshot_paths:
+            embedded_slides = []
+            for screenshot_path in screenshot_paths:
+                try:
+                    encoded = base64.b64encode(Path(screenshot_path).read_bytes()).decode("ascii")
+                    embedded_slides.append(
+                        f'<div class="slide-frame"><img src="data:image/png;base64,{encoded}" '
+                        'alt="Rendered PPTX slide"/></div>'
+                    )
+                except OSError:
+                    embedded_slides = []
+                    break
+            if embedded_slides:
+                return HTMLResponse(
+                    content=(
+                        "<html><head><meta charset='utf-8'><style>"
+                        "*{box-sizing:border-box;margin:0;padding:0}"
+                        "body{background:#1a1a2e;padding:12px}"
+                        ".slide-frame{margin:0 auto 12px;max-width:100%;"
+                        "border-radius:4px;overflow:hidden;"
+                        "box-shadow:0 4px 24px rgba(0,0,0,.3)}"
+                        ".slide-frame img{display:block;width:100%;height:auto}"
+                        "</style></head><body>"
+                        + "".join(embedded_slides)
+                        + "</body></html>"
+                    )
+                )
+    else:
+        sorted_slides = sorted(job.slides or [], key=lambda s: s.slide_number)
+        slide_html = [slide.html_content or "" for slide in sorted_slides]
 
     if sorted_slides:
         html_parts = [
@@ -234,10 +315,10 @@ async def preview_document(
             "</script>",
             "</head><body><div class='slides-wrapper'>",
         ]
-        for s in sorted_slides:
+        for html in slide_html:
             html_parts.append(
                 f'<div class="slide-frame">'
-                f'<div class="slide-inner">{s.html_content or ""}</div>'
+                f'<div class="slide-inner">{html}</div>'
                 f'</div>'
             )
         html_parts.append("</div></body></html>")

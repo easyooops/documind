@@ -9,7 +9,7 @@ import { getPreviewUrl, getDownloadUrl } from "@/lib/api";
 import { useTranslation } from "@/hooks/useTranslation";
 
 export function FullscreenViewer() {
-  const { currentJob, isFullscreen, setFullscreen } = useDocumentStore();
+  const { currentJob, selectedVersionNumber, isFullscreen, setFullscreen } = useDocumentStore();
   const { t } = useTranslation();
 
   const handleEsc = useCallback(
@@ -40,7 +40,7 @@ export function FullscreenViewer() {
           <div className="flex items-center gap-2">
             {currentJob.downloadUrl && (
               <Button size="sm" variant="outline" className="h-8" asChild>
-                <a href={getDownloadUrl(currentJob.id)} download>
+                <a href={getDownloadUrl(currentJob.id, selectedVersionNumber)} download>
                   <Download className="w-3.5 h-3.5 mr-1" />
                   {t("document.download")}
                 </a>
@@ -60,7 +60,7 @@ export function FullscreenViewer() {
         {/* Viewer */}
         <div className="flex-1 overflow-hidden">
           <iframe
-            src={getPreviewUrl(currentJob.id)}
+            src={getPreviewUrl(currentJob.id, selectedVersionNumber)}
             className="w-full h-full border-0"
             title="Full Screen Document Preview"
             sandbox="allow-same-origin allow-scripts"

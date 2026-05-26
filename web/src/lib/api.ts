@@ -4,6 +4,7 @@ import type {
   Session,
   SessionSummary,
   Template,
+  ImageAttachment,
   DocumentVersion,
   User,
   ChatMessage,
@@ -133,6 +134,7 @@ export async function generateDocument(
       format: req.format,
       template_id: req.templateId,
       session_id: req.sessionId,
+      image_attachment_ids: req.imageAttachmentIds || [],
       options: req.options || {},
     }),
   });
@@ -147,15 +149,28 @@ export async function getJobStatus(jobId: string): Promise<GenerationJob> {
 export async function getDocumentVersions(
   jobId: string
 ): Promise<DocumentVersion[]> {
-  return request<DocumentVersion[]>(`/api/v1/documents/${jobId}/versions`);
+  const data = await request<Record<string, unknown>[]>(`/api/v1/documents/${jobId}/versions`);
+  return data.map((version) => ({
+    id: version.id as string,
+    versionNumber: version.version_number as number,
+    trigger: version.trigger as string,
+    userInstruction: version.user_instruction as string | undefined,
+    fidelityScore: version.fidelity_score as number | undefined,
+    slideCount: version.slide_count as number | undefined,
+    downloadUrl: version.download_url as string | undefined,
+    createdAt: version.created_at as string,
+    isLatest: version.is_latest as boolean | undefined,
+  }));
 }
 
-export function getDownloadUrl(jobId: string): string {
-  return `${API_URL}/api/v1/documents/${jobId}/download`;
+export function getDownloadUrl(jobId: string, versionNumber?: number | null): string {
+  const suffix = versionNumber ? `?version=${versionNumber}` : "";
+  return `${API_URL}/api/v1/documents/${jobId}/download${suffix}`;
 }
 
-export function getPreviewUrl(jobId: string): string {
-  return `${API_URL}/api/v1/documents/${jobId}/preview`;
+export function getPreviewUrl(jobId: string, versionNumber?: number | null): string {
+  const suffix = versionNumber ? `?version=${versionNumber}` : "";
+  return `${API_URL}/api/v1/documents/${jobId}/preview${suffix}`;
 }
 
 // --- Templates ---
@@ -187,6 +202,29 @@ export async function listTemplates(): Promise<Template[]> {
   return request<Template[]>("/api/v1/templates/");
 }
 
+export async function uploadChatImage(file: File): Promise<ImageAttachment> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_URL}/api/v1/chat/images/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: "Image upload failed" }));
+    throw new Error(error.detail || "Image upload failed");
+  }
+  const data = await res.json();
+  return {
+    id: data.id,
+    filename: data.filename,
+    mimeType: data.mime_type,
+    sizeBytes: data.size_bytes,
+    width: data.width,
+    height: data.height,
+    createdAt: data.created_at,
+  };
+}
+
 // --- SSE Streaming ---
 
 export function streamGeneration(
@@ -215,6 +253,7 @@ export function streamGeneration(
       format: req.format,
       template_id: req.templateId,
       session_id: req.sessionId,
+      image_attachment_ids: req.imageAttachmentIds || [],
       options: req.options || {},
     }),
     signal: controller.signal,

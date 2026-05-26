@@ -11,6 +11,7 @@ from pathlib import Path
 from src.core.config import settings
 from src.core.logging import get_logger
 from src.formats.pptx.mapper.engine import CSStoOOXMLEngine
+from src.formats.pptx.visual_renderer import render_pptx_images
 from src.schemas.agents import DocuMindState
 
 logger = get_logger(__name__)
@@ -43,15 +44,36 @@ async def render_and_convert(state: DocuMindState) -> dict:
 
     output_dir = Path(settings.storage_local_path)
     engine = CSStoOOXMLEngine()
-    output_path = engine.build_presentation(slides_html, output_dir, title=title)
+    output_path = engine.build_presentation(
+        slides_html,
+        output_dir,
+        title=title,
+        template_bytes=state.get("_template_bytes"),
+    )
+    pptx_render_info = await render_pptx_images(
+        str(output_path),
+        output_dir / "captures",
+        prefix=f"pptx_{uuid.uuid4().hex[:6]}",
+    )
 
     html_preview_path = _save_html_preview(slides_html, output_dir)
 
-    logger.info("render_convert.complete", output=str(output_path), screenshots=len(html_screenshots))
+    logger.info(
+        "render_convert.complete",
+        output=str(output_path),
+        html_screenshots=len(html_screenshots),
+        pptx_screenshots=len(pptx_render_info.get("paths", [])),
+        pptx_renderer=pptx_render_info.get("renderer"),
+    )
     return {
         "output_path": str(output_path),
         "html_preview_path": html_preview_path,
         "html_screenshots": html_screenshots,
+        "pptx_screenshots": pptx_render_info.get("paths", []),
+        "pptx_render_info": pptx_render_info,
+        "screenshots_count": min(
+            len(html_screenshots), len(pptx_render_info.get("paths", []))
+        ),
         "current_phase": "converting",
     }
 
@@ -62,7 +84,7 @@ async def _capture_slides(slides_html: list[dict]) -> list[str]:
     output_dir = Path(settings.storage_local_path) / "captures"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for slide_data in slides_html[:12]:
+    for slide_data in slides_html:
         html = slide_data.get("html", "")
         if not html:
             continue

@@ -6,6 +6,7 @@ All conversions are pure arithmetic (px → EMU, degrees → 60000ths).
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import uuid
@@ -60,27 +61,58 @@ DEGREES_TO_60K = 60000
 class CSStoOOXMLEngine:
     """Deterministic engine that converts parsed HTML elements to PPTX shapes."""
 
-    def build_presentation(self, slides_html: list[dict], output_dir: Path, title: str = "") -> Path:
+    def build_presentation(
+        self,
+        slides_html: list[dict],
+        output_dir: Path,
+        title: str = "",
+        template_bytes: bytes | None = None,
+    ) -> Path:
         """Convert all slides HTML into a .pptx file."""
         from pptx import Presentation
         from pptx.util import Emu
 
-        prs = Presentation()
-        prs.slide_width = Emu(960 * PX_TO_EMU)
-        prs.slide_height = Emu(540 * PX_TO_EMU)
+        source_layouts = []
+        using_template = bool(template_bytes)
+        if template_bytes:
+            prs = Presentation(io.BytesIO(template_bytes))
+            source_layouts = [slide.slide_layout for slide in prs.slides]
+            self._remove_template_slides(prs)
+        else:
+            prs = Presentation()
+            prs.slide_width = Emu(960 * PX_TO_EMU)
+            prs.slide_height = Emu(540 * PX_TO_EMU)
 
-        blank_layout = prs.slide_layouts[6]
-
-        for slide_data in sorted(slides_html, key=lambda s: s.get("index", 0)):
+        for position, slide_data in enumerate(
+            sorted(slides_html, key=lambda s: s.get("index", 0))
+        ):
             html = slide_data.get("html", "")
             if not html:
                 continue
 
-            slide = prs.slides.add_slide(blank_layout)
+            layout = self._select_layout(prs, slide_data, source_layouts, position)
+            slide = prs.slides.add_slide(layout)
             elements = parse_slide_html(html)
+            slide_type = slide_data.get("metadata", {}).get("slide_type", "content")
+            native_title_applied = (
+                using_template
+                and slide_type not in {"cover", "section"}
+                and self._apply_native_title(slide, elements)
+            )
 
             for element in elements:
                 try:
+                    if using_template and self._is_background_element(element):
+                        # Keep original master/layout background inherited from the uploaded OOXML.
+                        continue
+                    if using_template and self._is_generated_footer(element):
+                        # Template footers belong to the native master/layout,
+                        # rather than generated overlay HTML.
+                        continue
+                    if native_title_applied and self._is_generated_header(element):
+                        # Native title placeholders and master chrome replace
+                        # synthetic header shapes.
+                        continue
                     if self._is_background_element(element):
                         self._apply_slide_background(slide, element)
                         continue
@@ -99,6 +131,56 @@ class CSStoOOXMLEngine:
 
         logger.info("mapper.saved", path=str(output_path), slides=len(prs.slides))
         return output_path
+
+    def _select_layout(self, prs, slide_data: dict, source_layouts: list, position: int):
+        """Select an uploaded template layout while preserving the original master tree."""
+        slide_type = slide_data.get("metadata", {}).get("slide_type", "content")
+        if source_layouts:
+            if slide_type in {"cover", "section"}:
+                return source_layouts[0]
+            if len(source_layouts) > 1:
+                return source_layouts[1]
+            return source_layouts[0]
+        fallback_index = 6 if len(prs.slide_layouts) > 6 else 0
+        return prs.slide_layouts[fallback_index]
+
+    def _remove_template_slides(self, presentation) -> None:
+        """Remove sample slides while leaving template masters, themes, and layouts intact."""
+        slide_ids = presentation.slides._sldIdLst
+        for slide_id in list(slide_ids):
+            presentation.part.drop_rel(slide_id.rId)
+            slide_ids.remove(slide_id)
+
+    def _apply_native_title(self, slide, elements: list[ParsedElement]) -> bool:
+        """Fill a template title placeholder using generated heading text."""
+        title_shape = slide.shapes.title
+        if title_shape is None:
+            return False
+
+        title_elements = [
+            element
+            for element in elements
+            if self._is_generated_header(element)
+            and element.pptx_type == "textbox"
+            and element.text_content.strip()
+        ]
+        if not title_elements:
+            return False
+
+        title_element = max(
+            title_elements,
+            key=lambda element: self._extract_px_value(
+                element.styles.get("font-size", "0")
+            ),
+        )
+        title_shape.text = title_element.text_content.strip()
+        return True
+
+    def _is_generated_header(self, element: ParsedElement) -> bool:
+        return element.attributes.get("data-pptx-region") == "header"
+
+    def _is_generated_footer(self, element: ParsedElement) -> bool:
+        return element.attributes.get("data-pptx-region") == "footer"
 
     def _add_element(self, slide, element: ParsedElement) -> None:
         """Route element to appropriate builder based on pptx_type."""

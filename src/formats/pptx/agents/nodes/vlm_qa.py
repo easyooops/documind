@@ -1,14 +1,18 @@
-"""Phase C: VLM Visual QA — compares HTML captures vs PPTX renders."""
+"""Visual LLM Judge for every rendered slide in a generated PPTX."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from pathlib import Path
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from src.agents.loader import get_llm_for_agent, load_agent_config
 from src.core.logging import get_logger
 from src.schemas.agents import DocuMindState
+from src.utils.json_repair import parse_llm_json
 
 logger = get_logger(__name__)
 
@@ -17,164 +21,190 @@ FORMAT_ID = "pptx"
 
 
 async def vlm_quality_gate(state: DocuMindState) -> dict:
-    """VLM-based visual QA comparing HTML captures to the PPTX output."""
-    logger.info("vlm_qa.start", iteration=state.get("qa_iterations", 0))
-
+    """Judge HTML intent against rendered PPTX output for every slide."""
+    iteration = state.get("qa_iterations", 0) + 1
     config = _as_dict(load_agent_config(AGENT_NAME, format_id=FORMAT_ID))
-    qa_config = _as_dict(config.get("qa"))
-    threshold = qa_config.get("fidelity_threshold", 0.85)
-
+    threshold = _as_dict(config.get("qa")).get("fidelity_threshold", 0.85)
     html_screenshots = state.get("html_screenshots", [])
-    output_path = state.get("output_path")
-    iterations = state.get("qa_iterations", 0) + 1
+    pptx_screenshots = state.get("pptx_screenshots", [])
+    slides_html = state.get("slides_html", [])
+    slide_indices = [slide.get("index", index + 1) for index, slide in enumerate(slides_html)]
+    pair_count = min(len(html_screenshots), len(pptx_screenshots), len(slide_indices))
+    rule_feedback = _as_dict(state.get("rule_based_feedback"))
+    rule_score = float(rule_feedback.get("score", 1.0))
+    template_profile = (
+        _as_dict(_as_dict(_as_dict(state.get("master_context")).get("template")).get("visual_analysis"))
+        .get("profile", {})
+    )
 
-    if not html_screenshots or not output_path:
-        logger.warning("vlm_qa.no_data")
+    if pair_count == 0:
+        logger.warning("vlm_qa.no_rendered_pairs")
+        feedback = {
+            **rule_feedback,
+            "passed": bool(rule_feedback.get("passed", True)),
+            "visual_judge_status": "unavailable",
+            "visual_issues": [
+                "No paired HTML/PPTX slide images were available for VLM evaluation."
+            ],
+            "evaluated_slide_count": 0,
+            "total_slide_count": len(slides_html),
+        }
         return {
-            "qa_iterations": iterations,
-            "qa_feedback": {"passed": True, "issues": []},
-            "fidelity_score": 0.85,
-            "fidelity_scores": state.get("fidelity_scores", []) + [0.85],
+            "qa_iterations": iteration,
+            "qa_feedback": feedback,
+            "fidelity_score": rule_score,
+            "fidelity_scores": state.get("fidelity_scores", []) + [rule_score],
             "current_phase": "qa",
         }
 
-    pptx_screenshots = await _render_pptx_slides(output_path)
+    semaphore = asyncio.Semaphore(3)
 
-    fidelity_score, feedback = await _vlm_compare(html_screenshots, pptx_screenshots)
+    async def evaluate(index: int) -> dict:
+        async with semaphore:
+            return await _judge_slide_pair(
+                slide_indices[index],
+                html_screenshots[index],
+                pptx_screenshots[index],
+                template_profile,
+            )
 
-    passed = fidelity_score >= threshold
-    feedback["passed"] = passed
+    per_slide = await asyncio.gather(*(evaluate(index) for index in range(pair_count)))
+    successful = [result for result in per_slide if result.get("status") == "evaluated"]
+    visual_score = (
+        sum(float(result.get("score", 0.0)) for result in successful) / len(successful)
+        if successful
+        else rule_score
+    )
+    combined_score = round(rule_score * 0.35 + visual_score * 0.65, 4)
+    visual_passed = bool(successful) and all(
+        bool(result.get("passed", False)) for result in successful
+    ) and visual_score >= threshold
+    all_slides_evaluated = len(successful) == pair_count == len(slides_html)
+    passed = bool(rule_feedback.get("passed", True)) and visual_passed and all_slides_evaluated
+    visual_fixes = [
+        instruction
+        for result in successful
+        for instruction in result.get("fix_instructions", [])
+    ]
+    visual_issues = [
+        issue
+        for result in per_slide
+        for issue in result.get("issues", [])
+    ]
+    status = "complete" if all_slides_evaluated else ("partial" if successful else "failed")
+    feedback = {
+        "passed": passed,
+        "score": combined_score,
+        "rule_score": rule_score,
+        "visual_score": round(visual_score, 4),
+        "visual_judge_status": status,
+        "issues": visual_issues,
+        "fix_instructions": list(rule_feedback.get("fix_instructions", [])) + visual_fixes,
+        "category_scores": rule_feedback.get("category_scores", {}),
+        "per_slide_scores": rule_feedback.get("per_slide_scores", []),
+        "visual_per_slide": per_slide,
+        "evaluated_slide_indices": [
+            result["index"] for result in successful
+        ],
+        "evaluated_slide_count": len(successful),
+        "total_slide_count": len(slides_html),
+        "pptx_renderer": _as_dict(state.get("pptx_render_info")).get("renderer"),
+    }
 
-    logger.info("vlm_qa.complete", fidelity=fidelity_score, passed=passed, iteration=iterations)
+    logger.info(
+        "vlm_qa.complete",
+        score=combined_score,
+        visual_score=round(visual_score, 4),
+        passed=passed,
+        evaluated=len(successful),
+        total=len(slides_html),
+        iteration=iteration,
+    )
     return {
-        "qa_iterations": iterations,
+        "qa_iterations": iteration,
         "qa_feedback": feedback,
-        "fidelity_score": fidelity_score,
-        "fidelity_scores": state.get("fidelity_scores", []) + [fidelity_score],
-        "pptx_screenshots": [str(p) for p in pptx_screenshots],
+        "fidelity_score": combined_score,
+        "fidelity_scores": state.get("fidelity_scores", []) + [combined_score],
         "current_phase": "qa",
     }
 
 
-async def _vlm_compare(
-    html_screenshots: list[str],
-    pptx_screenshots: list[bytes],
-) -> tuple[float, dict]:
-    """Use VLM to compare HTML captures vs PPTX renders."""
+async def _judge_slide_pair(
+    slide_index: int,
+    html_path: str,
+    pptx_path: str,
+    template_profile: dict,
+) -> dict:
+    """Evaluate a single HTML/PPTX raster pair with a visual-capable model."""
     try:
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        llm = get_llm_for_agent(AGENT_NAME, format_id=FORMAT_ID)
-
-        img_content = []
-        pairs = min(len(html_screenshots), len(pptx_screenshots), 3)
-
-        for i in range(pairs):
-            html_path = Path(html_screenshots[i])
-            if html_path.exists():
-                html_bytes = html_path.read_bytes()
-                img_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{base64.b64encode(html_bytes).decode()}"},
-                })
-
-            if pptx_screenshots[i]:
-                img_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{base64.b64encode(pptx_screenshots[i]).decode()}"},
-                })
-
-        if not img_content:
-            return 0.85, {"passed": True, "issues": [], "fix_instructions": []}
-
+        html_bytes = Path(html_path).read_bytes()
+        pptx_bytes = Path(pptx_path).read_bytes()
         prompt = (
-            "Compare pairs of slide images. For each pair: first image is the HTML design intent "
-            "(ground truth), second is the PPTX conversion result.\n\n"
-            "Evaluate fidelity on:\n"
-            "1. Element positions and sizes match\n"
-            "2. Colors and gradients preserved\n"
-            "3. Text readable and correctly placed\n"
-            "4. Shapes and decorative elements present\n"
-            "5. Overall layout composition maintained\n\n"
-            "Output ONLY valid JSON:\n"
-            '{"fidelity": 0.0-1.0, "issues": ["..."], "fix_instructions": ["Slide N: ..."]}'
+            f"Evaluate slide {slide_index}. Image 1 is its intended HTML render; image 2 is the "
+            "rendered PPTX result. Judge both conversion fidelity and final visible quality: "
+            "clipping/overflow, missing elements, alignment, typography readability, contrast, "
+            "spacing balance, and consistency with the template profile when supplied. "
+            "Do not complain about content semantics unless text is lost or unreadable.\n\n"
+            "Template visual profile: "
+            f"{json.dumps(template_profile, ensure_ascii=False)[:2500]}\n\n"
+            + (
+                "The PPTX preserves the uploaded native OOXML master/layout background. "
+                "Treat the PPTX master styling and template profile as authoritative; do not "
+                "penalize a synthetic HTML background that differs from preserved template "
+                "chrome. Evaluate the generated foreground content within that template.\n\n"
+                if template_profile else ""
+            )
+            + "Return ONLY JSON: "
+            '{"score": 0.0, "passed": false, "issues": ["Slide N: ..."], '
+            '"fix_instructions": ["Slide N: ..."], "observations": ["..."]}'
         )
-
-        messages = [
-            SystemMessage(content="You are a strict visual QA critic for PPTX slide presentations."),
-            HumanMessage(content=[{"type": "text", "text": prompt}] + img_content),
+        message_content = [
+            {"type": "text", "text": prompt},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64.b64encode(html_bytes).decode('ascii')}"
+                },
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64.b64encode(pptx_bytes).decode('ascii')}"
+                },
+            },
         ]
+        llm = get_llm_for_agent(AGENT_NAME, format_id=FORMAT_ID)
+        response = await llm.ainvoke([
+            SystemMessage(content="You are a strict slide-by-slide visual presentation QA judge."),
+            HumanMessage(content=message_content),
+        ])
+        result = parse_llm_json(response.content)
+        if not isinstance(result, dict):
+            raise ValueError("VLM result was not an object")
+        score = max(0.0, min(1.0, float(result.get("score", 0.0))))
+        return {
+            "index": slide_index,
+            "status": "evaluated",
+            "score": score,
+            "passed": bool(result.get("passed", score >= 0.85)),
+            "issues": _strings(result.get("issues")),
+            "fix_instructions": _strings(result.get("fix_instructions")),
+            "observations": _strings(result.get("observations")),
+        }
+    except Exception as exc:
+        logger.warning("vlm_qa.slide_failed", slide=slide_index, error=str(exc)[:200])
+        return {
+            "index": slide_index,
+            "status": "failed",
+            "score": 0.0,
+            "passed": False,
+            "issues": [f"Slide {slide_index}: visual Judge evaluation failed."],
+            "fix_instructions": [],
+        }
 
-        response = await llm.ainvoke(messages)
 
-        import re
-        fidelity_match = re.search(r'"fidelity"\s*:\s*([\d.]+)', response.content)
-        fidelity = float(fidelity_match.group(1)) if fidelity_match else 0.85
-
-        try:
-            json_match = re.search(r'\{[\s\S]*"fidelity"[\s\S]*\}', response.content)
-            if json_match:
-                result = json.loads(json_match.group())
-                return min(fidelity, 1.0), {
-                    "issues": result.get("issues", []),
-                    "fix_instructions": result.get("fix_instructions", []),
-                }
-        except json.JSONDecodeError:
-            pass
-
-        return min(fidelity, 1.0), {"issues": [], "fix_instructions": []}
-
-    except Exception as e:
-        logger.warning("vlm_qa.compare_error", error=str(e)[:200])
-        return 0.85, {"passed": True, "issues": [], "fix_instructions": []}
-
-
-async def _render_pptx_slides(output_path: str) -> list[bytes]:
-    """Render PPTX slides as PNG images for comparison."""
-    screenshots = []
-    try:
-        from pptx import Presentation
-        from PIL import Image, ImageDraw
-        import io
-
-        prs = Presentation(output_path)
-        for slide in list(prs.slides)[:5]:
-            img = Image.new("RGB", (960, 540), color=(255, 255, 255))
-            draw = ImageDraw.Draw(img)
-
-            for shape in slide.shapes:
-                x = int(shape.left / 9525) if shape.left else 0
-                y = int(shape.top / 9525) if shape.top else 0
-                w = int(shape.width / 9525) if shape.width else 0
-                h = int(shape.height / 9525) if shape.height else 0
-
-                fill_color = (240, 240, 240)
-                try:
-                    if shape.fill and shape.fill.type is not None:
-                        fc = shape.fill.fore_color
-                        if fc and fc.rgb:
-                            fill_color = (fc.rgb[0], fc.rgb[1], fc.rgb[2])
-                except Exception:
-                    pass
-
-                if shape.has_text_frame:
-                    draw.rectangle([x, y, x + w, y + h], outline=(200, 200, 200))
-                    text = shape.text_frame.text
-                    if text:
-                        try:
-                            draw.text((x + 4, y + 4), text[:80], fill=(0, 0, 0))
-                        except Exception:
-                            pass
-                else:
-                    draw.rectangle([x, y, x + w, y + h], fill=fill_color)
-
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            screenshots.append(buf.getvalue())
-    except Exception as e:
-        logger.warning("vlm_qa.pptx_render_error", error=str(e)[:200])
-
-    return screenshots
+def _strings(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
 
 
 def _as_dict(value: object) -> dict:

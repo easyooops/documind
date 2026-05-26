@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
   Send,
   Paperclip,
@@ -12,6 +12,7 @@ import {
   Globe,
   X,
   AlertCircle,
+  ImagePlus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSessionStore } from "@/stores/session";
@@ -23,10 +24,13 @@ import {
   streamGeneration,
   uploadTemplate,
   getJobStatus,
+  getDocumentVersions,
+  uploadChatImage,
 } from "@/lib/api";
 import {
   FORMAT_LABELS,
   type DocumentFormat,
+  type ImageAttachment,
   type Template,
 } from "@/types";
 import { generateId } from "@/lib/utils";
@@ -43,16 +47,26 @@ const FORMAT_ICONS: Record<DocumentFormat, React.ElementType> = {
 };
 
 const FORMATS: DocumentFormat[] = ["pptx", "docx", "pdf", "md", "html", "xlsx", "hwp"];
+const MAX_IMAGES = 4;
+
+interface PendingImage extends ImageAttachment {
+  previewUrl: string;
+}
 
 export function MessageInput() {
   const [text, setText] = useState("");
   const [showFormats, setShowFormats] = useState(false);
   const [attachedTemplate, setAttachedTemplate] = useState<Template | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [attachedImages, setAttachedImages] = useState<PendingImage[]>([]);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const imageRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cancelStreamRef = useRef<(() => void) | null>(null);
+  const attachedImagesRef = useRef<PendingImage[]>([]);
 
   const { user } = useUserStore();
   const {
@@ -71,7 +85,14 @@ export function MessageInput() {
     clearProgress,
     isGenerating,
   } = useSessionStore();
-  const { setCurrentJob, openPanel } = useDocumentStore();
+  const {
+    versions,
+    selectedVersionNumber,
+    setVersions,
+    selectVersion,
+    setCurrentJob,
+    openPanel,
+  } = useDocumentStore();
   const { t, locale } = useTranslation();
 
   const FormatIcon = FORMAT_ICONS[selectedFormat];
@@ -82,11 +103,22 @@ export function MessageInput() {
     defaultValue: "PowerPoint template can be attached only before the first message.",
   });
 
+  useEffect(() => {
+    attachedImagesRef.current = attachedImages;
+  }, [attachedImages]);
+
+  useEffect(() => () => {
+    attachedImagesRef.current.forEach((image) => URL.revokeObjectURL(image.previewUrl));
+  }, []);
+
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!text.trim() || isGenerating) return;
+    if ((!text.trim() && attachedImages.length === 0) || isGenerating || uploadingImage) return;
 
-    const query = text.trim();
+    const query = text.trim() || t("chat.imageOnlyPrompt", {
+      defaultValue: "첨부 이미지를 분석하여 문서에 필요한 변경을 반영해주세요.",
+    });
+    const submittedImages = attachedImages;
     setText("");
     clearProgress();
     setGenerating(true);
@@ -96,7 +128,7 @@ export function MessageInput() {
     const userMessage = {
       id: generateId(),
       role: "user" as const,
-      content: query,
+      content: `${query}${submittedImages.length ? `\n[${submittedImages.length} image(s) attached]` : ""}`,
       createdAt: new Date().toISOString(),
     };
     addMessage(userMessage);
@@ -130,7 +162,11 @@ export function MessageInput() {
           format: selectedFormat,
           templateId: templateForFirstTurn?.id,
           sessionId,
-          options: { locale },
+          imageAttachmentIds: submittedImages.map((image) => image.id),
+          options: {
+            locale,
+            ...(selectedVersionNumber ? { base_version_number: selectedVersionNumber } : {}),
+          },
         },
         {
           onPhaseStart: (phase) => {
@@ -181,6 +217,8 @@ export function MessageInput() {
               try {
                 const job = await getJobStatus(data.job_id);
                 setCurrentJob(job);
+                const documentVersions = await getDocumentVersions(data.job_id);
+                setVersions(documentVersions);
                 openPanel();
               } catch {
                 setCurrentJob({
@@ -217,6 +255,8 @@ export function MessageInput() {
       );
       cancelStreamRef.current = cancel;
       setAttachedTemplate(null);
+      submittedImages.forEach((image) => URL.revokeObjectURL(image.previewUrl));
+      setAttachedImages([]);
     } catch (err) {
       setGenerating(false);
       const message = err instanceof Error ? err.message : String(err);
@@ -258,6 +298,52 @@ export function MessageInput() {
     }
   };
 
+  const addImages = async (files: File[]) => {
+    if (isGenerating) return;
+    const remaining = MAX_IMAGES - attachedImages.length;
+    const selectedFiles = files.filter((file) => file.type.startsWith("image/")).slice(0, remaining);
+    if (!selectedFiles.length) {
+      setUploadError(t("chat.imageAttachHint", {
+        defaultValue: "PNG, JPEG, WEBP, or GIF images can be attached.",
+      }));
+      return;
+    }
+    setUploadError(null);
+    setUploadingImage(true);
+    try {
+      const uploaded: PendingImage[] = [];
+      for (const file of selectedFiles) {
+        const attachment = await uploadChatImage(file);
+        uploaded.push({ ...attachment, previewUrl: URL.createObjectURL(file) });
+      }
+      setAttachedImages((current) => [...current, ...uploaded].slice(0, MAX_IMAGES));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Image upload failed";
+      setUploadError(message);
+    } finally {
+      setUploadingImage(false);
+    }
+  };
+
+  const handleImageInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await addImages(Array.from(e.target.files || []));
+    e.target.value = "";
+  };
+
+  const removeImage = (id: string) => {
+    setAttachedImages((current) => {
+      const removed = current.find((image) => image.id === id);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((image) => image.id !== id);
+    });
+  };
+
+  const handleImageDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDraggingImage(false);
+    void addImages(Array.from(e.dataTransfer.files));
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -266,7 +352,18 @@ export function MessageInput() {
   };
 
   return (
-    <div className="border-t border-border bg-background/80 backdrop-blur-sm px-3 sm:px-4 py-3 safe-area-pb">
+    <div
+      className={cn(
+        "border-t border-border bg-background/80 backdrop-blur-sm px-3 sm:px-4 py-3 safe-area-pb transition-colors",
+        isDraggingImage && "bg-primary/10 ring-2 ring-inset ring-primary/40",
+      )}
+      onDragOver={(event) => {
+        event.preventDefault();
+        setIsDraggingImage(true);
+      }}
+      onDragLeave={() => setIsDraggingImage(false)}
+      onDrop={handleImageDrop}
+    >
       <div className="max-w-3xl mx-auto w-full">
         {/* Attached Template */}
         {attachedTemplate && (
@@ -286,6 +383,24 @@ export function MessageInput() {
             >
               <X className="w-3 h-3" />
             </button>
+          </div>
+        )}
+        {attachedImages.length > 0 && (
+          <div className="flex gap-2 mb-2 flex-wrap">
+            {attachedImages.map((image) => (
+              <div key={image.id} className="relative w-20 h-16 rounded-lg border border-border overflow-hidden bg-secondary">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={image.previewUrl} alt={image.filename} className="w-full h-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => removeImage(image.id)}
+                  className="absolute right-1 top-1 rounded-full bg-background/80 p-0.5 text-foreground"
+                  aria-label={t("chat.removeImage", { defaultValue: "Remove image" })}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
           </div>
         )}
         {uploadError && (
@@ -356,27 +471,62 @@ export function MessageInput() {
               />
             </div>
 
-            {/* Template Attach */}
+            {/* Initial Template Attach / Existing Document Version */}
+            {selectedFormat === "pptx" && canAttachTemplate ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-11 flex-shrink-0 gap-1.5 px-3 border border-dashed border-primary/30 bg-primary/5 text-primary hover:bg-primary/10"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={uploading}
+                  title={templateHelpText}
+                >
+                  <Paperclip className="w-4 h-4" />
+                  <span className="hidden sm:inline text-xs">{uploading ? "..." : templateButtonLabel}</span>
+                </Button>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".pptx,.potx"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                />
+              </>
+            ) : selectedFormat === "pptx" && versions.length > 0 ? (
+              <select
+                value={selectedVersionNumber ?? versions[0].versionNumber}
+                onChange={(event) => selectVersion(Number(event.target.value))}
+                className="h-11 rounded-lg border border-input bg-background px-2.5 text-xs text-foreground"
+                disabled={isGenerating}
+                title={t("document.versionHistory")}
+              >
+                {versions.map((version) => (
+                  <option key={version.id} value={version.versionNumber}>
+                    v{version.versionNumber}{version.isLatest ? " (latest)" : ""}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+
             <Button
               variant="ghost"
               size="sm"
-              className={cn(
-                "h-11 flex-shrink-0 gap-1.5 px-3",
-                canAttachTemplate && "border border-dashed border-primary/30 bg-primary/5 text-primary hover:bg-primary/10",
-              )}
-              onClick={() => fileRef.current?.click()}
-              disabled={!canAttachTemplate || uploading}
-              title={templateHelpText}
+              className="h-11 flex-shrink-0 gap-1.5 px-3"
+              onClick={() => imageRef.current?.click()}
+              disabled={isGenerating || uploadingImage || attachedImages.length >= MAX_IMAGES}
+              title={t("chat.imageHelp", { defaultValue: "Drop or attach reference images" })}
             >
-              <Paperclip className="w-4 h-4" />
-              <span className="hidden sm:inline text-xs">{uploading ? "..." : templateButtonLabel}</span>
+              <ImagePlus className="w-4 h-4" />
+              <span className="hidden sm:inline text-xs">{uploadingImage ? "..." : t("chat.imageButton", { defaultValue: "Image" })}</span>
             </Button>
             <input
-              ref={fileRef}
+              ref={imageRef}
               type="file"
-              accept=".pptx,.potx"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
               className="hidden"
-              onChange={handleFileUpload}
+              onChange={handleImageInput}
             />
 
             {/* Send */}
@@ -384,7 +534,7 @@ export function MessageInput() {
               size="icon"
               className="h-11 w-11 flex-shrink-0 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-lg shadow-indigo-500/20"
               onClick={() => handleSubmit()}
-              disabled={!text.trim() || isGenerating}
+              disabled={(!text.trim() && attachedImages.length === 0) || isGenerating || uploadingImage}
             >
               <Send className="w-4 h-4 text-white" />
             </Button>

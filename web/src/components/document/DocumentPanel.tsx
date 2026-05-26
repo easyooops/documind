@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { useDocumentStore } from "@/stores/document";
 import { DocumentViewer } from "./DocumentViewer";
 import { VersionHistory } from "./VersionHistory";
-import { getDownloadUrl } from "@/lib/api";
+import { getDocumentVersions, getDownloadUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
 
@@ -24,11 +24,20 @@ interface DocumentPanelProps {
 export function DocumentPanel({ isMobile }: DocumentPanelProps) {
   const {
     currentJob,
+    versions,
+    selectedVersionNumber,
+    setVersions,
+    selectVersion,
     closePanel,
     setFullscreen,
   } = useDocumentStore();
   const [showVersions, setShowVersions] = React.useState(false);
   const { t } = useTranslation();
+
+  React.useEffect(() => {
+    if (!currentJob?.id || currentJob.status !== "completed") return;
+    getDocumentVersions(currentJob.id).then(setVersions).catch(() => setVersions([]));
+  }, [currentJob?.id, currentJob?.status, setVersions]);
 
   if (!currentJob) return null;
 
@@ -48,6 +57,20 @@ export function DocumentPanel({ isMobile }: DocumentPanelProps) {
             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-500 font-medium">
               {Math.round(currentJob.fidelityScore * 100)}%
             </span>
+          )}
+          {versions.length > 0 && (
+            <select
+              value={selectedVersionNumber ?? versions[0].versionNumber}
+              onChange={(event) => selectVersion(Number(event.target.value))}
+              className="h-7 rounded-md border border-input bg-background px-1.5 text-xs"
+              aria-label={t("document.versionHistory")}
+            >
+              {versions.map((version) => (
+                <option key={version.id} value={version.versionNumber}>
+                  v{version.versionNumber}
+                </option>
+              ))}
+            </select>
           )}
         </div>
         <div className="flex items-center gap-1">
@@ -74,7 +97,7 @@ export function DocumentPanel({ isMobile }: DocumentPanelProps) {
               className="h-7 w-7 text-primary hover:text-primary"
               asChild
             >
-              <a href={getDownloadUrl(currentJob.id)} download>
+              <a href={getDownloadUrl(currentJob.id, selectedVersionNumber)} download>
                 <Download className="w-3.5 h-3.5" />
               </a>
             </Button>

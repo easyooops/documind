@@ -29,6 +29,17 @@ class DocuMindState(TypedDict, total=False):
     output_language: str
     needs_research: bool
     template_provided: bool
+    _template_bytes: bytes
+    _template_filename: str
+    _template_analysis: dict
+    _locked_master_context: dict
+    _locked_design_system: dict
+    _base_version: dict
+    _base_slides_html: list[dict]
+    visual_intent: dict
+    image_attachment_ids: list[str]
+    revision_instruction: str
+    revision_scope: str
 
     # ─── Phase 0: Master Context ─────────────────────────────────────────────
     master_context: dict
@@ -38,6 +49,7 @@ class DocuMindState(TypedDict, total=False):
     slide_blueprints: list[dict]
     design_system: dict
     title: str
+    changed_slide_indices: list[int]
 
     # ─── Phase B: HTML Generation ────────────────────────────────────────────
     slides_html: list[dict]
@@ -48,8 +60,11 @@ class DocuMindState(TypedDict, total=False):
     output_path: str | None
     html_preview_path: str | None
     pptx_screenshots: list[str]
+    pptx_render_info: dict
     fidelity_score: float
     fidelity_scores: list[float]
+    rule_based_feedback: dict
+    rule_based_scores: list[float]
     qa_iterations: int
     qa_feedback: dict
 

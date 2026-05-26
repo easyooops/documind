@@ -54,7 +54,12 @@
     "templateButton": "Template",
     "templateHelp": "PowerPoint template can be attached only before the first message.",
     "templateAttachHint": "Attach a .pptx or .potx template only before the first message.",
-    "templateBasis": "Template basis"
+    "templateBasis": "Template basis",
+    "imageButton": "Image",
+    "imageHelp": "Drop or attach reference images.",
+    "imageAttachHint": "Attach PNG, JPEG, WEBP, or GIF images only.",
+    "imageOnlyPrompt": "Analyze the attached image and apply the necessary document changes.",
+    "removeImage": "Remove image"
   },
   "progress": {
     "preparing": "Preparing",

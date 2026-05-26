@@ -40,6 +40,19 @@ async def upload_template(
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large (max 50MB)")
 
+    try:
+        from src.formats.pptx.master_context import parse_template
+
+        analysis = parse_template(content, filename)
+    except Exception as exc:
+        logger.warning("template.analysis_failed", filename=filename, error=str(exc)[:200])
+        raise HTTPException(status_code=400, detail="Invalid PowerPoint template file") from exc
+
+    analysis["visual_analysis"] = {
+        "status": "pending",
+        "summary": "Rendered-slide visual analysis will run before slide design planning.",
+    }
+
     template_id = str(uuid.uuid4())
     storage = create_storage_backend()
     storage_path = f"templates/{template_id}/{filename}"
@@ -51,7 +64,8 @@ async def upload_template(
         filename=filename,
         file_path=storage_path,
         size_bytes=len(content),
-        status="uploaded",
+        analysis=analysis,
+        status="analyzed",
         created_at=datetime.utcnow(),
     )
     db.add(template)
@@ -60,7 +74,7 @@ async def upload_template(
         id=template_id,
         name=template.name,
         filename=template.filename,
-        status="uploaded",
+        status="analyzed",
         size_bytes=len(content),
         created_at=template.created_at,
     )

@@ -3,7 +3,7 @@
 Phase 0: Init (master context + rule-sets loading)
 Phase A: Unified Planning (research + OOXML-aware blueprint)
 Phase B: Constrained HTML Generation (parallel per-slide, rule-constrained)
-Phase C: Render + Design Quality Evaluation (deterministic convert, rule-based QA)
+Phase C: Render + Design Quality Evaluation (rule checks plus visual LLM Judge)
 """
 
 from __future__ import annotations
@@ -11,16 +11,21 @@ from __future__ import annotations
 from langgraph.graph import END, StateGraph
 
 from src.agents.nodes.research import research_agent
-from src.formats.pptx.agents.nodes.unified_planner import unified_planner
+from src.formats.pptx.agents.nodes.design_evaluator import design_quality_evaluator
 from src.formats.pptx.agents.nodes.html_generator import html_generator_parallel
 from src.formats.pptx.agents.nodes.render_convert import render_and_convert
-from src.formats.pptx.agents.nodes.design_evaluator import design_quality_evaluator
+from src.formats.pptx.agents.nodes.unified_planner import unified_planner
+from src.formats.pptx.agents.nodes.vlm_qa import vlm_quality_gate
 from src.schemas.agents import DocuMindState
 
 
 def _init_master_context(state: DocuMindState) -> dict:
     """Phase 0: Load master context (template or default)."""
     from src.formats.pptx.master_context import build_master_context
+
+    locked_context = state.get("_locked_master_context")
+    if locked_context:
+        return {"master_context": locked_context, "current_phase": "init"}
 
     template_bytes = state.get("_template_bytes")
     template_filename = state.get("_template_filename", "template.pptx")
@@ -31,6 +36,11 @@ def _init_master_context(state: DocuMindState) -> dict:
         template_filename=template_filename,
         seed=seed,
     )
+    stored_template_analysis = state.get("_template_analysis", {})
+    if stored_template_analysis and master_context.get("template"):
+        master_context["template"]["visual_analysis"] = stored_template_analysis.get(
+            "visual_analysis", {}
+        )
     return {"master_context": master_context, "current_phase": "init"}
 
 
@@ -76,6 +86,7 @@ def build_pptx_pipeline() -> StateGraph:
     # Phase C: Render + Design Quality Evaluation
     graph.add_node("render_convert", render_and_convert)
     graph.add_node("design_evaluate", design_quality_evaluator)
+    graph.add_node("vlm_qa", vlm_quality_gate)
     graph.add_node("export", _export_node)
 
     # Entry
@@ -94,9 +105,10 @@ def build_pptx_pipeline() -> StateGraph:
     # Phase B → C
     graph.add_edge("generate_html", "render_convert")
     graph.add_edge("render_convert", "design_evaluate")
+    graph.add_edge("design_evaluate", "vlm_qa")
 
     # QA routing (pass → export, fail → retry HTML generation)
-    graph.add_conditional_edges("design_evaluate", _route_qa, {
+    graph.add_conditional_edges("vlm_qa", _route_qa, {
         "export": "export",
         "generate_html": "generate_html",
     })

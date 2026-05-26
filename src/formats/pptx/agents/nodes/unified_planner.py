@@ -41,9 +41,17 @@ async def unified_planner(state: DocuMindState) -> dict:
     research_data = state.get("research_data")
     user_query = state.get("user_query", "")
     output_language = state.get("output_language", "ko_mixed")
+    base_version = state.get("_base_version", {})
+    locked_design_system = state.get("_locked_design_system", {})
+    visual_intent = state.get("visual_intent", {})
 
     design_direction = master_context.get("design_direction") or select_design_direction(user_query)
     template_info = master_context.get("template")
+    template_visual = (
+        template_info.get("visual_analysis", {}).get("profile", {})
+        if isinstance(template_info, dict)
+        else {}
+    )
 
     from src.formats.pptx.rulesets import get_ruleset
     ruleset = get_ruleset()
@@ -58,15 +66,55 @@ async def unified_planner(state: DocuMindState) -> dict:
         research_summary = json.dumps(research_data, ensure_ascii=False, indent=2)[:3000]
         context_parts.append(f"\n## Research Data\n{research_summary}")
 
+    if visual_intent:
+        context_parts.append(
+            "\n## Attached Image Visual Intent\n"
+            "Use this evidence to understand only the requested change. Do not use it as "
+            "permission to replace unrelated slide content or layout.\n"
+            f"{json.dumps(visual_intent, ensure_ascii=False, indent=2)[:4000]}"
+        )
+
     if template_info:
         context_parts.append(
-            f"\n## Template Profile (use as design basis)\n"
+            f"\n## Template OOXML Profile (use as structural evidence)\n"
             f"{json.dumps(template_info, ensure_ascii=False, indent=2)[:4000]}"
         )
+        if template_visual:
+            context_parts.append(
+                "\n## Template Rendered-Slide Visual Profile (PRIMARY design basis)\n"
+                "The template was rendered and inspected visually. Match this cover/body concept, "
+                "composition, palette relationships, typography hierarchy, chrome, spacing, and "
+                "component treatment. Do not fall back to the default layout when it conflicts "
+                "with this profile.\n"
+                f"{json.dumps(template_visual, ensure_ascii=False, indent=2)[:6000]}"
+            )
     else:
         context_parts.append(
             f"\n## Design Direction\n"
             f"{json.dumps(design_direction, ensure_ascii=False, indent=2)}"
+        )
+
+    if base_version:
+        context_parts.append(
+            "\n## Revision Contract (MANDATORY)\n"
+            "This is a revision of an existing document. Preserve its cover/body visual style, "
+            "header, footer, slide order, and all content that the request does not explicitly "
+            "change. "
+            "Return `changed_slide_indices` containing ONLY slides that must be regenerated. "
+            "Also return `revision_scope` as one of `minimal_patch`, `slide_rewrite`, or "
+            "`layout_redesign`. Use `minimal_patch` for small factual/wording corrections; "
+            "`slide_rewrite` when the user asks to replace, substantially update, or rewrite a "
+            "slide's contents; and `layout_redesign` when composition or visual elements must "
+            "change. A changed slide may be fully rewritten when the selected scope requires it. "
+            "Keep unchanged slide blueprints identical and preserve the global header/footer/style "
+            "unless the product explicitly permits a separate global style edit.\n"
+            f"Selected parent version: v{base_version.get('version_number')}\n"
+            f"Parent title and slide plan:\n"
+            f"{json.dumps(base_version.get('slide_plan', []), ensure_ascii=False, indent=2)[:7000]}"
+        )
+        context_parts.append(
+            "\n## Locked Design Tokens (MUST NOT CHANGE)\n"
+            f"{json.dumps(locked_design_system, ensure_ascii=False, indent=2)[:4000]}"
         )
 
     context_parts.append(
@@ -116,25 +164,97 @@ async def unified_planner(state: DocuMindState) -> dict:
         )
 
     title = result.get("title", user_query[:60])
-    design_system = result.get("design_tokens", _build_design_system(design_direction, template_info))
+    generated_design = result.get("design_tokens", {})
+    template_design = _build_design_system(design_direction, template_info)
+    if locked_design_system:
+        design_system = locked_design_system
+    elif template_info:
+        design_system = {**generated_design, **template_design}
+    else:
+        design_system = generated_design or template_design
 
     theme_id = result.get("theme_id", "")
-    if theme_id:
+    if theme_id and not template_info and not locked_design_system:
         theme_colors = _load_theme_colors(theme_id)
         if theme_colors:
             design_system.update(theme_colors)
 
     header_footer = result.get("header_footer", {})
-    if header_footer:
+    if header_footer and not locked_design_system:
         design_system["header_footer"] = header_footer
+
+    changed_indices = result.get("changed_slide_indices")
+    if base_version:
+        if not isinstance(changed_indices, list):
+            changed_indices = [bp.get("index") for bp in slide_blueprints]
+        changed_indices = [
+            int(index) for index in changed_indices
+            if isinstance(index, int) or (isinstance(index, str) and index.isdigit())
+        ]
+    else:
+        changed_indices = [bp.get("index") for bp in slide_blueprints]
+
+    if base_version:
+        changed_set = set(changed_indices)
+        generated_by_index = {bp.get("index"): bp for bp in slide_blueprints}
+        parent_plan = [
+            bp for bp in base_version.get("slide_plan", []) if isinstance(bp, dict)
+        ]
+        parent_indices = {bp.get("index") for bp in parent_plan}
+        merged_plan = [
+            generated_by_index.get(bp.get("index"), bp)
+            if bp.get("index") in changed_set else bp
+            for bp in parent_plan
+        ]
+        merged_plan.extend(
+            bp for bp in slide_blueprints
+            if bp.get("index") not in parent_indices and bp.get("index") in changed_set
+        )
+        slide_blueprints = _normalize_blueprints(merged_plan)
+
+    revision_scope = (
+        _normalize_revision_scope(result.get("revision_scope"), user_query)
+        if base_version
+        else "new_document"
+    )
 
     logger.info("unified_planner.complete", slides=len(slide_blueprints), title=title[:50])
     return {
         "slide_blueprints": slide_blueprints,
         "design_system": design_system,
         "title": title,
+        "changed_slide_indices": changed_indices,
+        "revision_instruction": (
+            user_query
+            + (
+                "\nVisual reference interpretation: "
+                + json.dumps(visual_intent, ensure_ascii=False)
+                if visual_intent else ""
+            )
+        ),
+        "revision_scope": revision_scope,
         "current_phase": "planning",
     }
+
+
+def _normalize_revision_scope(value: object, user_query: str) -> str:
+    """Resolve whether an existing slide should be patched or regenerated."""
+    allowed = {"minimal_patch", "slide_rewrite", "layout_redesign"}
+    if isinstance(value, str) and value in allowed:
+        return value
+    text = user_query.lower()
+    layout_signals = (
+        "레이아웃", "디자인", "구성 변경", "배치", "스타일", "redesign", "layout",
+    )
+    rewrite_signals = (
+        "전체 내용", "내용 전체", "전면", "새로 작성", "다시 작성", "교체",
+        "rewrite", "replace", "entire slide", "all content",
+    )
+    if any(signal in text for signal in layout_signals):
+        return "layout_redesign"
+    if any(signal in text for signal in rewrite_signals):
+        return "slide_rewrite"
+    return "minimal_patch"
 
 
 def _normalize_blueprints(slides: list) -> list[dict]:

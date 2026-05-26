@@ -36,13 +36,14 @@ class Session(Base):
     __tablename__ = "sessions"
 
     id = Column(String(36), primary_key=True)
+    document_id = Column(String(36), ForeignKey("generation_jobs.id"), nullable=True)
     title = Column(String(500), nullable=True)
     metadata_ = Column("metadata", JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     messages = relationship("Message", back_populates="session", cascade="all, delete-orphan")
-    jobs = relationship("GenerationJob", back_populates="session")
+    jobs = relationship("GenerationJob", back_populates="session", foreign_keys="GenerationJob.session_id")
 
 
 class Message(Base):
@@ -56,6 +57,21 @@ class Message(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     session = relationship("Session", back_populates="messages")
+
+
+class ImageAttachment(Base):
+    __tablename__ = "image_attachments"
+
+    id = Column(String(36), primary_key=True)
+    message_id = Column(String(36), ForeignKey("messages.id"), nullable=True)
+    filename = Column(String(500), nullable=False)
+    file_path = Column(String(1000), nullable=False)
+    mime_type = Column(String(100), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    analysis = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Template(Base):
@@ -90,7 +106,7 @@ class GenerationJob(Base):
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    session = relationship("Session", back_populates="jobs")
+    session = relationship("Session", back_populates="jobs", foreign_keys=[session_id])
     template = relationship("Template")
     file = relationship("GeneratedFile", back_populates="job", uselist=False)
     steps = relationship("GenerationStep", back_populates="job", cascade="all, delete-orphan")
@@ -146,6 +162,7 @@ class DocumentVersion(Base):
     user_instruction = Column(String, nullable=True)
     slide_plan = Column(JSON, nullable=True)
     design_system = Column(JSON, nullable=True)
+    pipeline_data = Column(JSON, nullable=True)
     file_path = Column(String(1000), nullable=True)
     fidelity_score = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

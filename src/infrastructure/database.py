@@ -75,6 +75,15 @@ def _migrate_schema(connection) -> None:
     import sqlalchemy as sa
 
     inspector = sa.inspect(connection)
-    columns = {col["name"] for col in inspector.get_columns("slide_data")}
-    if "dsl_json" not in columns:
-        connection.execute(sa.text("ALTER TABLE slide_data ADD COLUMN dsl_json TEXT"))
+    migrations = {
+        "slide_data": [("dsl_json", "TEXT")],
+        "sessions": [("document_id", "VARCHAR(36)")],
+        "document_versions": [("pipeline_data", "JSON")],
+    }
+    for table, columns_to_add in migrations.items():
+        if not inspector.has_table(table):
+            continue
+        columns = {col["name"] for col in inspector.get_columns(table)}
+        for name, definition in columns_to_add:
+            if name not in columns:
+                connection.execute(sa.text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))

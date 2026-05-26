@@ -14,6 +14,7 @@ class GenerateRequest(BaseModel):
     format: str = Field(default="pptx", description="pptx|docx|pdf|xlsx")
     template_id: str | None = None
     session_id: str | None = None
+    image_attachment_ids: list[str] = Field(default_factory=list)
     options: dict = Field(default_factory=dict)
 
 
@@ -63,6 +64,7 @@ class DocumentVersionResponse(BaseModel):
     slide_count: int | None = None
     download_url: str | None = None
     created_at: datetime
+    is_latest: bool = False
 
 
 # ═══ Template ═══
@@ -80,6 +82,16 @@ class TemplateAnalysisResponse(BaseModel):
     id: str
     status: str
     analysis: dict | None = None
+
+
+class ImageAttachmentResponse(BaseModel):
+    id: str
+    filename: str
+    mime_type: str
+    size_bytes: int
+    width: int | None = None
+    height: int | None = None
+    created_at: datetime
 
 
 # ═══ Settings ═══

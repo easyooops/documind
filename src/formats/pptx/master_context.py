@@ -205,7 +205,10 @@ def _extract_template_context(prs) -> dict:
         })
 
     used_elements = []
-    for slide in prs.slides:
+    reference_slides = []
+    for index, slide in enumerate(prs.slides, 1):
+        if index <= 6:
+            reference_slides.append(_extract_slide_reference(slide, index))
         for shape in slide.shapes:
             _collect_style_info(shape, colors, fonts, font_sizes)
             elem = _classify_element(shape)
@@ -232,6 +235,11 @@ def _extract_template_context(prs) -> dict:
         },
         "used_elements": used_elements[:30],
         "design_patterns": _infer_patterns(used_elements),
+        "reference_slides": {
+            "cover": reference_slides[0] if reference_slides else None,
+            "body": reference_slides[1] if len(reference_slides) > 1 else None,
+            "samples": reference_slides,
+        },
     }
 
 
@@ -291,6 +299,29 @@ def _classify_element(shape) -> dict | None:
         "has_text": has_text,
         "fill_color": fill_info,
     }
+
+
+def _extract_slide_reference(slide, index: int) -> dict:
+    """Capture visible style anchors from representative template slides."""
+    elements = []
+    for shape in slide.shapes:
+        element = _classify_element(shape)
+        if not element:
+            continue
+        if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+            element["text"] = (shape.text or "").strip()[:120]
+            for paragraph in shape.text_frame.paragraphs:
+                if not paragraph.runs:
+                    continue
+                font = paragraph.runs[0].font
+                element["font"] = {
+                    "name": font.name,
+                    "size_pt": round(font.size.pt, 1) if font.size else None,
+                    "bold": font.bold,
+                }
+                break
+        elements.append(element)
+    return {"index": index, "elements": elements[:30]}
 
 
 def _palette_to_theme(palette: list[str]) -> dict:

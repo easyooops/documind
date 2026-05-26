@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
 from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,14 +19,18 @@ from sse_starlette.sse import EventSourceResponse
 from src.core.logging import get_logger
 from src.infrastructure.database import get_session
 from src.infrastructure.models import (
+    DocumentVersion,
     GeneratedFile,
     GenerationJob,
+    ImageAttachment,
     JobStatus,
     Message,
     Session,
     SlideData,
+    SlideVersion,
+    Template,
 )
-from src.schemas.api import ChatMessage, GenerateRequest, SessionResponse
+from src.schemas.api import ChatMessage, GenerateRequest, ImageAttachmentResponse, SessionResponse
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -220,26 +227,55 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
         return [f"{len(slides)}개 슬라이드 HTML을 생성했습니다.", f"사용 요소: {_compact_text(', '.join(used[:6]))}"]
 
     if node_name == "render_convert":
-        output = node_output.get("output_path", "")
         screenshots = node_output.get("screenshots_count", 0)
         if is_en:
-            return [f"Rendered and converted to PowerPoint." + (f" ({screenshots} screenshots)" if screenshots else "")]
-        return [f"PowerPoint로 렌더링 및 변환을 완료했습니다." + (f" (스크린샷 {screenshots}장)" if screenshots else "")]
+            return [
+                "Rendered and converted to PowerPoint."
+                + (f" ({screenshots} screenshots)" if screenshots else "")
+            ]
+        return [
+            "PowerPoint로 렌더링 및 변환을 완료했습니다."
+            + (f" (스크린샷 {screenshots}장)" if screenshots else "")
+        ]
 
-    if node_name == "vlm_qa" or node_name == "design_evaluate":
-        scores = _as_list(node_output.get("fidelity_scores"))
+    if node_name == "vlm_qa":
+        scores = _as_list(
+            node_output.get("fidelity_scores") or node_output.get("rule_based_scores")
+        )
         feedback = _as_dict(node_output.get("qa_feedback"))
         passed = feedback.get("passed", False)
         latest = scores[-1] if scores else None
-        issues = _as_list(feedback.get("fix_instructions"))
+        issues = list(
+            dict.fromkeys(
+                _as_list(feedback.get("fix_instructions"))
+                + _as_list(feedback.get("issues"))
+            )
+        )
         category_scores = _as_dict(feedback.get("category_scores"))
         status = "passed" if passed else "refinement needed"
         status_ko = "통과" if passed else "보완 필요"
+        rule_score = feedback.get("rule_score")
+        visual_score = feedback.get("visual_score")
+        evaluated = feedback.get("evaluated_slide_count")
+        total = feedback.get("total_slide_count")
         items = []
         if is_en:
-            items.append(f"Design quality: {status}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
+            items.append(f"Combined design quality: {status}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
         else:
-            items.append(f"디자인 품질 평가: {status_ko}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
+            items.append(f"통합 디자인 품질 평가: {status_ko}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
+        if isinstance(rule_score, (int, float)) and isinstance(visual_score, (int, float)):
+            if is_en:
+                coverage = (
+                    f", {evaluated}/{total} slides"
+                    if isinstance(evaluated, int) and isinstance(total, int) else ""
+                )
+                items.append(f"Rule checks: {rule_score:.2f} | Visual Judge: {visual_score:.2f}{coverage}")
+            else:
+                coverage = (
+                    f" ({evaluated}/{total} 슬라이드)"
+                    if isinstance(evaluated, int) and isinstance(total, int) else ""
+                )
+                items.append(f"규칙 기반: {rule_score:.2f} | VLM 시각 평가: {visual_score:.2f}{coverage}")
         if category_scores:
             cat_parts = []
             cat_labels = {
@@ -263,8 +299,113 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
     return []
 
 
+async def _analyze_image_intent(query: str, attachments: list[dict]) -> dict:
+    """Interpret user-provided reference images together with their instruction."""
+    import base64
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from src.agents.loader import get_llm_for_agent
+    from src.infrastructure.storage import create_storage_backend
+    from src.utils.json_repair import parse_llm_json
+
+    content: list[dict] = [{
+        "type": "text",
+        "text": (
+            "Analyze the attached image(s) only as evidence for the user's presentation request. "
+            "Identify the user's intended content or visual correction. For a revision, describe "
+            "the minimum edit needed and do not propose redesigning unaffected slide content. "
+            "Return JSON with keys summary, visible_evidence, requested_changes, "
+            "style_constraints, and target_slide_hints.\n\n"
+            f"User request: {query or 'Interpret the attached reference image.'}"
+        ),
+    }]
+
+    try:
+        storage = create_storage_backend()
+        for attachment in attachments:
+            image_bytes = await storage.load(attachment["file_path"])
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{attachment['mime_type']};base64,{encoded}",
+                },
+            })
+        llm = get_llm_for_agent("vlm_qa", format_id="pptx")
+        response = await llm.ainvoke([
+            SystemMessage(content="You are a precise visual-intent analyst for slide revisions."),
+            HumanMessage(content=content),
+        ])
+        result = parse_llm_json(response.content)
+        if isinstance(result, dict):
+            return result
+        return {"summary": str(result), "requested_changes": []}
+    except Exception as exc:
+        logger.warning("chat.image_intent_failed", error=str(exc)[:200])
+        return {
+            "summary": "Attached image supplied as visual reference.",
+            "requested_changes": [],
+        }
+
+
 class CreateSessionRequest(BaseModel):
     user_id: str | None = None
+
+
+@router.post("/images/upload", response_model=ImageAttachmentResponse)
+async def upload_message_image(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_session),
+):
+    """Store an image that can be submitted with a chat generation request."""
+    from PIL import Image
+
+    filename = Path(file.filename or "image").name
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded image is empty")
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image is too large (max 10MB)")
+
+    try:
+        with Image.open(BytesIO(content)) as image:
+            image.verify()
+        with Image.open(BytesIO(content)) as image:
+            width, height = image.size
+            image_format = (image.format or "").lower()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid image file") from exc
+
+    if image_format not in {"png", "jpeg", "jpg", "webp", "gif"}:
+        raise HTTPException(status_code=400, detail="Only PNG, JPEG, WEBP, or GIF images are supported")
+
+    content_type = f"image/{'jpeg' if image_format == 'jpg' else image_format}"
+    attachment_id = str(uuid.uuid4())
+    storage_path = f"chat-images/{attachment_id}/{filename}"
+    from src.infrastructure.storage import create_storage_backend
+
+    await create_storage_backend().save(content, storage_path, content_type)
+    attachment = ImageAttachment(
+        id=attachment_id,
+        filename=filename,
+        file_path=storage_path,
+        mime_type=content_type,
+        size_bytes=len(content),
+        width=width,
+        height=height,
+        created_at=datetime.utcnow(),
+    )
+    db.add(attachment)
+    return ImageAttachmentResponse(
+        id=attachment.id,
+        filename=attachment.filename,
+        mime_type=attachment.mime_type,
+        size_bytes=attachment.size_bytes,
+        width=attachment.width,
+        height=attachment.height,
+        created_at=attachment.created_at,
+    )
 
 
 @router.post("/sessions")
@@ -336,14 +477,127 @@ async def stream_generation(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    from sqlalchemy.orm import selectinload
+
+    request_options = _as_dict(request.options)
+    attachment_ids = list(dict.fromkeys(request.image_attachment_ids))[:4]
+    attachments: list[ImageAttachment] = []
+    if attachment_ids:
+        attachment_result = await db.execute(
+            select(ImageAttachment).where(ImageAttachment.id.in_(attachment_ids))
+        )
+        attachment_by_id = {item.id: item for item in attachment_result.scalars().all()}
+        if len(attachment_by_id) != len(attachment_ids):
+            raise HTTPException(status_code=404, detail="One or more image attachments were not found")
+        attachments = [attachment_by_id[attachment_id] for attachment_id in attachment_ids]
+
+    document = None
+    if session.document_id:
+        document_result = await db.execute(
+            select(GenerationJob).where(GenerationJob.id == session.document_id)
+        )
+        document = document_result.scalar_one_or_none()
+
+    if document and request.template_id:
+        raise HTTPException(
+            status_code=409,
+            detail="A template can be attached only when the document is first created",
+        )
+    if document and document.format != request.format:
+        raise HTTPException(
+            status_code=409,
+            detail="The output format cannot be changed within an existing document session",
+        )
+
+    if not document:
+        if request.template_id:
+            template_result = await db.execute(
+                select(Template).where(Template.id == request.template_id)
+            )
+            if not template_result.scalar_one_or_none():
+                raise HTTPException(status_code=404, detail="Template not found")
+        document = GenerationJob(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            template_id=request.template_id,
+            query=request.query,
+            format=request.format,
+            options=request_options,
+            status=JobStatus.PROCESSING.value,
+            phase="planning",
+            progress=0.0,
+            started_at=datetime.utcnow(),
+            created_at=datetime.utcnow(),
+        )
+        db.add(document)
+        session.document_id = document.id
+
+    versions_result = await db.execute(
+        select(DocumentVersion)
+        .where(DocumentVersion.document_id == document.id)
+        .options(selectinload(DocumentVersion.slide_versions))
+        .order_by(DocumentVersion.version_number.desc())
+    )
+    versions = list(versions_result.scalars().all())
+    latest_version = versions[0] if versions else None
+    selected_version_number = request_options.get("base_version_number")
+    base_version = next(
+        (version for version in versions if version.version_number == selected_version_number),
+        latest_version,
+    )
+    version_number = (latest_version.version_number + 1) if latest_version else 1
+
+    template_bytes = None
+    template_analysis: dict = {}
+    template_filename = "template.pptx"
+    if document.template_id:
+        template_result = await db.execute(select(Template).where(Template.id == document.template_id))
+        template = template_result.scalar_one_or_none()
+        if template:
+            from src.infrastructure.storage import create_storage_backend
+
+            template_bytes = await create_storage_backend().load(template.file_path)
+            template_filename = template.filename
+            template_analysis = _as_dict(template.analysis)
+
+    base_pipeline_data = _as_dict(base_version.pipeline_data) if base_version else {}
+    base_slides_html = [
+        {
+            "index": slide.slide_index,
+            "html": slide.html,
+            "elements_used": _as_list(_as_dict(slide.content).get("elements_used")),
+        }
+        for slide in (base_version.slide_versions if base_version else [])
+    ]
+
     user_msg = Message(
         id=str(uuid.uuid4()),
         session_id=session_id,
         role="user",
-        content=request.query,
+        content=(
+            request.query
+            + (
+                "\n[Attached images: "
+                + ", ".join(attachment.filename for attachment in attachments)
+                + "]"
+                if attachments else ""
+            )
+        ),
         created_at=datetime.utcnow(),
     )
     db.add(user_msg)
+    for attachment in attachments:
+        attachment.message_id = user_msg.id
+
+    attachment_payload = [
+        {
+            "id": attachment.id,
+            "filename": attachment.filename,
+            "file_path": attachment.file_path,
+            "mime_type": attachment.mime_type,
+        }
+        for attachment in attachments
+    ]
 
     if not session.title:
         session.title = request.query[:80]
@@ -357,23 +611,141 @@ async def stream_generation(
         from src.schemas.agents import DocuMindState
         from src.utils.language import detect_output_language
 
-        request_options = _as_dict(request.options)
+        active_template_analysis = dict(template_analysis)
+        stored_visual_analysis = _as_dict(active_template_analysis.get("visual_analysis"))
+        should_analyze_template = (
+            bool(document.template_id and template_bytes)
+            and not base_version
+            and stored_visual_analysis.get("status", "pending") == "pending"
+        )
+        if should_analyze_template:
+            locale = str(request_options.get("locale", "ko"))
+            description = (
+                "템플릿 렌더 이미지 시각 분석"
+                if locale != "en"
+                else "Rendered template visual analysis"
+            )
+            yield {
+                "event": "node_start",
+                "data": json.dumps({
+                    "node": "template_visual_analysis",
+                    "phase": "designing",
+                    "description": description,
+                }),
+            }
+            try:
+                from src.formats.pptx.template_visual import analyze_template_visuals
+
+                active_template_analysis["visual_analysis"] = await asyncio.wait_for(
+                    analyze_template_visuals(
+                        template_bytes,
+                        template_filename,
+                        active_template_analysis,
+                    ),
+                    timeout=120,
+                )
+            except TimeoutError:
+                logger.warning("template.visual_analysis_timeout", template_id=document.template_id)
+                active_template_analysis["visual_analysis"] = {
+                    "status": "timeout",
+                    "summary": "Visual template analysis timed out; OOXML profile will be used.",
+                }
+            except Exception as exc:
+                logger.warning(
+                    "template.visual_analysis_generation_failed",
+                    template_id=document.template_id,
+                    error=str(exc)[:200],
+                )
+                active_template_analysis["visual_analysis"] = {
+                    "status": "failed",
+                    "summary": "Visual template analysis failed; OOXML profile will be used.",
+                }
+
+            async with get_session_factory()() as fresh_db:
+                template_row = await fresh_db.get(Template, document.template_id)
+                if template_row:
+                    template_row.analysis = active_template_analysis
+                    await fresh_db.commit()
+
+            visual_analysis = _as_dict(active_template_analysis.get("visual_analysis"))
+            yield {
+                "event": "node_complete",
+                "data": json.dumps({
+                    "node": "template_visual_analysis",
+                    "phase": "designing",
+                    "description": description,
+                    "summary_items": [
+                        str(visual_analysis.get("summary", "Template visual analysis completed."))
+                    ],
+                    "has_errors": visual_analysis.get("status") != "analyzed",
+                    "progress": 0.04,
+                    "elapsed_seconds": 0,
+                }),
+            }
+
+        visual_intent = {}
+        if attachment_payload:
+            image_node_description = (
+                "이미지와 요청 의도 분석"
+                if str(request_options.get("locale", "ko")) != "en"
+                else "Image and request intent analysis"
+            )
+            yield {
+                "event": "node_start",
+                "data": json.dumps({
+                    "node": "image_intent",
+                    "phase": "planning",
+                    "description": image_node_description,
+                }),
+            }
+            visual_intent = await _analyze_image_intent(request.query, attachment_payload)
+            async with get_session_factory()() as fresh_db:
+                image_rows = await fresh_db.execute(
+                    select(ImageAttachment).where(ImageAttachment.id.in_(attachment_ids))
+                )
+                for image in image_rows.scalars().all():
+                    image.analysis = visual_intent
+                await fresh_db.commit()
+            yield {
+                "event": "node_complete",
+                "data": json.dumps({
+                    "node": "image_intent",
+                    "phase": "planning",
+                    "description": image_node_description,
+                    "summary_items": [str(visual_intent.get("summary", "Image intent analyzed."))],
+                    "has_errors": False,
+                    "progress": 0.05,
+                    "elapsed_seconds": 0,
+                }),
+            }
 
         initial_state: DocuMindState = {
             "user_query": request.query,
             "session_id": session_id,
-            "template_id": request.template_id,
+            "template_id": document.template_id,
             "conversation_history": [],
             "document_format": request.format,
             "locale": str(request_options.get("locale", "ko")),
             "output_language": detect_output_language(request.query),
             "needs_research": True,
-            "template_provided": request.template_id is not None,
+            "template_provided": document.template_id is not None,
             "current_phase": "planning",
             "errors": [],
             "retry_count": 0,
             "qa_iterations": 0,
             "slides_dsl": [],
+            "_template_bytes": template_bytes,
+            "_template_filename": template_filename,
+            "_template_analysis": active_template_analysis,
+            "_locked_master_context": base_pipeline_data.get("master_context", {}) if base_version else {},
+            "_locked_design_system": base_version.design_system or {} if base_version else {},
+            "_base_version": {
+                "version_number": base_version.version_number,
+                "slide_plan": base_version.slide_plan or [],
+            } if base_version else {},
+            "_base_slides_html": base_slides_html,
+            "visual_intent": visual_intent,
+            "image_attachment_ids": attachment_ids,
         }
 
         NODE_PHASE_MAP = {
@@ -410,7 +782,6 @@ async def stream_generation(
                 "plan": "슬라이드 구조 및 디자인 계획",
                 "generate_html": "슬라이드 HTML 생성",
                 "render_convert": "PPTX 렌더링 및 변환",
-                "design_evaluate": "디자인 품질 평가",
                 "export": "최종 내보내기",
                 # v1 pipeline nodes (legacy)
                 "narrative": "내러티브 구조 설계",
@@ -434,7 +805,6 @@ async def stream_generation(
                 "plan": "Slide Structure and Design Planning",
                 "generate_html": "Slide HTML Generation",
                 "render_convert": "PPTX Rendering and Conversion",
-                "design_evaluate": "Design Quality Assessment",
                 "export": "Final Export",
                 # v1 pipeline nodes (legacy)
                 "narrative": "Narrative Structure",
@@ -602,24 +972,23 @@ async def stream_generation(
                     }
                     last_heartbeat = now
 
-            # Persist results using a fresh DB session (outside request scope)
-            job_id = str(uuid.uuid4())
+            # Persist a new immutable version under this session's document root.
+            document_id = document.id
             output_path = final_state.get("output_path", "")
 
             async with get_session_factory()() as fresh_db:
-                gen_job = GenerationJob(
-                    id=job_id,
-                    session_id=session_id,
-                    query=request.query,
-                    format=request.format,
-                    status=JobStatus.COMPLETED.value,
-                    phase="done",
-                    progress=1.0,
-                    started_at=datetime.utcnow(),
-                    completed_at=datetime.utcnow(),
-                    created_at=datetime.utcnow(),
+                gen_result = await fresh_db.execute(
+                    select(GenerationJob).where(GenerationJob.id == document_id)
                 )
-                fresh_db.add(gen_job)
+                gen_job = gen_result.scalar_one()
+                gen_job.query = request.query
+                gen_job.options = request_options
+                gen_job.status = JobStatus.COMPLETED.value
+                gen_job.phase = "done"
+                gen_job.progress = 1.0
+                gen_job.slide_plan = final_state.get("slide_blueprints")
+                gen_job.design_system = final_state.get("design_system")
+                gen_job.completed_at = datetime.utcnow()
 
                 if output_path:
                     import os
@@ -630,26 +999,77 @@ async def stream_generation(
                     except OSError:
                         pass
 
-                    gen_file = GeneratedFile(
-                        id=str(uuid.uuid4()),
-                        job_id=job_id,
-                        filename=os.path.basename(file_path),
-                        storage_backend="local",
-                        storage_path=file_path,
-                        size_bytes=file_size,
-                        mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        created_at=datetime.utcnow(),
+                    generated_result = await fresh_db.execute(
+                        select(GeneratedFile).where(GeneratedFile.job_id == document_id)
                     )
-                    fresh_db.add(gen_file)
+                    gen_file = generated_result.scalar_one_or_none()
+                    if not gen_file:
+                        gen_file = GeneratedFile(
+                            id=str(uuid.uuid4()),
+                            job_id=document_id,
+                            filename=os.path.basename(file_path),
+                            storage_backend="local",
+                            storage_path=file_path,
+                            size_bytes=file_size,
+                            mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            created_at=datetime.utcnow(),
+                        )
+                        fresh_db.add(gen_file)
+                    else:
+                        gen_file.filename = os.path.basename(file_path)
+                        gen_file.storage_path = file_path
+                        gen_file.size_bytes = file_size
 
-                # Save slide HTML for preview (derived from DSL)
+                fidelity_scores = _as_list(final_state.get("fidelity_scores"))
+                fidelity_score = final_state.get("fidelity_score")
+                if fidelity_score is None and fidelity_scores:
+                    fidelity_score = fidelity_scores[-1]
+
+                version = DocumentVersion(
+                    id=str(uuid.uuid4()),
+                    document_id=document_id,
+                    version_number=version_number,
+                    parent_version_id=base_version.id if base_version else None,
+                    trigger="created" if version_number == 1 else "refinement",
+                    user_instruction=request.query,
+                    slide_plan=final_state.get("slide_blueprints"),
+                    design_system=final_state.get("design_system"),
+                    pipeline_data={
+                        "master_context": final_state.get("master_context"),
+                        "research_data": final_state.get("research_data"),
+                        "slide_blueprints": final_state.get("slide_blueprints"),
+                        "element_usage": final_state.get("element_usage"),
+                        "qa_feedback": final_state.get("qa_feedback"),
+                        "pptx_screenshots": final_state.get("pptx_screenshots", []),
+                        "native_template_output": bool(document.template_id),
+                        "template_id": document.template_id,
+                        "image_attachment_ids": attachment_ids,
+                        "visual_intent": final_state.get("visual_intent"),
+                        "parent_version_number": base_version.version_number if base_version else None,
+                    },
+                    file_path=output_path or None,
+                    fidelity_score=fidelity_score,
+                    created_at=datetime.utcnow(),
+                )
+                fresh_db.add(version)
+                await fresh_db.flush()
+
+                # Save the latest convenience projection and immutable per-version HTML.
                 slides_html = _as_list(final_state.get("slides_html"))
                 slides_dsl = _as_list(final_state.get("slides_dsl"))
+                slide_plan = _as_list(final_state.get("slide_blueprints"))
+                blueprints_by_index = {
+                    _as_dict(blueprint).get("index"): _as_dict(blueprint)
+                    for blueprint in slide_plan
+                }
                 dsl_by_index = {
                     dsl.get("index"): dsl
                     for dsl in (_as_dict(item) for item in slides_dsl)
                     if dsl.get("index") is not None
                 }
+                from sqlalchemy import delete
+
+                await fresh_db.execute(delete(SlideData).where(SlideData.job_id == document_id))
                 for slide_item in slides_html:
                     slide = _as_dict(slide_item)
                     if not slide:
@@ -663,7 +1083,7 @@ async def stream_generation(
                     dsl_data = dsl_by_index.get(idx)
                     slide_data = SlideData(
                         id=str(uuid.uuid4()),
-                        job_id=job_id,
+                        job_id=document_id,
                         slide_number=idx,
                         slide_type=metadata.get("slide_type", metadata.get("layout", "content")),
                         html_content=slide.get("html", ""),
@@ -671,13 +1091,34 @@ async def stream_generation(
                         created_at=datetime.utcnow(),
                     )
                     fresh_db.add(slide_data)
+                    fresh_db.add(
+                        SlideVersion(
+                            id=str(uuid.uuid4()),
+                            version_id=version.id,
+                            slide_index=idx,
+                            content={
+                                "blueprint": blueprints_by_index.get(idx, {}),
+                                "elements_used": slide.get("elements_used", []),
+                            },
+                            html=slide.get("html", ""),
+                            design_spec=final_state.get("design_system"),
+                            changed_from_parent=(
+                                1 if version_number > 1
+                                and idx in final_state.get("changed_slide_indices", []) else 0
+                            ),
+                            change_type="generated" if version_number == 1 else (
+                                "modified" if idx in final_state.get("changed_slide_indices", []) else "unchanged"
+                            ),
+                            created_at=datetime.utcnow(),
+                        )
+                    )
 
                 assistant_msg = Message(
                     id=str(uuid.uuid4()),
                     session_id=session_id,
                     role="assistant",
-                    content="문서가 성공적으로 생성되었습니다.",
-                    generation_job_id=job_id,
+                    content=f"문서 v{version_number}이(가) 성공적으로 생성되었습니다.",
+                    generation_job_id=document_id,
                     created_at=datetime.utcnow(),
                 )
                 fresh_db.add(assistant_msg)
@@ -699,7 +1140,9 @@ async def stream_generation(
                     "output_path": output_path,
                     "fidelity_scores": final_state.get("fidelity_scores", []),
                     "qa_iterations": final_state.get("qa_iterations", 0),
-                    "job_id": job_id,
+                    "job_id": document_id,
+                    "document_id": document_id,
+                    "version_number": version_number,
                 }),
             }
         except Exception as e:
@@ -709,6 +1152,19 @@ async def stream_generation(
                 error=str(e)[:500],
                 session_id=session_id,
             )
+            async with get_session_factory()() as fresh_db:
+                prior_result = await fresh_db.execute(
+                    select(DocumentVersion).where(DocumentVersion.document_id == document.id)
+                )
+                if not prior_result.scalars().first():
+                    failed_result = await fresh_db.execute(
+                        select(GenerationJob).where(GenerationJob.id == document.id)
+                    )
+                    failed_document = failed_result.scalar_one_or_none()
+                    if failed_document:
+                        failed_document.status = JobStatus.FAILED.value
+                        failed_document.error = {"message": str(e), "type": type(e).__name__}
+                        await fresh_db.commit()
             yield {"event": "error", "data": json.dumps({"message": str(e)})}
 
     return EventSourceResponse(event_generator(), ping=5)

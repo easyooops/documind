@@ -70,6 +70,19 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
     master_context = state.get("master_context", {})
     output_language = state.get("output_language", "ko_mixed")
     qa_feedback = state.get("qa_feedback", {})
+    base_slides = {
+        slide.get("index"): slide
+        for slide in state.get("_base_slides_html", [])
+        if isinstance(slide, dict) and slide.get("index") is not None
+    }
+    changed_indices = set(state.get("changed_slide_indices", []))
+    parent_blueprints = {
+        blueprint.get("index"): blueprint
+        for blueprint in state.get("_base_version", {}).get("slide_plan", [])
+        if isinstance(blueprint, dict)
+    }
+    revision_instruction = state.get("revision_instruction", state.get("user_query", ""))
+    revision_scope = state.get("revision_scope", "minimal_patch")
 
     tracker = ElementUsageTracker()
     previous_usage = state.get("element_usage", {})
@@ -85,6 +98,16 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
         tasks = []
 
         for blueprint in batch:
+            index = blueprint.get("index", 0)
+            if base_slides and index not in changed_indices:
+                prior = dict(base_slides[index])
+                prior["metadata"] = {
+                    "slide_type": blueprint.get("slide_type", "content"),
+                    "layout_hint": blueprint.get("layout_hint", "balanced"),
+                }
+                slides_html.append(prior)
+                tracker.record(prior.get("elements_used", []))
+                continue
             fix_instructions = _get_slide_fixes(blueprint.get("index", 0), qa_feedback)
             tasks.append(
                 _generate_single_slide(
@@ -94,6 +117,10 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
                     system_prompt=system_prompt,
                     diversity_hint=tracker.get_diversity_prompt(),
                     fix_instructions=fix_instructions,
+                    original_html=base_slides.get(index, {}).get("html"),
+                    original_blueprint=parent_blueprints.get(index),
+                    revision_instruction=revision_instruction,
+                    revision_scope=revision_scope,
                 )
             )
 
@@ -104,6 +131,11 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
                 continue
             slides_html.append(result)
             tracker.record(result.get("elements_used", []))
+
+    if base_slides:
+        slides_html = _reuse_parent_regions(
+            slides_html, slide_blueprints, base_slides, changed_indices
+        )
 
     logger.info("html_generator.complete", slides=len(slides_html))
 
@@ -117,6 +149,39 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
     }
 
 
+def _reuse_parent_regions(
+    slides_html: list[dict],
+    blueprints: list[dict],
+    base_slides: dict[int, dict],
+    changed_indices: set[int],
+) -> list[dict]:
+    """Copy immutable background/header/footer regions from the selected parent version."""
+    cover_indices = {
+        bp.get("index") for bp in blueprints if bp.get("slide_type") in ("cover", "section")
+    }
+    reference_html = ""
+    for index in sorted(base_slides):
+        if index not in cover_indices and base_slides[index].get("html"):
+            reference_html = base_slides[index]["html"]
+            break
+    if not reference_html:
+        return slides_html
+
+    header, footer, background = _extract_layout_regions(reference_html)
+    if not header and not footer and not background:
+        return slides_html
+
+    for slide in slides_html:
+        index = slide.get("index")
+        if index in cover_indices or index not in changed_indices:
+            continue
+        if slide.get("html"):
+            slide["html"] = _inject_template_regions(
+                slide["html"], index, header, footer, background
+            )
+    return slides_html
+
+
 async def _generate_single_slide(
     blueprint: dict,
     design_system: dict,
@@ -124,10 +189,37 @@ async def _generate_single_slide(
     system_prompt: str,
     diversity_hint: str,
     fix_instructions: list[str] | None = None,
+    original_html: str | None = None,
+    original_blueprint: dict | None = None,
+    revision_instruction: str = "",
+    revision_scope: str = "minimal_patch",
 ) -> dict:
     """Generate Constrained HTML for a single slide."""
     llm = get_llm_for_agent(AGENT_NAME, format_id=FORMAT_ID)
     idx = blueprint.get("index", 1)
+
+    if original_html and revision_scope == "minimal_patch":
+        patched_html = await _patch_existing_slide(
+            llm=llm,
+            slide_index=idx,
+            original_html=original_html,
+            original_blueprint=original_blueprint or {},
+            proposed_blueprint=blueprint,
+            revision_instruction=revision_instruction,
+            fix_instructions=fix_instructions or [],
+        )
+        if patched_html is not None:
+            return {
+                "index": idx,
+                "html": patched_html,
+                "elements_used": _extract_elements_used(patched_html),
+                "metadata": {
+                    "slide_type": blueprint.get("slide_type", "content"),
+                    "layout_hint": (original_blueprint or blueprint).get(
+                        "layout_hint", "balanced"
+                    ),
+                },
+            }
 
     context_parts = [
         output_language_instruction(output_language),
@@ -141,6 +233,32 @@ async def _generate_single_slide(
     ]
 
     slide_type = blueprint.get("slide_type", "content")
+    if original_html and revision_scope == "minimal_patch":
+        original_body = "\n".join(_extract_body_only(original_html))
+        context_parts.extend([
+            "\n### SURGICAL REVISION MODE (MANDATORY)",
+            f"User correction request: {revision_instruction}",
+            "This slide already exists. Preserve its body composition, element count, positions, "
+            "dimensions, colors, typography, icons, chart/table structure, and all text not directly "
+            "named by the correction. Change the smallest possible fragment needed to satisfy the "
+            "request. Do NOT redesign or rewrite the whole slide.",
+            (
+                "\n### Existing Blueprint (preserve unless explicitly targeted)\n"
+                f"{json.dumps(original_blueprint or {}, ensure_ascii=False, indent=2)}"
+            ),
+            "\n### Existing Body HTML (edit minimally and reuse)\n" + original_body,
+        ])
+    elif original_html:
+        context_parts.extend([
+            "\n### EXISTING DOCUMENT REVISION",
+            f"Revision scope: {revision_scope}",
+            f"User request: {revision_instruction}",
+            "The user requested a substantial content or composition change on this slide. "
+            "You may regenerate the body to fulfill the request. Continue using the locked deck "
+            "design system; header, footer, and document-wide visual identity are injected by "
+            "the system and must remain consistent.",
+        ])
+
     if slide_type in ("cover", "section"):
         context_parts.append("\n### LAYOUT NOTE: This is a cover/section slide — NO header/footer. Full-bleed design with dark gradient background.")
         context_parts.append("Generate the FULL slide including background.")
@@ -206,6 +324,77 @@ Available body area: 880px wide × 436px tall (starting at x:40, y:78)
     }
 
 
+async def _patch_existing_slide(
+    llm,
+    slide_index: int,
+    original_html: str,
+    original_blueprint: dict,
+    proposed_blueprint: dict,
+    revision_instruction: str,
+    fix_instructions: list[str],
+) -> str | None:
+    """Apply text/data replacements to an existing slide without rebuilding its structure."""
+    from html import escape
+
+    from src.utils.json_repair import parse_llm_json
+
+    prompt = f"""You are making a surgical correction to existing slide #{slide_index}.
+The user requested:
+{revision_instruction}
+
+Preserve ALL unchanged text, HTML structure, element positions, styles, colors, header, footer,
+background, icons, tables, and charts. A targeted factual/wording correction must be handled as
+exact replacements in the existing HTML, not as a rewrite.
+
+Original blueprint:
+{json.dumps(original_blueprint, ensure_ascii=False, indent=2)}
+
+Candidate content update from planning (use only the specifically required differences):
+{json.dumps(proposed_blueprint, ensure_ascii=False, indent=2)}
+
+Existing full slide HTML:
+{original_html}
+
+Additional validation fixes, only if relevant to the requested correction:
+{json.dumps(fix_instructions, ensure_ascii=False)}
+
+Return ONLY JSON:
+{{
+  "requires_relayout": false,
+  "replacements": [
+    {{"old": "exact existing HTML text or attribute value", "new": "replacement value"}}
+  ]
+}}
+Set requires_relayout=true only if the user explicitly asks to add/remove/rearrange visual
+elements or change the layout. Never set it merely to improve design."""
+    try:
+        response = await llm.ainvoke([
+            SystemMessage(content="You edit existing slide HTML with minimal exact replacements."),
+            HumanMessage(content=prompt),
+        ])
+        result = parse_llm_json(response.content)
+        if not isinstance(result, dict):
+            return original_html
+        if result.get("requires_relayout") is True:
+            return None
+        updated_html = original_html
+        for replacement in result.get("replacements", []):
+            if not isinstance(replacement, dict):
+                continue
+            old = str(replacement.get("old", ""))
+            new = str(replacement.get("new", ""))
+            if not old or old == new:
+                continue
+            if old in updated_html:
+                updated_html = updated_html.replace(old, new, 1)
+            elif escape(old) in updated_html:
+                updated_html = updated_html.replace(escape(old), escape(new), 1)
+        return updated_html
+    except Exception as exc:
+        logger.warning("html_generator.surgical_patch_failed", slide=slide_index, error=str(exc)[:200])
+        return original_html
+
+
 def _build_system_prompt(design_system: dict, master_context: dict) -> str:
     """Build the full system prompt including CSS spec, design context, and OOXML rules."""
     from src.formats.pptx.rulesets import get_ruleset
@@ -222,6 +411,8 @@ def _build_system_prompt(design_system: dict, master_context: dict) -> str:
         chart_colors = design_system.get('chart_colors', [])
         text_on_dark = design_system.get('text_on_dark', '#F1F5F9')
         cover_bg = design_system.get('cover_background', '')
+        font_heading = design_system.get('font_heading', 'Pretendard')
+        font_body = design_system.get('font_body', font_heading)
 
         design_section = f"""
 ## Design System (USE ONLY THESE COLORS)
@@ -236,7 +427,8 @@ Text On Dark: {text_on_dark}
 Card Fills (USE THESE for card backgrounds): {', '.join(card_fills) if card_fills else '#F1F5F9, #E2E8F0, #DBEAFE, #1E293B, #334155'}
 Chart Colors: {', '.join(chart_colors) if chart_colors else '#3B82F6, #1E293B, #10B981, #F59E0B'}
 Cover Background: {cover_bg}
-Font: Pretendard
+Heading Font: {font_heading}
+Body Font: {font_body}
 
 CRITICAL COLOR RULES:
 - Card backgrounds: pick from Card Fills ONLY — never use #FFFFFF
@@ -244,6 +436,7 @@ CRITICAL COLOR RULES:
 - Section labels and accent bars: use Accent color
 - Body text: use Text Primary or Text Secondary
 - Cover: use Cover Background gradient
+- Use Heading Font and Body Font exactly; do not substitute a default font
 """
         hf = design_system.get("header_footer", {})
         if hf:
@@ -351,12 +544,12 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
     template elements defined in slide_templates.json, using the theme colors
     from design_system.
     """
-    import re
-
     accent = design_system.get("accent", "#2563EB")
     primary = design_system.get("primary", "#1E293B")
     body_bg = design_system.get("body_background", "#F8FAFC")
     text_primary = design_system.get("text_primary", primary)
+    font_heading = design_system.get("font_heading", "Pretendard")
+    font_body = design_system.get("font_body", font_heading)
 
     hf = design_system.get("header_footer", {})
     section_label = blueprint.get("section_label", "")
@@ -369,26 +562,26 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
     body_elements = _extract_body_only(html)
 
     bg_html = (
-        f'<div data-pptx-type="shape" style="position:absolute;left:0;top:0;'
+        f'<div data-pptx-region="background" data-pptx-type="shape" style="position:absolute;left:0;top:0;'
         f'width:960px;height:540px;background-color:{body_bg}"></div>'
     )
 
     header_html = (
-        f'<div data-pptx-type="textbox" style="position:absolute;left:40px;top:16px;'
-        f'width:300px;height:14px;font-size:11px;font-weight:500;color:{accent}">'
+        f'<div data-pptx-region="header" data-pptx-type="textbox" style="position:absolute;left:40px;top:16px;'
+        f"width:300px;height:14px;font-size:11px;font-weight:500;font-family:'{font_body}';color:{accent}\">"
         f'{section_label}</div>\n'
-        f'  <div data-pptx-type="textbox" style="position:absolute;left:40px;top:32px;'
-        f'width:860px;height:30px;font-size:22px;font-weight:700;color:{text_primary}">'
+        f'  <div data-pptx-region="header" data-pptx-type="textbox" style="position:absolute;left:40px;top:32px;'
+        f"width:860px;height:30px;font-size:22px;font-weight:700;font-family:'{font_heading}';color:{text_primary}\">"
         f'{title_text}</div>\n'
-        f'  <div data-pptx-type="shape" data-pptx-shape="rect" style="position:absolute;'
+        f'  <div data-pptx-region="header" data-pptx-type="shape" data-pptx-shape="rect" style="position:absolute;'
         f'left:40px;top:68px;width:48px;height:3px;background-color:{accent}"></div>'
     )
 
     footer_html = (
-        f'<div data-pptx-type="textbox" style="position:absolute;left:40px;top:522px;'
-        f'width:400px;height:14px;font-size:9px;font-weight:400;line-height:1.2;color:#94A3B8">{footer_left}</div>\n'
-        f'  <div data-pptx-type="textbox" style="position:absolute;left:850px;top:522px;'
-        f'width:80px;height:14px;font-size:9px;font-weight:400;line-height:1.2;color:#94A3B8;text-align:right">'
+        f'<div data-pptx-region="footer" data-pptx-type="textbox" style="position:absolute;left:40px;top:522px;'
+        f"width:400px;height:14px;font-size:9px;font-weight:400;line-height:1.2;font-family:'{font_body}';color:#94A3B8\">{footer_left}</div>\n"
+        f'  <div data-pptx-region="footer" data-pptx-type="textbox" style="position:absolute;left:850px;top:522px;'
+        f"width:80px;height:14px;font-size:9px;font-weight:400;line-height:1.2;font-family:'{font_body}';color:#94A3B8;text-align:right\">"
         f'{footer_right}</div>'
     )
 
@@ -414,40 +607,19 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
 
 def _extract_body_only(html: str) -> list[str]:
     """Extract only body-region elements (y >= 72, y < 510) from generated HTML."""
-    import re
-
-    div_pattern = re.compile(
-        r'(<div\s[^>]*data-pptx-type=[^>]*>(?:.*?</div>|[^<]*))',
-        re.DOTALL,
-    )
-    top_pattern = re.compile(r'top:\s*(\d+(?:\.\d+)?)\s*px')
-    width_pattern = re.compile(r'width:\s*(\d+(?:\.\d+)?)\s*px')
-    height_pattern = re.compile(r'height:\s*(\d+(?:\.\d+)?)\s*px')
-
     body_elements = []
-    for match in div_pattern.finditer(html):
-        el_html = match.group(0)
-        top_match = top_pattern.search(el_html)
-        width_match = width_pattern.search(el_html)
-        height_match = height_pattern.search(el_html)
-
-        if not top_match:
-            body_elements.append(el_html)
+    for element in _top_level_slide_elements(html):
+        region = element.attrs.get("data-pptx-region")
+        top_val = _style_px(element, "top")
+        width_val = _style_px(element, "width")
+        height_val = _style_px(element, "height")
+        if region in {"background", "header", "footer"}:
             continue
-
-        top_val = float(top_match.group(1))
-        width_val = float(width_match.group(1)) if width_match else 0
-        height_val = float(height_match.group(1)) if height_match else 0
-
         if width_val >= 950 and height_val >= 530 and top_val <= 5:
             continue
-        if top_val < 72:
+        if top_val < 72 or top_val >= 515:
             continue
-        if top_val >= 515:
-            continue
-
-        body_elements.append(el_html)
-
+        body_elements.append(str(element))
     return body_elements
 
 
@@ -457,8 +629,6 @@ def _enforce_header_footer_consistency(
     design_system: dict,
 ) -> list[dict]:
     """Ensure all non-cover slides share the same header/footer background template."""
-    import re
-
     hf = design_system.get("header_footer", {})
     if not hf:
         return slides_html
@@ -515,41 +685,26 @@ def _enforce_header_footer_consistency(
 
 def _extract_layout_regions(html: str) -> tuple[list[str], list[str], str | None]:
     """Extract header (y < 75), footer (y > 510), and background elements."""
-    import re
-
     header_elements = []
     footer_elements = []
     bg_element = None
 
-    div_pattern = re.compile(
-        r'(<div\s[^>]*data-pptx-type=[^>]*>(?:.*?</div>|[^<]*))',
-        re.DOTALL,
-    )
-    top_pattern = re.compile(r'top:\s*(\d+(?:\.\d+)?)\s*px')
-    width_pattern = re.compile(r'width:\s*(\d+(?:\.\d+)?)\s*px')
-    height_pattern = re.compile(r'height:\s*(\d+(?:\.\d+)?)\s*px')
+    for element in _top_level_slide_elements(html):
+        region = element.attrs.get("data-pptx-region")
+        top_val = _style_px(element, "top")
+        width_val = _style_px(element, "width")
+        height_val = _style_px(element, "height")
 
-    for match in div_pattern.finditer(html):
-        el_html = match.group(0)
-        top_match = top_pattern.search(el_html)
-        width_match = width_pattern.search(el_html)
-        height_match = height_pattern.search(el_html)
-
-        if not top_match:
+        if region == "background" or (
+            width_val >= 950 and height_val >= 530 and top_val <= 5
+        ):
+            bg_element = str(element)
             continue
 
-        top_val = float(top_match.group(1))
-        width_val = float(width_match.group(1)) if width_match else 0
-        height_val = float(height_match.group(1)) if height_match else 0
-
-        if width_val >= 950 and height_val >= 530 and top_val <= 5:
-            bg_element = el_html
-            continue
-
-        if top_val < 75:
-            header_elements.append(el_html)
-        elif top_val >= 510:
-            footer_elements.append(el_html)
+        if region == "header" or top_val < 75:
+            header_elements.append(str(element))
+        elif region == "footer" or top_val >= 510:
+            footer_elements.append(str(element))
 
     return header_elements, footer_elements, bg_element
 
@@ -564,39 +719,10 @@ def _inject_template_regions(
     """Replace header/footer in the slide HTML with template versions."""
     import re
 
-    top_pattern = re.compile(r'top:\s*(\d+(?:\.\d+)?)\s*px')
-    width_pattern = re.compile(r'width:\s*(\d+(?:\.\d+)?)\s*px')
-    height_pattern = re.compile(r'height:\s*(\d+(?:\.\d+)?)\s*px')
-
-    div_pattern = re.compile(
-        r'<div\s[^>]*data-pptx-type=[^>]*>(?:.*?</div>|[^<]*)',
-        re.DOTALL,
-    )
-
-    body_elements = []
-    for match in div_pattern.finditer(html):
-        el_html = match.group(0)
-        top_match = top_pattern.search(el_html)
-        width_match = width_pattern.search(el_html)
-        height_match = height_pattern.search(el_html)
-
-        if not top_match:
-            body_elements.append(el_html)
-            continue
-
-        top_val = float(top_match.group(1))
-        width_val = float(width_match.group(1)) if width_match else 0
-        height_val = float(height_match.group(1)) if height_match else 0
-
-        if width_val >= 950 and height_val >= 530 and top_val <= 5:
-            continue
-        if top_val < 75 or top_val >= 510:
-            continue
-        body_elements.append(el_html)
-
-    slide_wrapper_match = re.search(r'<div\s+data-slide="?\d+"?\s[^>]*>', html)
-    wrapper_open = slide_wrapper_match.group(0) if slide_wrapper_match else (
-        f'<div data-slide="{slide_index}" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+    body_elements = _extract_body_only(html)
+    wrapper_open = (
+        f'<div data-slide="{slide_index}" '
+        f'style="position:absolute;left:0;top:0;width:960px;height:540px">'
     )
 
     parts = [wrapper_open, "\n"]
@@ -611,11 +737,35 @@ def _inject_template_regions(
         parts.append(f"  {el}\n")
     if template_footer:
         for f_el in template_footer:
-            page_replaced = re.sub(r'>\s*\d+\s*<', f'>{slide_index}<', f_el)
+            page_replaced = re.sub(r"(Page\s*)\d+", rf"\g<1>{slide_index}", f_el)
+            page_replaced = re.sub(r">\s*\d+\s*<", f">{slide_index}<", page_replaced)
             parts.append(f"  {page_replaced}\n")
 
     parts.append("</div>")
     return "".join(parts)
+
+
+def _top_level_slide_elements(html: str) -> list:
+    """Return complete slide children without truncating nested HTML elements."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    wrapper = soup.find(attrs={"data-slide": True})
+    if not wrapper:
+        return []
+    return [
+        element for element in wrapper.find_all(recursive=False)
+        if getattr(element, "attrs", {}).get("data-pptx-type")
+    ]
+
+
+def _style_px(element, name: str) -> float:
+    """Read a pixel position value from an inline-style HTML element."""
+    import re
+
+    style = str(element.attrs.get("style", ""))
+    match = re.search(rf"(?:^|;)\s*{name}\s*:\s*(-?\d+(?:\.\d+)?)px", style)
+    return float(match.group(1)) if match else 0.0
 
 
 def _extract_html(content: str) -> str:

@@ -5,6 +5,7 @@ import { FileText } from "lucide-react";
 import type { GenerationJob } from "@/types";
 import { getPreviewUrl } from "@/lib/api";
 import { useTranslation } from "@/hooks/useTranslation";
+import { useDocumentStore } from "@/stores/document";
 
 interface DocumentViewerProps {
   job: GenerationJob;
@@ -12,7 +13,8 @@ interface DocumentViewerProps {
 
 export function DocumentViewer({ job }: DocumentViewerProps) {
   const { t } = useTranslation();
-  const previewUrl = getPreviewUrl(job.id);
+  const selectedVersionNumber = useDocumentStore((state) => state.selectedVersionNumber);
+  const previewUrl = getPreviewUrl(job.id, selectedVersionNumber);
 
   if (job.status !== "completed") {
     return (

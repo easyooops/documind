@@ -7,14 +7,14 @@ import { getDocumentVersions } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { useLocaleStore } from "@/stores/locale";
 import { useTranslation } from "@/hooks/useTranslation";
-import type { DocumentVersion } from "@/types";
+import { useDocumentStore } from "@/stores/document";
 
 interface VersionHistoryProps {
   jobId: string;
 }
 
 export function VersionHistory({ jobId }: VersionHistoryProps) {
-  const [versions, setVersions] = useState<DocumentVersion[]>([]);
+  const { versions, selectedVersionNumber, setVersions, selectVersion } = useDocumentStore();
   const [loading, setLoading] = useState(true);
   const locale = useLocaleStore((s) => s.locale);
   const { t } = useTranslation();
@@ -31,7 +31,7 @@ export function VersionHistory({ jobId }: VersionHistoryProps) {
       }
     };
     load();
-  }, [jobId]);
+  }, [jobId, setVersions]);
 
   if (loading) {
     return (
@@ -57,7 +57,10 @@ export function VersionHistory({ jobId }: VersionHistoryProps) {
         {versions.map((v) => (
           <button
             key={v.id}
-            className="w-full text-left p-2 rounded-lg hover:bg-accent transition-colors"
+            onClick={() => selectVersion(v.versionNumber)}
+            className={`w-full text-left p-2 rounded-lg hover:bg-accent transition-colors ${
+              selectedVersionNumber === v.versionNumber ? "bg-accent" : ""
+            }`}
           >
             <div className="flex items-center gap-2">
               <FileCheck className="w-3.5 h-3.5 text-primary flex-shrink-0" />
