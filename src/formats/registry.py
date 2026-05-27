@@ -66,10 +66,14 @@ def _ensure_loaded() -> None:
     except ImportError:
         pass
     try:
-        import src.formats.html  # noqa: F401
+        import src.formats.pdf  # noqa: F401
     except ImportError:
         pass
     try:
-        import src.formats.pdf  # noqa: F401
+        import src.formats.xlsx  # noqa: F401
+    except ImportError:
+        pass
+    try:
+        import src.formats.hwp  # noqa: F401
     except ImportError:
         pass

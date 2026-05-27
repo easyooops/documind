@@ -1,5 +1,7 @@
 """Chat / session endpoints with SSE streaming."""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import asyncio
@@ -51,6 +53,17 @@ def _as_list(value: object) -> list:
     if value in (None, ""):
         return []
     return [value]
+
+
+def _mime_type_for_format(format_id: str) -> str:
+    return {
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "pdf": "application/pdf",
+        "md": "text/markdown",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "hwp": "application/hwp+zip",
+    }.get(format_id, "application/octet-stream")
 
 
 def _summary_text(value: object) -> str:
@@ -226,6 +239,67 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
             return [f"Generated HTML for {len(slides)} slides.", f"Elements used: {_compact_text(', '.join(used[:6]))}"]
         return [f"{len(slides)}개 슬라이드 HTML을 생성했습니다.", f"사용 요소: {_compact_text(', '.join(used[:6]))}"]
 
+    if node_name == "init_document_context":
+        return (
+            ["Initialized native-format rules and document context."]
+            if is_en
+            else ["\ubb38\uc11c \uc11c\uc2dd \uaddc\uce59\uacfc \uc791\uc131 \ud658\uacbd\uc744 \uc900\ube44\ud588\uc2b5\ub2c8\ub2e4."]
+        )
+
+    if node_name == "interpret_request":
+        intent = _as_dict(node_output.get("document_intent"))
+        if is_en:
+            return [
+                f"Document type: {_compact_text(intent.get('template_family'))}",
+                f"Template market: {_compact_text(intent.get('locale_market'))} / "
+                f"{_compact_text(intent.get('institutional_style'))}",
+            ]
+        return [
+            f"\ubb38\uc11c \uc720\ud615: {_compact_text(intent.get('template_family'))}",
+            f"\uc11c\uc2dd \uae30\uc900: {_compact_text(intent.get('locale_market'))} / "
+            f"{_compact_text(intent.get('institutional_style'))}",
+        ]
+
+    if node_name == "template_design":
+        design = _as_dict(node_output.get("design_system"))
+        if is_en:
+            return [
+                f"Designed native template: {_compact_text(design.get('template_name'))}",
+                f"Design rationale: {_compact_text(design.get('design_rationale'))}",
+            ]
+        return [
+            f"\uc801\uc6a9 \uc11c\uc2dd: {_compact_text(design.get('template_name'))}",
+            f"\uc11c\uc2dd \uae30\uc900: {_compact_text(design.get('design_rationale'))}",
+        ]
+
+    if node_name == "document_plan":
+        spec = _as_dict(node_output.get("document_spec"))
+        sections = _as_list(spec.get("sections"))
+        message = (
+            f"Planned {len(sections)} designed document sections."
+            if is_en
+            else f"\ubb38\uc11c \uad6c\uc131 {len(sections)}\uac1c \ud56d\ubaa9\uc744 \uacc4\ud68d\ud588\uc2b5\ub2c8\ub2e4."
+        )
+        return [message, *[_compact_text(_as_dict(section).get("title")) for section in sections[:3]]]
+
+    if node_name == "native_render":
+        return (
+            [f"Rendered native document file: {node_output.get('output_path', '')}"]
+            if is_en
+            else ["\uc6cc\ub4dc \ubb38\uc11c \ud30c\uc77c \uc0dd\uc131\uc744 \uc644\ub8cc\ud588\uc2b5\ub2c8\ub2e4."]
+        )
+
+    if node_name == "quality_evaluate":
+        feedback = _as_dict(node_output.get("qa_feedback"))
+        score = feedback.get("score")
+        if not isinstance(score, (int, float)):
+            return []
+        return (
+            [f"Format-specific quality score: {score:.0%}"]
+            if is_en
+            else [f"\uc11c\uc2dd \ubc0f \ud488\uc9c8 \uc810\uac80 \uc810\uc218: {score:.0%}"]
+        )
+
     if node_name == "render_convert":
         screenshots = node_output.get("screenshots_count", 0)
         if is_en:
@@ -299,7 +373,7 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
     return []
 
 
-async def _analyze_image_intent(query: str, attachments: list[dict]) -> dict:
+async def _analyze_image_intent(query: str, attachments: list[dict], format_id: str) -> dict:
     """Interpret user-provided reference images together with their instruction."""
     import base64
 
@@ -312,11 +386,14 @@ async def _analyze_image_intent(query: str, attachments: list[dict]) -> dict:
     content: list[dict] = [{
         "type": "text",
         "text": (
-            "Analyze the attached image(s) only as evidence for the user's presentation request. "
-            "Identify the user's intended content or visual correction. For a revision, describe "
-            "the minimum edit needed and do not propose redesigning unaffected slide content. "
-            "Return JSON with keys summary, visible_evidence, requested_changes, "
-            "style_constraints, and target_slide_hints.\n\n"
+            "Analyze the attached image(s) as evidence for the user's document request. "
+            "Identify usable content, facts, fields, or explicitly requested visual constraints. "
+            "Do not treat the image as the document template unless the user explicitly asks to "
+            "copy its layout or style. For reports, the document pipeline must independently "
+            "select an appropriate report template for the user's language and institutional "
+            "context. Return JSON with keys summary, visible_evidence, requested_changes, "
+            "style_constraints, and content_inputs.\n\n"
+            f"Target output format: {format_id}\n"
             f"User request: {query or 'Interpret the attached reference image.'}"
         ),
     }]
@@ -334,7 +411,7 @@ async def _analyze_image_intent(query: str, attachments: list[dict]) -> dict:
             })
         llm = get_llm_for_agent("vlm_qa", format_id="pptx")
         response = await llm.ainvoke([
-            SystemMessage(content="You are a precise visual-intent analyst for slide revisions."),
+            SystemMessage(content="You are a precise visual-evidence analyst for document generation."),
             HumanMessage(content=content),
         ])
         result = parse_llm_json(response.content)
@@ -559,6 +636,13 @@ async def stream_generation(
             template_bytes = await create_storage_backend().load(template.file_path)
             template_filename = template.filename
             template_analysis = _as_dict(template.analysis)
+            if Path(template.filename).suffix.lower() in {".docx", ".hwpx", ".xlsx", ".md", ".pdf"}:
+                from src.formats.rich_document.template_analysis import analyze_template
+
+                template_analysis = {
+                    **template_analysis,
+                    **analyze_template(template_bytes, template.filename),
+                }
 
     base_pipeline_data = _as_dict(base_version.pipeline_data) if base_version else {}
     base_slides_html = [
@@ -614,7 +698,8 @@ async def stream_generation(
         active_template_analysis = dict(template_analysis)
         stored_visual_analysis = _as_dict(active_template_analysis.get("visual_analysis"))
         should_analyze_template = (
-            bool(document.template_id and template_bytes)
+            document.format == "pptx"
+            and bool(document.template_id and template_bytes)
             and not base_version
             and stored_visual_analysis.get("status", "pending") == "pending"
         )
@@ -698,7 +783,9 @@ async def stream_generation(
                     "description": image_node_description,
                 }),
             }
-            visual_intent = await _analyze_image_intent(request.query, attachment_payload)
+            visual_intent = await _analyze_image_intent(
+                request.query, attachment_payload, request.format
+            )
             async with get_session_factory()() as fresh_db:
                 image_rows = await fresh_db.execute(
                     select(ImageAttachment).where(ImageAttachment.id.in_(attachment_ids))
@@ -744,11 +831,12 @@ async def stream_generation(
                 "slide_plan": base_version.slide_plan or [],
             } if base_version else {},
             "_base_slides_html": base_slides_html,
+            "_base_document_spec": base_pipeline_data.get("document_spec", {}) if base_version else {},
             "visual_intent": visual_intent,
             "image_attachment_ids": attachment_ids,
         }
 
-        NODE_PHASE_MAP = {
+        NODE_PHASE_MAP = {  # noqa: N806 - node constants are local to the stream lifecycle.
             # v2 pipeline nodes
             "init_context": "planning",
             "research": "planning",
@@ -757,6 +845,13 @@ async def stream_generation(
             "render_convert": "converting",
             "design_evaluate": "qa",
             "export": "exporting",
+            "init_document_context": "planning",
+            "interpret_request": "planning",
+            "template_design": "designing",
+            "document_plan": "planning",
+            "native_render": "converting",
+            "quality_evaluate": "qa",
+            "export_document": "exporting",
             # v1 pipeline nodes (legacy)
             "narrative": "planning",
             "content_writer": "planning",
@@ -774,7 +869,7 @@ async def stream_generation(
         }
 
         locale = str(request_options.get("locale", "ko"))
-        NODE_DESCRIPTIONS_BY_LOCALE = {
+        NODE_DESCRIPTIONS_BY_LOCALE = {  # noqa: N806 - node constants are local to the stream lifecycle.
             "ko": {
                 # v2 pipeline nodes
                 "init_context": "컨텍스트 초기화",
@@ -806,6 +901,13 @@ async def stream_generation(
                 "generate_html": "Slide HTML Generation",
                 "render_convert": "PPTX Rendering and Conversion",
                 "export": "Final Export",
+                "init_document_context": "Native Document Context Initialization",
+                "interpret_request": "Document Intent and Template Market Analysis",
+                "template_design": "Template Research and Design",
+                "document_plan": "Structured Document Planning",
+                "native_render": "Native Document Rendering",
+                "quality_evaluate": "Format-specific Quality Evaluation",
+                "export_document": "Final Export",
                 # v1 pipeline nodes (legacy)
                 "narrative": "Narrative Structure",
                 "content_writer": "Slide Content Writing",
@@ -822,7 +924,18 @@ async def stream_generation(
                 "vlm_qa": "Design Quality Assessment",
             },
         }
-        NODE_DESCRIPTIONS = NODE_DESCRIPTIONS_BY_LOCALE.get(locale, NODE_DESCRIPTIONS_BY_LOCALE["ko"])
+        NODE_DESCRIPTIONS_BY_LOCALE["ko"].update({
+            "init_document_context": "\ubb38\uc11c \uc0dd\uc131 \ud658\uacbd \ucd08\uae30\ud654",
+            "interpret_request": "\ubb38\uc11c \uc720\ud615 \ubc0f \uc11c\uc2dd \uae30\uc900 \ubd84\uc11d",
+            "template_design": "\ubb38\uc11c \uc11c\uc2dd \uc801\uc6a9",
+            "document_plan": "\ubb38\uc11c \ub0b4\uc6a9 \ubc0f \ud45c \uad6c\uc131 \uacc4\ud68d",
+            "native_render": "\uc6cc\ub4dc \ubb38\uc11c \uc0dd\uc131",
+            "quality_evaluate": "\uc11c\uc2dd \ubc0f \ud488\uc9c8 \uc810\uac80",
+            "export_document": "\ucd5c\uc885 \ud30c\uc77c \ucd9c\ub825",
+        })
+        NODE_DESCRIPTIONS = NODE_DESCRIPTIONS_BY_LOCALE.get(  # noqa: N806
+            locale, NODE_DESCRIPTIONS_BY_LOCALE["ko"]
+        )
 
         yield {"event": "phase_start", "data": json.dumps({"phase": "planning"})}
 
@@ -986,7 +1099,9 @@ async def stream_generation(
                 gen_job.status = JobStatus.COMPLETED.value
                 gen_job.phase = "done"
                 gen_job.progress = 1.0
-                gen_job.slide_plan = final_state.get("slide_blueprints")
+                gen_job.slide_plan = (
+                    final_state.get("slide_blueprints") or final_state.get("section_blueprints")
+                )
                 gen_job.design_system = final_state.get("design_system")
                 gen_job.completed_at = datetime.utcnow()
 
@@ -1011,7 +1126,7 @@ async def stream_generation(
                             storage_backend="local",
                             storage_path=file_path,
                             size_bytes=file_size,
-                            mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            mime_type=_mime_type_for_format(request.format),
                             created_at=datetime.utcnow(),
                         )
                         fresh_db.add(gen_file)
@@ -1019,6 +1134,7 @@ async def stream_generation(
                         gen_file.filename = os.path.basename(file_path)
                         gen_file.storage_path = file_path
                         gen_file.size_bytes = file_size
+                        gen_file.mime_type = _mime_type_for_format(request.format)
 
                 fidelity_scores = _as_list(final_state.get("fidelity_scores"))
                 fidelity_score = final_state.get("fidelity_score")
@@ -1032,10 +1148,17 @@ async def stream_generation(
                     parent_version_id=base_version.id if base_version else None,
                     trigger="created" if version_number == 1 else "refinement",
                     user_instruction=request.query,
-                    slide_plan=final_state.get("slide_blueprints"),
+                    slide_plan=(
+                        final_state.get("slide_blueprints") or final_state.get("section_blueprints")
+                    ),
                     design_system=final_state.get("design_system"),
                     pipeline_data={
                         "master_context": final_state.get("master_context"),
+                        "document_spec": final_state.get("document_spec"),
+                        "document_intent": final_state.get("document_intent"),
+                        "template_profile": final_state.get("template_profile"),
+                        "template_references": final_state.get("template_references", []),
+                        "format_rules": final_state.get("format_rules"),
                         "research_data": final_state.get("research_data"),
                         "slide_blueprints": final_state.get("slide_blueprints"),
                         "element_usage": final_state.get("element_usage"),

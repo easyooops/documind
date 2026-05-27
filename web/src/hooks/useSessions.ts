@@ -6,6 +6,7 @@ import { useUserStore } from "@/stores/user";
 import { useSessionStore } from "@/stores/session";
 import { useDocumentStore } from "@/stores/document";
 import { getDocumentVersions, getJobStatus } from "@/lib/api";
+import type { DocumentFormat } from "@/types";
 
 export function useSessionsLoader() {
   const user = useUserStore((s) => s.user);
@@ -34,6 +35,7 @@ export function useSessionSelect(onAfterSelect?: () => void) {
   const setMessages = useSessionStore((s) => s.setMessages);
   const setLoadingSession = useSessionStore((s) => s.setLoadingSession);
   const clearProgress = useSessionStore((s) => s.clearProgress);
+  const setSelectedFormat = useSessionStore((s) => s.setSelectedFormat);
 
   const selectSession = useCallback(
     async (sessionId: string) => {
@@ -51,6 +53,12 @@ export function useSessionSelect(onAfterSelect?: () => void) {
       try {
         const session = await getSession(sessionId);
         setMessages(session.messages);
+        const storedFormat = useSessionStore.getState().sessions.find(
+          (item) => item.id === sessionId
+        )?.format;
+        if (storedFormat && ["pptx", "docx", "pdf", "md", "xlsx", "hwp"].includes(storedFormat)) {
+          setSelectedFormat(storedFormat as DocumentFormat);
+        }
 
         const lastJobMsg = [...session.messages]
           .reverse()
@@ -70,7 +78,7 @@ export function useSessionSelect(onAfterSelect?: () => void) {
         onAfterSelect?.();
       }
     },
-    [setCurrentSession, setMessages, setLoadingSession, clearProgress, onAfterSelect]
+    [setCurrentSession, setMessages, setLoadingSession, clearProgress, setSelectedFormat, onAfterSelect]
   );
 
   return selectSession;

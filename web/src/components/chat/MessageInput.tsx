@@ -9,7 +9,6 @@ import {
   Presentation,
   FileSpreadsheet,
   Code2,
-  Globe,
   X,
   AlertCircle,
   ImagePlus,
@@ -40,13 +39,20 @@ const FORMAT_ICONS: Record<DocumentFormat, React.ElementType> = {
   pptx: Presentation,
   docx: FileText,
   md: Code2,
-  html: Globe,
   hwp: FileText,
   xlsx: FileSpreadsheet,
   pdf: FileText,
 };
 
-const FORMATS: DocumentFormat[] = ["pptx", "docx", "pdf", "md", "html", "xlsx", "hwp"];
+const FORMATS: DocumentFormat[] = ["pptx", "docx", "pdf", "md", "xlsx"];
+const TEMPLATE_EXTENSIONS: Record<DocumentFormat, string[]> = {
+  pptx: ["pptx", "potx"],
+  docx: ["docx"],
+  pdf: ["pdf"],
+  md: ["md"],
+  xlsx: ["xlsx"],
+  hwp: ["hwpx"],
+};
 const MAX_IMAGES = 4;
 
 interface PendingImage extends ImageAttachment {
@@ -97,10 +103,12 @@ export function MessageInput() {
 
   const FormatIcon = FORMAT_ICONS[selectedFormat];
   const isFirstTurn = !currentSessionId && messages.length === 0 && !isGenerating;
-  const canAttachTemplate = selectedFormat === "pptx" && isFirstTurn;
+  const canAttachTemplate = isFirstTurn;
+  const formatLocked = versions.length > 0 || messages.some((message) => Boolean(message.generationJobId));
+  const templateExtensions = TEMPLATE_EXTENSIONS[selectedFormat];
   const templateButtonLabel = t("chat.templateButton", { defaultValue: "Template" });
   const templateHelpText = t("chat.templateHelp", {
-    defaultValue: "PowerPoint template can be attached only before the first message.",
+    defaultValue: "A native-format template can be attached only before the first message.",
   });
 
   useEffect(() => {
@@ -120,6 +128,7 @@ export function MessageInput() {
     });
     const submittedImages = attachedImages;
     setText("");
+    setShowFormats(false);
     clearProgress();
     setGenerating(true);
     setPhase("planning");
@@ -275,10 +284,10 @@ export function MessageInput() {
     setUploadError(null);
 
     const extension = file.name.split(".").pop()?.toLowerCase();
-    if (!canAttachTemplate || !["pptx", "potx"].includes(extension || "")) {
+    if (!canAttachTemplate || !templateExtensions.includes(extension || "")) {
       setUploadError(
         t("chat.templateAttachHint", {
-          defaultValue: "Attach a .pptx or .potx template before the first message.",
+          defaultValue: `Attach a ${templateExtensions.map((item) => `.${item}`).join(" or ")} template before the first message.`,
         })
       );
       e.target.value = "";
@@ -419,6 +428,10 @@ export function MessageInput() {
               size="sm"
               className="h-11 gap-1.5 px-2.5 sm:px-3"
               onClick={() => setShowFormats(!showFormats)}
+              disabled={formatLocked || isGenerating}
+              title={formatLocked ? t("chat.formatLocked", {
+                defaultValue: "The output format is fixed after the first document is generated.",
+              }) : undefined}
             >
               <FormatIcon className="w-4 h-4 flex-shrink-0" />
               <span className="text-xs max-w-[5rem] sm:max-w-none truncate">
@@ -427,7 +440,7 @@ export function MessageInput() {
               <ChevronDown className="w-3 h-3 flex-shrink-0" />
             </Button>
 
-            {showFormats && (
+            {showFormats && !formatLocked && !isGenerating && (
               <div className="absolute bottom-12 left-0 z-50 w-40 py-1 rounded-lg border border-border bg-card shadow-xl">
                 {FORMATS.map((f) => {
                   const Icon = FORMAT_ICONS[f];
@@ -436,7 +449,7 @@ export function MessageInput() {
                       key={f}
                       onClick={() => {
                         setSelectedFormat(f);
-                        if (f !== "pptx") {
+                        if (f !== selectedFormat) {
                           setAttachedTemplate(null);
                           setUploadError(null);
                         }
@@ -472,7 +485,7 @@ export function MessageInput() {
             </div>
 
             {/* Initial Template Attach / Existing Document Version */}
-            {selectedFormat === "pptx" && canAttachTemplate ? (
+            {canAttachTemplate ? (
               <>
                 <Button
                   variant="ghost"
@@ -488,7 +501,7 @@ export function MessageInput() {
                 <input
                   ref={fileRef}
                   type="file"
-                  accept=".pptx,.potx"
+                  accept={templateExtensions.map((item) => `.${item}`).join(",")}
                   className="hidden"
                   onChange={handleFileUpload}
                 />

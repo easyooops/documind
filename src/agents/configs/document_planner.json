@@ -1,0 +1,15 @@
+{
+  "description": "Native Document Planner - creates template-led structured document specifications",
+  "provider_type": "llm",
+  "llm": {
+    "model": "gpt-4o",
+    "temperature": 0.45,
+    "max_tokens": 16384,
+    "top_p": 1.0
+  },
+  "retry": {
+    "max_attempts": 2,
+    "backoff_seconds": 1
+  },
+  "output_format": "json"
+}

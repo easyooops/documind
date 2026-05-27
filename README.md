@@ -1,6 +1,7 @@
 # DocuMind — Agentic AI Document Generation Platform
 
-> End-to-end platform where 12 specialized agents plan, design, generate, and validate expert-level documents from natural language requests.
+> End-to-end platform where specialized agents plan, design, generate, and validate
+> expert-level PPTX, DOCX, PDF, Markdown, XLSX, and HWPX documents from natural language requests.
 
 ## Quick Start
 
@@ -139,7 +140,7 @@ User request
 | API | FastAPI + Uvicorn |
 | Agents | LangGraph + LangChain |
 | LLM | OpenAI, Anthropic, Ollama, and more |
-| Documents | python-pptx, lxml |
+| Documents | python-pptx, PyMuPDF, native OOXML/HWPX renderers |
 | Rendering | Playwright (Chromium) |
 | Database | SQLAlchemy (SQLite / PostgreSQL) |
 | Web UI | Next.js 14, Tailwind, Zustand |
@@ -161,7 +162,7 @@ User request
 | GET | `/api/v1/documents/{id}/status` | Job status |
 | GET | `/api/v1/documents/{id}/download` | Download file |
 | GET | `/api/v1/documents/{id}/versions` | Version history |
-| GET | `/api/v1/documents/{id}/preview` | HTML preview |
+| GET | `/api/v1/documents/{id}/preview` | Browser preview of native output |
 | POST | `/api/v1/chat/sessions` | Create chat session |
 | POST | `/api/v1/chat/sessions/{id}/messages/stream` | SSE streaming generation |
 | POST | `/api/v1/templates/upload` | Upload template |

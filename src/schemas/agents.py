@@ -50,6 +50,13 @@ class DocuMindState(TypedDict, total=False):
     design_system: dict
     title: str
     changed_slide_indices: list[int]
+    format_rules: dict
+    template_profile: dict
+    template_references: list[dict]
+    document_intent: dict
+    document_spec: dict
+    section_blueprints: list[dict]
+    _base_document_spec: dict
 
     # ─── Phase B: HTML Generation ────────────────────────────────────────────
     slides_html: list[dict]
@@ -67,6 +74,7 @@ class DocuMindState(TypedDict, total=False):
     rule_based_scores: list[float]
     qa_iterations: int
     qa_feedback: dict
+    validation_result: dict
 
     # ─── Control Flow ────────────────────────────────────────────────────────
     current_phase: str

@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    description="Agentic AI Document Generation Platform - Create expert-level presentations from natural language",
+    description="Agentic AI Document Generation Platform - Create designed native documents from natural language",
     version="0.2.0",
     lifespan=lifespan,
 )

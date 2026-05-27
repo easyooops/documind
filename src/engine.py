@@ -45,42 +45,27 @@ def _get_format_pipeline(format_id: str):
     """Get the compiled pipeline for the given document format.
 
     Routes to the format-specific orchestrator (e.g. formats/pptx/orchestrator.py).
-    Falls back to PPTX pipeline for unsupported formats.
+    Every exposed format owns a native, format-specific pipeline.
     """
     if format_id == "pptx":
         from src.formats.pptx.orchestrator import compile_pptx_pipeline
         return compile_pptx_pipeline()
     elif format_id == "docx":
-        try:
-            from src.formats.docx.orchestrator import compile_docx_pipeline
-            return compile_docx_pipeline()
-        except (ImportError, AttributeError):
-            from src.formats.pptx.orchestrator import compile_pptx_pipeline
-            return compile_pptx_pipeline()
+        from src.formats.docx.orchestrator import compile_docx_pipeline
+        return compile_docx_pipeline()
     elif format_id == "pdf":
-        try:
-            from src.formats.pdf.orchestrator import compile_pdf_pipeline
-            return compile_pdf_pipeline()
-        except (ImportError, AttributeError):
-            from src.formats.pptx.orchestrator import compile_pptx_pipeline
-            return compile_pptx_pipeline()
+        from src.formats.pdf.orchestrator import compile_pdf_pipeline
+        return compile_pdf_pipeline()
     elif format_id == "md":
-        try:
-            from src.formats.md.orchestrator import compile_md_pipeline
-            return compile_md_pipeline()
-        except (ImportError, AttributeError):
-            from src.formats.pptx.orchestrator import compile_pptx_pipeline
-            return compile_pptx_pipeline()
-    elif format_id == "html":
-        try:
-            from src.formats.html.orchestrator import compile_html_pipeline
-            return compile_html_pipeline()
-        except (ImportError, AttributeError):
-            from src.formats.pptx.orchestrator import compile_pptx_pipeline
-            return compile_pptx_pipeline()
-    else:
-        from src.formats.pptx.orchestrator import compile_pptx_pipeline
-        return compile_pptx_pipeline()
+        from src.formats.md.orchestrator import compile_md_pipeline
+        return compile_md_pipeline()
+    elif format_id == "xlsx":
+        from src.formats.xlsx.orchestrator import compile_xlsx_pipeline
+        return compile_xlsx_pipeline()
+    elif format_id == "hwp":
+        from src.formats.hwp.orchestrator import compile_hwp_pipeline
+        return compile_hwp_pipeline()
+    raise ValueError(f"Unsupported document format: {format_id}")
 
 
 class DocuMind:
@@ -90,7 +75,8 @@ class DocuMind:
     Settings passed here override any .env values.
 
     Args:
-        llm_provider: Backend provider (openai|anthropic|azure|bedrock|gcp_vertex|gemini|ollama|vllm|custom)
+        llm_provider: Backend provider
+            (openai|anthropic|azure|bedrock|gcp_vertex|gemini|ollama|vllm|custom)
         use_default_models: If True, all agents use the default model for their type.
         default_llm_model: Default model for text generation agents.
         default_vlm_model: Default model for vision-language agents.
@@ -146,7 +132,7 @@ class DocuMind:
 
         Args:
             query: Natural language description of the document to create.
-            format: Output format (pptx|docx|pdf|xlsx).
+            format: Output format (pptx|docx|pdf|md|xlsx|hwp).
             template_id: Optional template ID for design reference.
             needs_research: Whether to run web research first.
             **options: Additional pipeline options.
@@ -181,7 +167,9 @@ class DocuMind:
         return GenerationResult(
             output_path=result.get("output_path"),
             fidelity_scores=result.get("fidelity_scores", []),
-            slide_count=len(result.get("slides_html", [])),
+            slide_count=len(
+                result.get("slides_html", []) or result.get("section_blueprints", [])
+            ),
             errors=result.get("errors", []),
             metadata={
                 "format": format,
@@ -212,7 +200,7 @@ async def generate_document(
 
     Args:
         query: Natural language description of the document.
-        format: Output format (pptx|docx|pdf|xlsx).
+            format: Output format (pptx|docx|pdf|md|xlsx|hwp).
         template_id: Optional template for design reference.
         needs_research: Whether to gather external data first.
         **config: Any DocuMind/Settings config overrides.

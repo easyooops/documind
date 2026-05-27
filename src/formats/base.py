@@ -12,7 +12,7 @@ class DocumentRenderer(ABC):
     @property
     @abstractmethod
     def format_name(self) -> str:
-        """Document format identifier (pptx, docx, pdf, md, html)."""
+        """Document format identifier (pptx, docx, pdf, md, xlsx, hwp)."""
         ...
 
     @property
@@ -44,7 +44,7 @@ class DocumentRenderer(ABC):
 class FormatEngine(ABC):
     """Abstract format engine - wraps renderer + mappers + QA for a given format.
 
-    Each format (pptx, docx, md, html) implements this interface.
+    Each format (pptx, docx, pdf, md, xlsx, hwp) implements this interface.
     The conversion pipeline delegates to the appropriate FormatEngine
     without needing to know format-specific details.
     """
@@ -52,7 +52,7 @@ class FormatEngine(ABC):
     @property
     @abstractmethod
     def format_id(self) -> str:
-        """Unique identifier for this format (e.g., 'pptx', 'docx', 'md', 'html')."""
+        """Unique identifier for this format (e.g., 'pptx', 'docx', 'xlsx', 'hwp')."""
         ...
 
     @property

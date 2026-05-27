@@ -25,13 +25,14 @@ async def upload_template(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_session),
 ):
-    """Upload a PowerPoint template for analysis."""
+    """Upload a native document template for visual/style analysis."""
     filename = Path(file.filename or "").name
     extension = Path(filename).suffix.lower()
-    if not filename or extension not in {".pptx", ".potx"}:
+    supported = {".pptx", ".potx", ".docx", ".pdf", ".md", ".xlsx", ".hwpx"}
+    if not filename or extension not in supported:
         raise HTTPException(
             status_code=400,
-            detail="Only PowerPoint template files (.pptx, .potx) are supported",
+            detail="Supported templates: .pptx, .potx, .docx, .pdf, .md, .xlsx, .hwpx",
         )
 
     content = await file.read()
@@ -41,17 +42,23 @@ async def upload_template(
         raise HTTPException(status_code=400, detail="File too large (max 50MB)")
 
     try:
-        from src.formats.pptx.master_context import parse_template
+        if extension in {".pptx", ".potx"}:
+            from src.formats.pptx.master_context import parse_template
 
-        analysis = parse_template(content, filename)
+            analysis = parse_template(content, filename)
+        else:
+            from src.formats.rich_document.template_analysis import analyze_template
+
+            analysis = analyze_template(content, filename)
     except Exception as exc:
         logger.warning("template.analysis_failed", filename=filename, error=str(exc)[:200])
-        raise HTTPException(status_code=400, detail="Invalid PowerPoint template file") from exc
+        raise HTTPException(status_code=400, detail="Invalid document template file") from exc
 
-    analysis["visual_analysis"] = {
-        "status": "pending",
-        "summary": "Rendered-slide visual analysis will run before slide design planning.",
-    }
+    if extension in {".pptx", ".potx"}:
+        analysis["visual_analysis"] = {
+            "status": "pending",
+            "summary": "Rendered-slide visual analysis will run before slide design planning.",
+        }
 
     template_id = str(uuid.uuid4())
     storage = create_storage_backend()

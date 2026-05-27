@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
-
 
 # ═══ Generation Requests ═══
 
 class GenerateRequest(BaseModel):
     query: str = Field(description="Natural language document generation request")
-    format: str = Field(default="pptx", description="pptx|docx|pdf|xlsx")
+    format: Literal["pptx", "docx", "pdf", "md", "xlsx", "hwp"] = Field(
+        default="pptx", description="pptx|docx|pdf|md|xlsx|hwp (hwp produces open HWPX)"
+    )
     template_id: str | None = None
     session_id: str | None = None
     image_attachment_ids: list[str] = Field(default_factory=list)

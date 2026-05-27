@@ -13,7 +13,6 @@ import {
   Presentation,
   FileSpreadsheet,
   Code2,
-  Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,7 +36,6 @@ const FORMAT_ICONS: Record<string, React.ElementType> = {
   pptx: Presentation,
   docx: FileText,
   md: Code2,
-  html: Globe,
   hwp: FileText,
   xlsx: FileSpreadsheet,
   pdf: FileText,
@@ -47,7 +45,6 @@ const FORMAT_COLORS: Record<string, string> = {
   pptx: "text-orange-500",
   docx: "text-blue-500",
   md: "text-gray-500",
-  html: "text-green-500",
   hwp: "text-sky-500",
   xlsx: "text-emerald-500",
   pdf: "text-red-500",

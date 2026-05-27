@@ -49,6 +49,6 @@ Output is written to `out/` and can be deployed to Vercel, Cloudflare Pages, S3 
 - User identification (name + email, no RBAC)
 - Chat-based document requests with SSE progress
 - Template attachment (PPTX/DOCX/PDF)
-- Output format selector (PPTX, DOCX, PDF, MD, HTML, HWP, XLSX)
+- Output format selector (PPTX, DOCX, PDF, MD, XLSX)
 - Document preview panel with download, version history, and fullscreen view
 - Session history sidebar

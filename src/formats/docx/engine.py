@@ -1,4 +1,4 @@
-"""DOCX Format Engine - Word document generation (Phase 2)."""
+"""DOCX format engine for designed native Word documents."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from src.formats.docx.renderer import DOCXRenderer
 
 
 class DOCXFormatEngine(FormatEngine):
-    """DOCX generation engine (Phase 2 - stub)."""
+    """DOCX generation engine backed by the template-led native renderer."""
 
     @property
     def format_id(self) -> str:
@@ -25,5 +25,5 @@ class DOCXFormatEngine(FormatEngine):
         return await renderer.render(classified_elements, output_dir)
 
     async def validate(self, output_path: Path, reference_html: list[dict]) -> float:
-        """Validate DOCX output quality (Phase 2)."""
-        return 1.0
+        """Basic artifact validation for the legacy renderer interface."""
+        return 1.0 if output_path.exists() and output_path.stat().st_size else 0.0

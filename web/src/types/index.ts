@@ -34,7 +34,6 @@ export type DocumentFormat =
   | "pptx"
   | "docx"
   | "md"
-  | "html"
   | "hwp"
   | "xlsx"
   | "pdf";
@@ -120,8 +119,7 @@ export const FORMAT_LABELS: Record<DocumentFormat, string> = {
   pptx: "PowerPoint",
   docx: "Word",
   md: "Markdown",
-  html: "HTML",
-  hwp: "HWP",
+  hwp: "HWPX",
   xlsx: "Excel",
   pdf: "PDF",
 };
@@ -130,8 +128,7 @@ export const FORMAT_EXTENSIONS: Record<DocumentFormat, string> = {
   pptx: ".pptx",
   docx: ".docx",
   md: ".md",
-  html: ".html",
-  hwp: ".hwp",
+  hwp: ".hwpx",
   xlsx: ".xlsx",
   pdf: ".pdf",
 };
