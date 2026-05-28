@@ -1,8 +1,10 @@
 from pathlib import Path
+from io import BytesIO
 
 from PIL import Image
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.util import Emu
 
 from src.formats.pptx.agents.nodes.html_generator import _inject_fixed_template
 from src.formats.pptx.agents.nodes.html_generator import _materialize_html_icon_node
@@ -81,6 +83,56 @@ def test_fixed_template_uses_selected_master_zone_positions() -> None:
     assert "left:40px;top:16px;width:4px;height:54px" in output
     assert "left:40px;top:526px;width:720px;height:11px" in output
     assert ">Body</div>" in output
+
+
+def test_header_title_size_is_consistent_for_long_and_short_titles() -> None:
+    short = _inject_fixed_template(
+        '<div data-slide="1"><div data-pptx-type="textbox" '
+        'style="position:absolute;left:40px;top:100px;width:200px;height:40px">Body</div></div>',
+        1,
+        {"title": "Short title", "section_label": "A"},
+        {},
+    )
+    long = _inject_fixed_template(
+        '<div data-slide="2"><div data-pptx-type="textbox" '
+        'style="position:absolute;left:40px;top:100px;width:200px;height:40px">Body</div></div>',
+        2,
+        {"title": "AI 관측 서비스 구축을 위한 전략적 실행 로드맵과 핵심 과제", "section_label": "A"},
+        {},
+    )
+
+    assert "font-size:22px" in short
+    assert "font-size:22px" in long
+    assert "line-height:1.08;padding:0;vertical-align:middle" in long
+
+
+def test_template_slide_size_scales_html_coordinates(tmp_path: Path) -> None:
+    template = Presentation()
+    template.slide_width = Emu(12_192_000)
+    template.slide_height = Emu(6_858_000)
+    template.slides.add_slide(template.slide_layouts[6])
+    buffer = BytesIO()
+    template.save(buffer)
+
+    html = (
+        '<div data-slide="1">'
+        '<div data-pptx-type="textbox" style="position:absolute;left:480px;top:270px;'
+        'width:96px;height:54px;font-size:20px;color:#111827">Scaled</div></div>'
+    )
+
+    output = CSStoOOXMLEngine().build_presentation(
+        [{"index": 1, "html": html, "metadata": {"slide_type": "content"}}],
+        tmp_path,
+        template_bytes=buffer.getvalue(),
+    )
+    prs = Presentation(output)
+    shape = prs.slides[0].shapes[0]
+
+    assert prs.slide_width == 12_192_000
+    assert prs.slide_height == 6_858_000
+    assert abs(shape.left - 6_096_000) < 5
+    assert abs(shape.top - 3_429_000) < 5
+    assert abs(shape.width - 1_219_200) < 5
 
 
 def test_icon_is_layered_above_card_without_moving_card(tmp_path: Path, monkeypatch) -> None:

@@ -58,6 +58,13 @@ DEGREES_TO_60K = 60000
 class CSStoOOXMLEngine:
     """Deterministic engine that converts parsed HTML elements to PPTX shapes."""
 
+    def __init__(self) -> None:
+        self._px_to_emu_x = PX_TO_EMU
+        self._px_to_emu_y = PX_TO_EMU
+        self._font_scale = 1.0
+        self._slide_width_emu = 960 * PX_TO_EMU
+        self._slide_height_emu = 540 * PX_TO_EMU
+
     def build_presentation(
         self,
         slides_html: list[dict],
@@ -79,6 +86,7 @@ class CSStoOOXMLEngine:
             prs = Presentation()
             prs.slide_width = Emu(960 * PX_TO_EMU)
             prs.slide_height = Emu(540 * PX_TO_EMU)
+        self._configure_canvas_scale(prs, using_template=using_template)
 
         for position, slide_data in enumerate(
             sorted(slides_html, key=lambda s: s.get("index", 0))
@@ -130,6 +138,40 @@ class CSStoOOXMLEngine:
         logger.info("mapper.saved", path=str(output_path), slides=len(prs.slides))
         return output_path
 
+    def _configure_canvas_scale(self, prs, *, using_template: bool) -> None:
+        """Map the 960x540 HTML coordinate system to the actual PPTX canvas."""
+        self._slide_width_emu = int(prs.slide_width)
+        self._slide_height_emu = int(prs.slide_height)
+        self._px_to_emu_x = self._slide_width_emu / 960
+        self._px_to_emu_y = self._slide_height_emu / 540
+        self._font_scale = min(self._px_to_emu_x / PX_TO_EMU, self._px_to_emu_y / PX_TO_EMU)
+        if using_template:
+            logger.info(
+                "mapper.template_canvas_scaled",
+                slide_width=self._slide_width_emu,
+                slide_height=self._slide_height_emu,
+                scale_x=round(self._px_to_emu_x / PX_TO_EMU, 4),
+                scale_y=round(self._px_to_emu_y / PX_TO_EMU, 4),
+            )
+
+    def _x(self, px: float) -> int:
+        return int(px * self._px_to_emu_x)
+
+    def _y(self, px: float) -> int:
+        return int(px * self._px_to_emu_y)
+
+    def _w(self, px: float) -> int:
+        return int(px * self._px_to_emu_x)
+
+    def _h(self, px: float) -> int:
+        return int(px * self._px_to_emu_y)
+
+    def _s(self, px: float) -> int:
+        return int(px * min(self._px_to_emu_x, self._px_to_emu_y))
+
+    def _pt(self, px: float) -> float:
+        return px * 0.75 * self._font_scale
+
     def _select_layout(self, prs, slide_data: dict, source_layouts: list, position: int):
         """Select an uploaded template layout while preserving the original master tree."""
         slide_type = slide_data.get("metadata", {}).get("slide_type", "content")
@@ -159,8 +201,8 @@ class CSStoOOXMLEngine:
 
     def _template_background_is_dark(self, slide) -> bool:
         """Infer template backdrop contrast, defaulting to PowerPoint's white canvas."""
-        slide_width = 960 * PX_TO_EMU
-        slide_height = 540 * PX_TO_EMU
+        slide_width = self._slide_width_emu
+        slide_height = self._slide_height_emu
         shape_sources = (
             list(getattr(slide.slide_layout, "shapes", []))
             + list(getattr(slide.slide_layout.slide_master, "shapes", []))
@@ -287,10 +329,10 @@ class CSStoOOXMLEngine:
         from pptx.enum.shapes import MSO_SHAPE
 
         pos = element.position
-        x = int(pos["left"] * PX_TO_EMU)
-        y = int(pos["top"] * PX_TO_EMU)
-        w = int(pos["width"] * PX_TO_EMU)
-        h = int(pos["height"] * PX_TO_EMU)
+        x = self._x(pos["left"])
+        y = self._y(pos["top"])
+        w = self._w(pos["width"])
+        h = self._h(pos["height"])
 
         shape_type = None
         if element.pptx_shape:
@@ -330,10 +372,10 @@ class CSStoOOXMLEngine:
         from pptx.util import Emu
 
         pos = element.position
-        x = int(pos["left"] * PX_TO_EMU)
-        y = int(pos["top"] * PX_TO_EMU)
-        w = int(pos["width"] * PX_TO_EMU)
-        h = int(pos["height"] * PX_TO_EMU)
+        x = self._x(pos["left"])
+        y = self._y(pos["top"])
+        w = self._w(pos["width"])
+        h = self._h(pos["height"])
 
         has_bg = self._has_background(element.styles)
         has_radius = self._get_border_radius(element.styles) > 0
@@ -384,10 +426,10 @@ class CSStoOOXMLEngine:
 
         table_shape = slide.shapes.add_table(
             row_count, col_count,
-            Emu(int(pos["left"] * PX_TO_EMU)),
-            Emu(int(pos["top"] * PX_TO_EMU)),
-            Emu(int(pos["width"] * PX_TO_EMU)),
-            Emu(int(pos["height"] * PX_TO_EMU)),
+            Emu(self._x(pos["left"])),
+            Emu(self._y(pos["top"])),
+            Emu(self._w(pos["width"])),
+            Emu(self._h(pos["height"])),
         )
         table = table_shape.table
 
@@ -431,13 +473,13 @@ class CSStoOOXMLEngine:
         if isinstance(col_widths, list):
             for c_idx, width_px in enumerate(col_widths[:col_count]):
                 try:
-                    table.columns[c_idx].width = Emu(int(float(width_px) * PX_TO_EMU))
+                    table.columns[c_idx].width = Emu(self._w(float(width_px)))
                 except (TypeError, ValueError, IndexError):
                     pass
         if isinstance(row_heights, list):
             for r_idx, height_px in enumerate(row_heights[:row_count]):
                 try:
-                    table.rows[r_idx].height = Emu(int(float(height_px) * PX_TO_EMU))
+                    table.rows[r_idx].height = Emu(self._h(float(height_px)))
                 except (TypeError, ValueError, IndexError):
                     pass
 
@@ -464,10 +506,10 @@ class CSStoOOXMLEngine:
                 except (ValueError, TypeError):
                     pass
 
-                cell.margin_left = Emu(int(pad_left * PX_TO_EMU))
-                cell.margin_right = Emu(int(pad_right * PX_TO_EMU))
-                cell.margin_top = Emu(int(pad_top * PX_TO_EMU))
-                cell.margin_bottom = Emu(int(pad_bottom * PX_TO_EMU))
+                cell.margin_left = Emu(self._w(pad_left))
+                cell.margin_right = Emu(self._w(pad_right))
+                cell.margin_top = Emu(self._h(pad_top))
+                cell.margin_bottom = Emu(self._h(pad_bottom))
                 cell.vertical_anchor = anchor_map.get(vertical_align, MSO_ANCHOR.MIDDLE)
 
                 tf = cell.text_frame
@@ -482,7 +524,7 @@ class CSStoOOXMLEngine:
                 )
                 run = p.add_run()
                 run.text = text
-                run.font.size = Pt(header_font_size if is_header else body_font_size)
+                run.font.size = Pt(self._pt(header_font_size if is_header else body_font_size))
                 run.font.bold = is_header
                 run.font.name = str(options.get("font_family", "Pretendard"))
                 text_color = "ffffff" if is_header else "1e293b"
@@ -543,10 +585,10 @@ class CSStoOOXMLEngine:
         pos = element.position
         chart_shape = slide.shapes.add_chart(
             chart_type_map.get(chart_type_str, XL_CHART_TYPE.BAR_CLUSTERED),
-            Emu(int(pos["left"] * PX_TO_EMU)),
-            Emu(int(pos["top"] * PX_TO_EMU)),
-            Emu(int(pos["width"] * PX_TO_EMU)),
-            Emu(int(pos["height"] * PX_TO_EMU)),
+            Emu(self._x(pos["left"])),
+            Emu(self._y(pos["top"])),
+            Emu(self._w(pos["width"])),
+            Emu(self._h(pos["height"])),
             pptx_chart_data,
         )
 
@@ -587,14 +629,14 @@ class CSStoOOXMLEngine:
             plot.data_labels.position = positions.get(
                 label_position, XL_DATA_LABEL_POSITION.OUTSIDE_END
             )
-            plot.data_labels.font.size = Pt(float(options.get("label_font_size", 9)))
+            plot.data_labels.font.size = Pt(self._pt(float(options.get("label_font_size", 9))))
         except (IndexError, AttributeError):
             pass
         for axis_name in ("category_axis", "value_axis"):
             try:
                 axis = getattr(chart, axis_name)
                 axis.visible = bool(options.get(f"{axis_name}_visible", True))
-                axis.tick_labels.font.size = Pt(float(options.get("axis_font_size", 9)))
+                axis.tick_labels.font.size = Pt(self._pt(float(options.get("axis_font_size", 9))))
             except (AttributeError, ValueError):
                 pass
         try:
@@ -622,10 +664,10 @@ class CSStoOOXMLEngine:
         from pptx.util import Emu, Pt
 
         pos = element.position
-        x1 = int(pos["left"] * PX_TO_EMU)
-        y1 = int(pos["top"] * PX_TO_EMU)
-        x2 = x1 + int(pos["width"] * PX_TO_EMU)
-        y2 = y1 + int(pos["height"] * PX_TO_EMU)
+        x1 = self._x(pos["left"])
+        y1 = self._y(pos["top"])
+        x2 = x1 + self._w(pos["width"])
+        y2 = y1 + self._h(pos["height"])
 
         connector_type = 1  # straight
         connector_name = element.attributes.get("data-pptx-connector-type", "straight")
@@ -652,7 +694,7 @@ class CSStoOOXMLEngine:
         line_width = border_width if border_width > 0 else min(height_px, 4)
         if line_width <= 2:
             line_width = 0.5
-        connector.line.width = Pt(line_width)
+        connector.line.width = Pt(self._pt(line_width / 0.75))
 
     def _add_placeholder_image(self, slide, element: ParsedElement) -> None:
         """Add an image element. Uses generated image from cache if available, else placeholder."""
@@ -667,10 +709,10 @@ class CSStoOOXMLEngine:
                 cache_path = IMAGE_CACHE_DIR / f"{cache_key}.png"
                 if cache_path.exists():
                     pos = element.position
-                    x = int(pos["left"] * PX_TO_EMU)
-                    y = int(pos["top"] * PX_TO_EMU)
-                    w = int(pos["width"] * PX_TO_EMU)
-                    h = int(pos["height"] * PX_TO_EMU)
+                    x = self._x(pos["left"])
+                    y = self._y(pos["top"])
+                    w = self._w(pos["width"])
+                    h = self._h(pos["height"])
                     slide.shapes.add_picture(str(cache_path), Emu(x), Emu(y), Emu(w), Emu(h))
                     return
             except Exception:
@@ -743,7 +785,7 @@ class CSStoOOXMLEngine:
                 pass
         if options.get("line_width") is not None:
             try:
-                pptx_shape.line.width = Pt(float(options["line_width"]))
+                pptx_shape.line.width = Pt(self._pt(float(options["line_width"]) / 0.75))
             except (TypeError, ValueError):
                 pass
         dash_map = {
@@ -769,7 +811,7 @@ class CSStoOOXMLEngine:
             return
 
         tf = pptx_shape.text_frame
-        tf.word_wrap = True
+        tf.word_wrap = not self._is_generated_header(element)
 
         container_h = element.position.get("height", 0)
         container_w = element.position.get("width", 0)
@@ -784,10 +826,10 @@ class CSStoOOXMLEngine:
         pad_right = self._extract_px_value(element.styles.get("padding-right", "")) or pad_px or 8
         pad_top = self._extract_px_value(element.styles.get("padding-top", "")) or pad_px or 4
         pad_bottom = self._extract_px_value(element.styles.get("padding-bottom", "")) or pad_px or 4
-        tf.margin_left = Emu(int(pad_left * PX_TO_EMU))
-        tf.margin_right = Emu(int(pad_right * PX_TO_EMU))
-        tf.margin_top = Emu(int(pad_top * PX_TO_EMU))
-        tf.margin_bottom = Emu(int(pad_bottom * PX_TO_EMU))
+        tf.margin_left = Emu(self._w(pad_left))
+        tf.margin_right = Emu(self._w(pad_right))
+        tf.margin_top = Emu(self._h(pad_top))
+        tf.margin_bottom = Emu(self._h(pad_bottom))
 
         v_align = element.styles.get("vertical-align", "")
         if not v_align:
@@ -837,7 +879,7 @@ class CSStoOOXMLEngine:
         container_w = element.position.get("width", 0)
 
         actual_paras = [p for p in text.split("\n") if p.strip()]
-        if container_w > 0 and container_h > 0 and text:
+        if container_w > 0 and container_h > 0 and text and not self._is_generated_header(element):
             font_size_px, actual_paras = self._fit_text_lines_to_box(
                 text=text,
                 font_size_px=font_size_px,
@@ -877,7 +919,7 @@ class CSStoOOXMLEngine:
                     run.font.bold = run_bold
                     run.font.italic = run_data.get("italic", False)
                     run_size = self._extract_px_value(run_data.get("size", "")) or font_size_px
-                    run.font.size = Pt(run_size * 0.75)
+                    run.font.size = Pt(self._pt(run_size))
                     run_color = self._extract_color(run_data.get("color", "")) or font_color
                     if run_color:
                         run.font.color.rgb = RGBColor.from_string(run_color)
@@ -888,7 +930,7 @@ class CSStoOOXMLEngine:
             else:
                 run = p.add_run()
                 run.text = para_text.strip()
-                run.font.size = Pt(font_size_px * 0.75)
+                run.font.size = Pt(self._pt(font_size_px))
                 run.font.bold = is_bold
                 if font_color:
                     run.font.color.rgb = RGBColor.from_string(font_color)
@@ -1221,7 +1263,7 @@ class CSStoOOXMLEngine:
 
             # Icon size proportional to card — large and prominent
             icon_size = self._icon_size_for_element(element)
-            icon_emu = int(icon_size * PX_TO_EMU)
+            icon_emu = self._s(icon_size)
 
             # Position: top-left corner of the card with padding
             ix, iy = self._icon_position_for_element(element, icon_size, pad=12)
@@ -1283,7 +1325,7 @@ class CSStoOOXMLEngine:
             top = pos["top"] + (pos.get("height", icon_size) - icon_size) / 2
         elif layout == "badge-top-right":
             left = pos["left"] + pos.get("width", icon_size) - pad - icon_size
-        return int(left * PX_TO_EMU), int(top * PX_TO_EMU)
+        return self._x(left), self._y(top)
 
     def _reserve_icon_text_space(
         self,
@@ -1339,10 +1381,10 @@ class CSStoOOXMLEngine:
                 return False
 
             pos = element.position
-            x = int(pos["left"] * PX_TO_EMU)
-            y = int(pos["top"] * PX_TO_EMU)
-            w = int(max(1, pos.get("width", 32)) * PX_TO_EMU)
-            h = int(max(1, pos.get("height", 32)) * PX_TO_EMU)
+            x = self._x(pos["left"])
+            y = self._y(pos["top"])
+            w = self._w(max(1, pos.get("width", 32)))
+            h = self._h(max(1, pos.get("height", 32)))
 
             if str(icon_path).endswith(".png"):
                 slide.shapes.add_picture(str(icon_path), Emu(x), Emu(y), Emu(w), Emu(h))

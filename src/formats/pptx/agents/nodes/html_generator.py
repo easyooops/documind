@@ -650,10 +650,11 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
 
     header_html = (
         f'<div data-pptx-region="header" data-pptx-type="textbox" style="position:absolute;{_box_style(section_box)}'
-        f"font-size:11px;font-weight:500;font-family:'{font_body}';color:{accent}\">"
+        f"font-size:11px;font-weight:500;line-height:1.05;padding:0;font-family:'{font_body}';color:{accent}\">"
         f'{section_label}</div>\n'
         f'  <div data-pptx-region="header" data-pptx-type="textbox" style="position:absolute;{_box_style(title_box)}'
-        f"font-size:{title_font_size}px;font-weight:700;font-family:'{font_heading}';color:{text_primary}\">"
+        f"font-size:{title_font_size}px;font-weight:700;line-height:1.08;padding:0;vertical-align:middle;"
+        f"font-family:'{font_heading}';color:{text_primary}\">"
         f'{title_text}</div>\n'
         f'  <div data-pptx-region="header" data-pptx-type="shape" data-pptx-shape="rect" style="position:absolute;'
         f'{_box_style(accent_box)}background-color:{accent}"></div>'
@@ -688,13 +689,8 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
 
 
 def _header_title_font_size(title: str) -> int:
-    """Keep assertive, long Korean headings within the one-line template header."""
-    title_length = len(title.strip())
-    if title_length <= 36:
-        return 22
-    if title_length <= 48:
-        return 20
-    return 18
+    """Use one deck-level header title size for visual consistency."""
+    return 22
 
 
 def _extract_body_only(html: str, body_region: dict | None = None) -> list[str]:
