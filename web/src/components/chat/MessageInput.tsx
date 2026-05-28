@@ -353,6 +353,14 @@ export function MessageInput() {
     void addImages(Array.from(e.dataTransfer.files));
   };
 
+  const handleImagePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardFiles = Array.from(e.clipboardData.files || []);
+    const imageFiles = clipboardFiles.filter((file) => file.type.startsWith("image/"));
+    if (!imageFiles.length) return;
+    e.preventDefault();
+    void addImages(imageFiles);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -477,6 +485,7 @@ export function MessageInput() {
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handleImagePaste}
                 placeholder={t("chat.inputPlaceholder")}
                 rows={1}
                 className="block w-full h-11 resize-none rounded-xl border border-input bg-secondary/30 px-3 sm:px-4 py-2.5 text-[15px] sm:text-sm leading-6 placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring max-h-[120px] scrollbar-thin"
