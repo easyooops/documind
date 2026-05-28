@@ -1,0 +1,47 @@
+# Copy to terraform.tfvars and edit:
+#   cp terraform.tfvars.example terraform.tfvars
+
+aws_region         = "ap-northeast-2"
+project_name       = "documind"
+environment        = "dev"
+instance_type      = "t3.large"
+ubuntu_codename    = "jammy"
+key_name           = ""
+allow_ssh_cidr     = "203.0.113.10/32"
+allow_documind_cidr = "0.0.0.0/0"
+
+documind_api_port      = 8000
+documind_web_port      = 3000
+documind_api_image_tag = "documind/api:0.2.0"
+documind_web_image_tag = "documind/web:0.2.0"
+root_volume_size_gb    = 80
+
+# Infrastructure switches
+# - sqlite/local: lowest-cost single EC2 deployment
+# - postgresql/s3: RDS + S3 deployment for durable shared infrastructure
+database_type = "sqlite"
+storage_type  = "local"
+
+# For RDS when database_type = "postgresql"
+db_name                   = "documind"
+db_user                   = "documind"
+db_instance_class         = "db.t4g.micro"
+db_allocated_storage_gb   = 20
+db_backup_retention_days  = 7
+
+# LLM provider. Bedrock on EC2 can use the instance role.
+llm_provider          = "bedrock"
+aws_bedrock_region    = "us-east-1"
+attach_bedrock_policy = true
+use_default_models    = true
+default_llm_model     = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+default_vlm_model     = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+default_image_model   = "amazon.titan-image-generator-v2:0"
+
+# API-key providers. These are sensitive and will be stored in Terraform state.
+# openai_api_key = ""
+# anthropic_api_key = ""
+# google_api_key = ""
+# custom_llm_base_url = "http://localhost:11434/v1"
+# custom_llm_api_key = ""
+

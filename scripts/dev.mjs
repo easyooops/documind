@@ -20,11 +20,11 @@ const treeKill = require("tree-kill");
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isWin = platform.isWin;
 const python = resolvePython(root);
-const pyEnv = pythonInstallEnv(process.env, root);
+const defaultEnv = pythonInstallEnv(process.env, root);
 
 const children = [];
 
-function run(name, cmd, args, cwd = root, env = pyEnv) {
+function run(name, cmd, args, cwd = root, env = defaultEnv) {
   const child = spawn(cmd, args, {
     cwd,
     stdio: "inherit",
@@ -71,6 +71,29 @@ console.log(`API  -> http://localhost:${API_PORT}`);
 console.log(`Web  -> http://localhost:${WEB_PORT}`);
 console.log(`Logs -> data/logs/documind.log (backend; also printed below)\n`);
 
+const apiUrl = `http://127.0.0.1:${API_PORT}`;
+const webOrigin = `http://localhost:${WEB_PORT}`;
+const webOriginLocalIp = `http://127.0.0.1:${WEB_PORT}`;
+const apiEnv = pythonInstallEnv(
+  {
+    ...process.env,
+    CORS_ORIGINS: [
+      webOrigin,
+      webOriginLocalIp,
+      process.env.CORS_ORIGINS,
+    ].filter(Boolean).join(","),
+  },
+  root,
+);
+const webEnv = pythonInstallEnv(
+  {
+    ...process.env,
+    DOCUMIND_INTERNAL_API_URL: apiUrl,
+    NEXT_PUBLIC_STREAM_API_URL: apiUrl,
+  },
+  root,
+);
+
 const api = run("api", python, [
   "-m",
   "uvicorn",
@@ -79,13 +102,14 @@ const api = run("api", python, [
   "127.0.0.1",
   "--port",
   String(API_PORT),
-]);
+], root, apiEnv);
 
 const web = run(
   "web",
   "npx",
   ["next", "dev", "--port", String(WEB_PORT)],
   path.join(root, "web"),
+  webEnv,
 );
 
 let shuttingDown = false;

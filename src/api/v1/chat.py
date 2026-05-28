@@ -690,11 +690,14 @@ async def stream_generation(
     await db.commit()
 
     async def event_generator():
-        from src.engine import _get_format_pipeline
         from src.agents.research_intent import analyze_research_intent
+        from src.engine import _get_format_pipeline
         from src.infrastructure.database import get_session_factory
         from src.schemas.agents import DocuMindState
         from src.utils.language import detect_output_language
+
+        locale = str(request_options.get("locale", "ko"))
+        yield {"event": "phase_start", "data": json.dumps({"phase": "planning"})}
 
         active_template_analysis = dict(template_analysis)
         stored_visual_analysis = _as_dict(active_template_analysis.get("visual_analysis"))
@@ -705,7 +708,6 @@ async def stream_generation(
             and stored_visual_analysis.get("status", "pending") == "pending"
         )
         if should_analyze_template:
-            locale = str(request_options.get("locale", "ko"))
             description = (
                 "템플릿 렌더 이미지 시각 분석"
                 if locale != "en"
@@ -807,6 +809,20 @@ async def stream_generation(
                 }),
             }
 
+        intent_description = (
+            "\uc694\uccad \uc758\ub3c4 \ubd84\uc11d"
+            if locale != "en"
+            else "Request intent analysis"
+        )
+        intent_started_at = time.time()
+        yield {
+            "event": "node_start",
+            "data": json.dumps({
+                "node": "research_intent",
+                "phase": "planning",
+                "description": intent_description,
+            }),
+        }
         research_intent = await analyze_research_intent(request.query)
         logger.info(
             "chat.research_intent",
@@ -814,6 +830,18 @@ async def stream_generation(
             intent=research_intent.intent_label,
             reason=research_intent.reason,
         )
+        yield {
+            "event": "node_complete",
+            "data": json.dumps({
+                "node": "research_intent",
+                "phase": "planning",
+                "description": intent_description,
+                "summary_items": [research_intent.reason],
+                "has_errors": False,
+                "progress": 0.1,
+                "elapsed_seconds": round(time.time() - intent_started_at, 1),
+            }),
+        }
         initial_state: DocuMindState = {
             "user_query": request.query,
             "session_id": session_id,
@@ -876,7 +904,6 @@ async def stream_generation(
             "vlm_qa": "qa",
         }
 
-        locale = str(request_options.get("locale", "ko"))
         NODE_DESCRIPTIONS_BY_LOCALE = {  # noqa: N806 - node constants are local to the stream lifecycle.
             "ko": {
                 # v2 pipeline nodes
@@ -885,6 +912,7 @@ async def stream_generation(
                 "plan": "슬라이드 구조 및 디자인 계획",
                 "generate_html": "슬라이드 HTML 생성",
                 "render_convert": "PPTX 렌더링 및 변환",
+                "design_evaluate": "디자인 품질 평가",
                 "export": "최종 내보내기",
                 # v1 pipeline nodes (legacy)
                 "narrative": "내러티브 구조 설계",
@@ -908,6 +936,7 @@ async def stream_generation(
                 "plan": "Slide Structure and Design Planning",
                 "generate_html": "Slide HTML Generation",
                 "render_convert": "PPTX Rendering and Conversion",
+                "design_evaluate": "Design Quality Evaluation",
                 "export": "Final Export",
                 "init_document_context": "Native Document Context Initialization",
                 "interpret_request": "Document Intent and Template Market Analysis",
@@ -944,8 +973,6 @@ async def stream_generation(
         NODE_DESCRIPTIONS = NODE_DESCRIPTIONS_BY_LOCALE.get(  # noqa: N806
             locale, NODE_DESCRIPTIONS_BY_LOCALE["ko"]
         )
-
-        yield {"event": "phase_start", "data": json.dumps({"phase": "planning"})}
 
         try:
             pipeline = _get_format_pipeline(request.format)
@@ -1096,6 +1123,7 @@ async def stream_generation(
             # Persist a new immutable version under this session's document root.
             document_id = document.id
             output_path = final_state.get("output_path", "")
+            stored_file_path = output_path or None
 
             async with get_session_factory()() as fresh_db:
                 gen_result = await fresh_db.execute(
@@ -1115,7 +1143,16 @@ async def stream_generation(
 
                 if output_path:
                     import os
+
+                    from src.infrastructure.storage import persist_local_file
+
                     file_path = output_path
+                    mime_type = _mime_type_for_format(request.format)
+                    storage_backend, stored_file_path = await persist_local_file(
+                        file_path,
+                        f"documents/{document_id}/v{version_number}/{os.path.basename(file_path)}",
+                        mime_type,
+                    )
                     file_size = 0
                     try:
                         file_size = os.path.getsize(file_path)
@@ -1131,18 +1168,19 @@ async def stream_generation(
                             id=str(uuid.uuid4()),
                             job_id=document_id,
                             filename=os.path.basename(file_path),
-                            storage_backend="local",
-                            storage_path=file_path,
+                            storage_backend=storage_backend,
+                            storage_path=stored_file_path,
                             size_bytes=file_size,
-                            mime_type=_mime_type_for_format(request.format),
+                            mime_type=mime_type,
                             created_at=datetime.utcnow(),
                         )
                         fresh_db.add(gen_file)
                     else:
                         gen_file.filename = os.path.basename(file_path)
-                        gen_file.storage_path = file_path
+                        gen_file.storage_backend = storage_backend
+                        gen_file.storage_path = stored_file_path
                         gen_file.size_bytes = file_size
-                        gen_file.mime_type = _mime_type_for_format(request.format)
+                        gen_file.mime_type = mime_type
 
                 fidelity_scores = _as_list(final_state.get("fidelity_scores"))
                 fidelity_score = final_state.get("fidelity_score")
@@ -1178,7 +1216,7 @@ async def stream_generation(
                         "visual_intent": final_state.get("visual_intent"),
                         "parent_version_number": base_version.version_number if base_version else None,
                     },
-                    file_path=output_path or None,
+                    file_path=stored_file_path,
                     fidelity_score=fidelity_score,
                     created_at=datetime.utcnow(),
                 )

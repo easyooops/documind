@@ -135,6 +135,8 @@ async def download_document(
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
+    from src.infrastructure.storage import ensure_local_file
+
     result = await db.execute(
         select(GenerationJob)
         .where(GenerationJob.id == job_id)
@@ -164,9 +166,10 @@ async def download_document(
     filename = job.file.filename if job.file else "document.pptx"
     if selected_version:
         filename = f"{Path(filename).stem}-v{selected_version.version_number}{Path(filename).suffix}"
+    local_path = await ensure_local_file(path)
 
     return FileResponse(
-        path=path,
+        path=local_path,
         filename=filename,
         media_type=job.file.mime_type if job.file else _mime_type(job.format),
     )
@@ -255,46 +258,51 @@ async def preview_document(
         selected_path = selected_version.file_path if selected_version else (
             job.file.storage_path if job.file else None
         )
+        selected_local_path = None
+        if selected_path:
+            from src.infrastructure.storage import ensure_local_file
+
+            selected_local_path = await ensure_local_file(selected_path)
         pipeline_data = selected_version.pipeline_data or {} if selected_version else {}
         spec = pipeline_data.get("document_spec") or {}
         design = pipeline_data.get("template_profile") or {}
-        if job.format == "pdf" and selected_path:
+        if job.format == "pdf" and selected_local_path:
             from src.core.config import settings
             from src.formats.docx.preview import render_pdf_images
 
             pages = await render_pdf_images(
-                Path(selected_path),
+                selected_local_path,
                 Path(settings.storage_local_path) / "previews",
             )
             if pages:
                 return HTMLResponse(content=_rendered_pages_preview(pages, "Rendered PDF page"))
-        if job.format == "docx" and selected_path:
+        if job.format == "docx" and selected_local_path:
             from src.core.config import settings
             from src.formats.docx.preview import render_docx_images
 
             pages = await render_docx_images(
-                Path(selected_path),
+                selected_local_path,
                 Path(settings.storage_local_path) / "previews",
             )
             if pages:
                 return HTMLResponse(content=_rendered_pages_preview(pages, "Rendered DOCX page"))
-        if job.format == "xlsx" and selected_path:
+        if job.format == "xlsx" and selected_local_path:
             from src.core.config import settings
             from src.formats.docx.preview import render_docx_images
 
             pages = await render_docx_images(
-                Path(selected_path),
+                selected_local_path,
                 Path(settings.storage_local_path) / "previews",
             )
             if pages:
                 return HTMLResponse(content=_rendered_pages_preview(pages, "Rendered XLSX page"))
-        if job.format == "md" and selected_path:
-            return HTMLResponse(content=_markdown_preview(Path(selected_path)))
-        if job.format == "hwp" and selected_path:
+        if job.format == "md" and selected_local_path:
+            return HTMLResponse(content=_markdown_preview(selected_local_path))
+        if job.format == "hwp" and selected_local_path:
             from src.core.config import settings
 
             pages = await _hwpx_visual_preview(
-                Path(selected_path),
+                selected_local_path,
                 spec,
                 design,
                 Path(settings.storage_local_path) / "previews",
@@ -604,8 +612,8 @@ async def _run_pipeline(job_id: str, request: GenerateRequest) -> None:
     """Execute the full agent pipeline in the background."""
     from sqlalchemy import select
 
-    from src.engine import _get_format_pipeline
     from src.agents.research_intent import analyze_research_intent
+    from src.engine import _get_format_pipeline
     from src.infrastructure.database import get_session_factory
     from src.infrastructure.models import Template
     from src.infrastructure.storage import create_storage_backend
@@ -679,15 +687,23 @@ async def _run_pipeline(job_id: str, request: GenerateRequest) -> None:
             job.completed_at = datetime.utcnow()
             output_path = result.get("output_path")
             if output_path:
+                from src.infrastructure.storage import persist_local_file
+
+                mime_type = _mime_type(request.format)
+                storage_backend, storage_path = await persist_local_file(
+                    output_path,
+                    f"documents/{job_id}/{Path(output_path).name}",
+                    mime_type,
+                )
                 db.add(
                     GeneratedFile(
                         id=str(uuid.uuid4()),
                         job_id=job_id,
                         filename=Path(output_path).name,
-                        storage_backend="local",
-                        storage_path=output_path,
+                        storage_backend=storage_backend,
+                        storage_path=storage_path,
                         size_bytes=os.path.getsize(output_path),
-                        mime_type=_mime_type(request.format),
+                        mime_type=mime_type,
                         fidelity_score=result.get("fidelity_score"),
                         slide_count=len(
                             result.get("slides_html", []) or result.get("section_blueprints", [])
@@ -716,7 +732,7 @@ async def _run_pipeline(job_id: str, request: GenerateRequest) -> None:
                             "qa_feedback": result.get("qa_feedback"),
                             "pptx_screenshots": result.get("pptx_screenshots", []),
                         },
-                        file_path=output_path,
+                        file_path=storage_path,
                         fidelity_score=result.get("fidelity_score"),
                         created_at=datetime.utcnow(),
                     )

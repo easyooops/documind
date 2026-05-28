@@ -13,8 +13,23 @@ import type {
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "";
 
-const STREAM_API_URL =
-  process.env.NEXT_PUBLIC_STREAM_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const LOCAL_API_URL = "http://127.0.0.1:8000";
+
+function getStreamApiUrl(): string {
+  if (process.env.NEXT_PUBLIC_STREAM_API_URL) {
+    return process.env.NEXT_PUBLIC_STREAM_API_URL;
+  }
+  if (API_URL) {
+    return API_URL;
+  }
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+      return LOCAL_API_URL;
+    }
+  }
+  return "";
+}
 
 interface ApiMessage {
   id?: string;
@@ -241,7 +256,8 @@ export function streamGeneration(
     onNodeActivity?: (data: { node: string; phase?: string; activity: string; description: string; elapsed_seconds: number }) => void;
   }
 ): () => void {
-  const url = `${STREAM_API_URL}/api/v1/chat/sessions/${sessionId}/messages/stream`;
+  const streamApiUrl = getStreamApiUrl();
+  const url = `${streamApiUrl}/api/v1/chat/sessions/${sessionId}/messages/stream`;
 
   const controller = new AbortController();
 

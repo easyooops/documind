@@ -1,0 +1,38 @@
+services:
+  documind-api:
+    image: ${DOCUMIND_API_IMAGE}
+    container_name: documind-api
+    env_file:
+      - ${DOCUMIND_ENV_FILE:-.env}
+    command: >
+      python -m uvicorn src.main:app
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "${DOCUMIND_API_HOST_PORT:-8000}:8000"
+    volumes:
+      - documind_data:/var/lib/documind
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 45s
+    restart: unless-stopped
+
+  documind-web:
+    image: ${DOCUMIND_WEB_IMAGE}
+    container_name: documind-web
+    environment:
+      DOCUMIND_INTERNAL_API_URL: ${DOCUMIND_INTERNAL_API_URL:-http://documind-api:8000}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+      NEXT_PUBLIC_STREAM_API_URL: ${NEXT_PUBLIC_STREAM_API_URL:-}
+    depends_on:
+      documind-api:
+        condition: service_healthy
+    ports:
+      - "${DOCUMIND_WEB_HOST_PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  documind_data:

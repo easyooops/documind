@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import aiofiles
 
@@ -111,3 +111,56 @@ def create_storage_backend() -> StorageBackend:
             raise ValueError("S3 storage requires AWS_S3_BUCKET and AWS_S3_REGION")
         return S3Storage(settings.aws_s3_bucket, settings.aws_s3_region)
     raise ValueError(f"Unsupported storage type: {settings.storage_type}")
+
+
+async def persist_local_file(
+    local_path: str | Path,
+    key: str,
+    content_type: str,
+) -> tuple[str, str]:
+    """Persist a generated local artifact to the configured durable storage."""
+    from src.core.config import settings
+
+    path = Path(local_path)
+    if settings.storage_type == "local":
+        return "local", str(path)
+
+    storage = create_storage_backend()
+    async with aiofiles.open(path, "rb") as f:
+        await storage.save(await f.read(), key, content_type)
+    return settings.storage_type, key
+
+
+async def ensure_local_file(storage_path: str | Path) -> Path:
+    """Return a local path, downloading remote storage objects into a cache when needed."""
+    from src.core.config import settings
+
+    path = Path(storage_path)
+    if path.exists():
+        return path
+    if settings.storage_type == "local":
+        return path
+
+    storage_key = str(storage_path)
+    cache_path = (
+        Path(settings.storage_local_path)
+        / "_remote-cache"
+        / _safe_storage_key(storage_key)
+    )
+    if cache_path.exists():
+        return cache_path
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    data = await create_storage_backend().load(storage_key)
+    async with aiofiles.open(cache_path, "wb") as f:
+        await f.write(data)
+    return cache_path
+
+
+def _safe_storage_key(storage_key: str) -> Path:
+    parts = [
+        part
+        for part in PurePosixPath(storage_key.replace("\\", "/")).parts
+        if part not in {"", ".", "..", "/"}
+    ]
+    return Path(*parts) if parts else Path("artifact")

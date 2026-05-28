@@ -88,6 +88,7 @@ export function MessageInput() {
     setProgress,
     setCurrentNode,
     addCompletedNode,
+    addNodeActivity,
     clearProgress,
     isGenerating,
   } = useSessionStore();
@@ -206,6 +207,14 @@ export function MessageInput() {
             if (data.progress) {
               setProgress(data.progress);
             }
+          },
+          onNodeActivity: (data) => {
+            addNodeActivity(
+              data.node,
+              data.description,
+              data.elapsed_seconds,
+              data.phase
+            );
           },
           onComplete: async (data) => {
             setProgress(1);
