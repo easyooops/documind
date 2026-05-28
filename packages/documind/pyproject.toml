@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "documind"
+version = "0.2.0"
+description = "DocuMind SDK - AI document generation for PPTX, DOCX, PDF, Markdown, XLSX, and HWPX"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{name = "DocuMind Team"}]
+keywords = ["ai", "document-generation", "pptx", "docx", "pdf", "xlsx", "markdown"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business",
+    "Topic :: Software Development :: Libraries",
+]
+
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "langgraph>=1.2.1",
+    "langchain-core>=1.2.0",
+    "langchain-community>=0.4",
+    "langchain-openai>=1.2.2",
+    "ddgs>=9.0",
+    "openai>=1.30",
+    "httpx>=0.27",
+    "tiktoken>=0.7",
+    "python-pptx>=1.0",
+    "lxml>=6.1.0",
+    "Pillow>=12.2.0",
+    "PyMuPDF>=1.24",
+    "svglib>=0.9",
+    "reportlab>=4.0",
+    "playwright>=1.44",
+    "tinycss2>=1.3",
+    "beautifulsoup4>=4.12",
+    "html5lib>=1.1",
+    "numpy>=1.26",
+    "jinja2>=3.1",
+    "markdown-it-py>=4.0",
+    "aiofiles>=24.1",
+    "uuid6>=2024.1",
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+anthropic = ["langchain-anthropic>=0.2", "anthropic>=0.30"]
+azure = ["langchain-openai>=1.2.2"]
+bedrock = ["langchain-aws>=1.5.0", "boto3>=1.34"]
+gcp-vertex = ["langchain-google-vertexai>=2.0"]
+gemini = ["langchain-google-genai>=2.0"]
+vlm-qa = ["scikit-image>=0.23"]
+icons = ["cairosvg>=2.7"]
+all-providers = [
+    "langchain-anthropic>=0.2",
+    "langchain-aws>=1.5.0",
+    "langchain-google-vertexai>=2.0",
+    "langchain-google-genai>=2.0",
+    "boto3>=1.34",
+]
+dev = ["pytest>=9.0.3", "ruff>=0.4", "mypy>=1.10", "build>=1.2", "twine>=5.0"]
+
+[project.urls]
+Homepage = "https://github.com/bespin/documind"
+Documentation = "https://github.com/bespin/documind/tree/main/packages/documind#readme"
+Repository = "https://github.com/bespin/documind"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["documind", "src*"]
+exclude = ["src.api*"]
+
+[tool.setuptools.package-data]
+"src.agents" = ["configs/*.json", "prompts/*.md"]
+"src.formats.pptx.agents" = ["configs/*.json", "prompts/*.md"]
+"src.formats.pptx.rulesets" = [
+    "schemas/*.json",
+    "presets/*.json",
+    "presets/slide_types/*.json",
+]
+"src.formats.hwp" = ["assets/*.hwpx"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]

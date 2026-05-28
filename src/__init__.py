@@ -23,6 +23,28 @@ Public API for package usage:
     result = await engine.generate(query="...", format="pptx")
 """
 
-from src.engine import DocuMind, generate_document
+from src.engine import (
+    DocuMind,
+    GenerationEvent,
+    GenerationRequest,
+    GenerationResult,
+    ImageAttachment,
+    TemplateInput,
+    configure,
+    generate_document,
+    init,
+    stream_document,
+)
 
-__all__ = ["DocuMind", "generate_document"]
+__all__ = [
+    "DocuMind",
+    "GenerationEvent",
+    "GenerationRequest",
+    "GenerationResult",
+    "ImageAttachment",
+    "TemplateInput",
+    "configure",
+    "generate_document",
+    "init",
+    "stream_document",
+]

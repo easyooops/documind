@@ -69,6 +69,12 @@ npm run dev:web   # Frontend only
 python -m src.cli generate "12-slide cloud migration proposal for executives"
 ```
 
+### 5. PyPI SDK package
+
+The import-only SDK package is managed separately under
+[`packages/documind`](packages/documind). Publishing instructions are in
+[`packages/documind/PUBLISHING.ko.md`](packages/documind/PUBLISHING.ko.md).
+
 ---
 
 ## Project Structure

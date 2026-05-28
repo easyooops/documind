@@ -1,0 +1,5 @@
+/build/
+/dist/
+/.ruff_cache/
+/src/documind.egg-info/
+/src/src/

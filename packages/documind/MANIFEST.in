@@ -1,0 +1,13 @@
+include README.md
+include README.ko.md
+include PUBLISHING.ko.md
+recursive-exclude src/src/api *
+exclude src/src/__main__.py
+exclude src/src/cli.py
+exclude src/src/main.py
+exclude src/src/schemas/api.py
+exclude src/src/infrastructure/database.py
+exclude src/src/infrastructure/models.py
+exclude src/src/infrastructure/storage.py
+recursive-exclude * __pycache__
+recursive-exclude * *.py[cod]
