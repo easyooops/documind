@@ -42,3 +42,37 @@ terraform apply
 - SSH key를 지정하지 않으면 SSM Session Manager로 접속하는 구성을 권장합니다.
 - `.env`는 EC2의 `/opt/documind/deploy/.env`에 생성되며 권한은 `600`입니다.
 
+## Destroy / 인프라 삭제 가이드
+
+환경이 더 이상 필요 없으면 Terraform이 생성한 리소스를 삭제합니다.
+
+### 방법 A) 헬퍼 스크립트 사용
+
+**Linux / macOS**
+
+```bash
+cd setup/ec2/terraform/single
+./tf-delete.sh
+```
+
+**Windows (PowerShell)**
+
+```powershell
+cd setup/ec2/terraform/single
+.\tf-delete.ps1
+```
+
+### 방법 B) Terraform 직접 실행
+
+```bash
+cd setup/ec2/terraform/single
+terraform destroy
+```
+
+### 삭제 전 체크리스트
+
+- 현재 Terraform workspace/state가 삭제 대상 환경인지 확인합니다.
+- 필요한 데이터(DB, 생성 문서, 로그)는 먼저 백업합니다.
+- `terraform.tfvars`에 API 키를 넣었다면 삭제 후 키를 회수/재발급합니다.
+- 삭제 후 `terraform state list`로 잔여 리소스가 없는지 확인합니다.
+

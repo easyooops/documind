@@ -35,3 +35,37 @@ terraform apply
 
 After apply finishes, open the `web_url` and `api_url` Terraform outputs.
 
+## Destroy / Infrastructure deletion
+
+When you no longer need the environment, destroy all Terraform-managed resources.
+
+### Option A) helper scripts
+
+**Linux / macOS**
+
+```bash
+cd setup/ec2/terraform/single
+./tf-delete.sh
+```
+
+**Windows (PowerShell)**
+
+```powershell
+cd setup/ec2/terraform/single
+.\tf-delete.ps1
+```
+
+### Option B) direct Terraform
+
+```bash
+cd setup/ec2/terraform/single
+terraform destroy
+```
+
+### Safe deletion checklist
+
+- Verify you are in the correct workspace/state before destroy.
+- Back up required outputs/data (DB, generated files, logs) first.
+- If API keys were set in `terraform.tfvars`, rotate/revoke as needed after teardown.
+- Confirm final state with `terraform state list` (should be empty or inaccessible after destroy).
+

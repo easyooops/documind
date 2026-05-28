@@ -1,200 +1,195 @@
-# DocuMind — Agentic AI Document Generation Platform
+# DocuMind
 
-> End-to-end platform where specialized agents plan, design, generate, and validate
-> expert-level PPTX, DOCX, PDF, Markdown, XLSX, and HWPX documents from natural language requests.
+**Agentic AI Document Generation Platform**  
+Natural language request -> agentic planning/design/generation -> production-ready native document output.
 
-## Quick Start
+Korean version: [`README.ko.md`](README.ko.md)
 
-**Platform-specific steps (Windows / Linux / macOS):** see **[docs/SETUP.md](docs/SETUP.md)**.
+DocuMind provides both:
+- A full-stack app (`FastAPI` + `Next.js`) for collaborative generation and iterative revision
+- A package-style SDK/engine API for API-free local or embedded generation
 
-### 1. Prerequisites
+![DocuMind UI and Generated Slides](docs/images/documind-agentic-workflow.png)
 
-- Python **3.11+** and Node.js **18+**
-- On Windows: clone this repo to an **ASCII-only path** (e.g. `C:\dev\documind`). Non-English characters in the user profile or project path can break Python tooling.
+---
 
-### 2. Install (from repo root)
+## Service Overview
 
-**Windows (PowerShell):**
+DocuMind is built for teams that need high-quality business documents without manually composing every page.  
+The system coordinates specialized agents to interpret intent, design structure, generate format-native content, run quality checks, and export final files.
 
+### What It Is Good At
+
+- Transforming rough prompts into structured, presentation/report-ready outputs
+- Preserving template style while replacing/adding requested content
+- Producing native files directly (not only HTML mockups)
+- Supporting iterative edits with version history and preview endpoints
+
+### Core Capabilities
+
+- Multi-format generation: `PPTX`, `DOCX`, `PDF`, `Markdown`, `XLSX`, `HWPX`
+- Agentic orchestration with optional web research and quality feedback loops
+- Template-aware generation (uploaded native templates can be populated directly)
+- API + Web UI + package engine + CLI in one repository
+
+---
+
+## Agentic Workflow
+
+DocuMind routes every request through format-specific pipelines (for example `src/formats/pptx/orchestrator.py` and `src/formats/rich_document/orchestrator.py`).
+
+### Stage 1) Intent & Planning
+- Understand user intent and output language
+- Infer document archetype and whether external research is needed
+- Build a document plan (`document_spec`, sections/blocks/metadata)
+
+### Stage 2) Design System
+- Select or infer template family and visual language
+- Build a format-aware design system (colors, typography, layout/component treatment)
+- Respect uploaded templates as authoritative when required
+
+### Stage 3) Native Generation
+- Render into native target format with format-specific renderer/orchestrator
+- Persist generated artifact and metadata (score, section count, pipeline state)
+- Support streaming progress events for app/SDK integrations
+
+### Stage 4) QA & Export
+- Evaluate quality/fidelity and iterate when needed
+- Publish final file and expose download/preview/version endpoints
+- Return machine-usable result objects (`GenerationResult`) for SDK users
+
+---
+
+## Generated Documents
+
+Available outputs:
+- `pptx` presentation decks
+- `docx` formal reports, forms, proposals
+- `pdf` publication-style reports
+- `md` technical articles/spec notes
+- `xlsx` worksheet/table-oriented documents
+- `hwp` Korean office-document workflow support
+
+Each run stores generation metadata (e.g., quality score, plan/design context, versions) for later revision and governance.
+
+---
+
+## Quick Start (Local)
+
+### Prerequisites
+- Python `3.11+`
+- Node.js `18+`
+
+### Install
+
+**Windows (PowerShell)**
 ```powershell
 copy .env.example .env
 npm run install:all
 ```
 
-**Linux / macOS:**
-
+**Linux/macOS**
 ```bash
 cp .env.example .env
 npm run install:all
 ```
 
-`install:all` creates a project-local `.venv`, installs Python packages (editable + dev + bedrock), runs `pip-audit`, installs Playwright Chromium, and installs `web/` npm dependencies (`scripts/install-all.mjs`). No manual venv setup is required; `npm run dev` and other scripts use `.venv` automatically when present.
+### Environment
 
-**Playwright TLS errors** (`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`): common behind corporate SSL inspection. `install:all` sets `NODE_USE_SYSTEM_CA=1` automatically. If the browser step still fails, run `npm run install:playwright` or set `NODE_EXTRA_CA_CERTS` to your company root CA bundle (see [Playwright proxy/TLS docs](https://playwright.dev/docs/browsers#install-behind-a-firewall-or-a-proxy)).
+Set provider credentials in `.env`.  
+For web UI, set `web/.env.local`:
 
-### 3. Environment
-
-Edit `.env` and set your LLM API key. For the web UI, `web/.env.local` should contain:
-
-```
+```bash
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-### 4. Run (backend + web UI)
+### Run
 
 ```bash
 npm run dev
 ```
 
-| Service | URL |
-|---------|-----|
-| Web UI | http://localhost:3000 |
-| API | http://localhost:8000 |
-| OpenAPI docs | http://localhost:8000/docs |
+- Web: `http://localhost:3000`
+- API: `http://localhost:8000`
+- OpenAPI: `http://localhost:8000/docs`
 
-Uses `python -m uvicorn` (works on Windows without adding `uvicorn` to PATH). Stop with `Ctrl+C`. On re-run, `npm run dev` stops old listeners and picks the next free port if 8000/3000 are stuck (`npm run dev:kill` to clean up manually).
-
-**Backend logs:** written to `data/logs/documind.log` as compact UTF-8 JSON lines and echoed in the terminal where `npm run dev` runs. File logs rotate daily at UTC midnight and keep `LOG_BACKUP_COUNT` days (default: 14). Set `LOG_FILE=` in `.env` to disable the file. For AWS Bedrock, `npm run install:all` installs `langchain-aws` via the `bedrock` extra; if you installed earlier, run `pip install -e ".[bedrock]"`.
+Useful commands:
 
 ```bash
-npm run dev:api   # Backend only
-npm run dev:web   # Frontend only
+npm run dev:api
+npm run dev:web
+python -m src.cli generate "12-slide cloud migration proposal"
 ```
 
-**Windows:** if `python` is not on PATH, use `set PYTHON=py` then `npm run dev`. See [docs/SETUP.md](docs/SETUP.md).
+---
 
-### 4. CLI (API-free generation)
+## SDK / Engine Usage
+
+DocuMind can be consumed directly from Python without running the API server.
+
+```python
+import asyncio
+from src.engine import DocuMind
+
+async def main():
+    engine = DocuMind(
+        llm_provider="openai",
+        default_llm_model="gpt-4o",
+    )
+    result = await engine.generate(
+        query="Create a 10-slide AI strategy deck for 2026",
+        format="pptx",
+        locale="ko",
+    )
+    print(result.success, result.output_path)
+
+asyncio.run(main())
+```
+
+Also available:
+- `generate_document(...)` for one-shot convenience
+- `generate_stream(...)` / `engine.generate_stream(...)` for streaming progress events
+
+---
+
+## Infrastructure Setup and Destroy
+
+For single-host AWS deployment assets, see:
+- `setup/README.md` (English)
+- `setup/README.ko.md` (Korean)
+
+`setup` includes both provisioning and teardown scripts:
+- Apply: `setup/ec2/terraform/single/tf-apply.sh` / `tf-apply.ps1`
+- Destroy: `setup/ec2/terraform/single/tf-delete.sh` / `tf-delete.ps1`
+
+Terraform direct command:
 
 ```bash
-python -m src.cli generate "12-slide cloud migration proposal for executives"
-```
-
-### 5. PyPI SDK package
-
-The import-only SDK package is managed separately under
-[`packages/documind`](packages/documind). Publishing instructions are in
-[`packages/documind/PUBLISHING.ko.md`](packages/documind/PUBLISHING.ko.md).
-
----
-
-## Project Structure
-
-```
-documind/
-├── package.json              # Root scripts (dev, install:all)
-├── pyproject.toml            # Python package + dependencies
-├── .env.example
-│
-├── web/                      # Next.js static-export UI
-│   ├── package.json
-│   └── src/
-│
-├── src/
-│   ├── main.py               # FastAPI entry point
-│   ├── cli.py                # CLI interface
-│   ├── core/                 # Config, logging, exceptions
-│   ├── schemas/              # Pydantic schemas
-│   ├── infrastructure/       # DB, storage, LLM adapters
-│   ├── agents/               # LangGraph agent pipeline
-│   ├── conversion/           # HTML → OOXML conversion
-│   └── api/v1/               # REST API routes
-│       ├── documents.py
-│       ├── chat.py
-│       ├── templates.py
-│       ├── settings.py
-│       └── users.py
-│
-└── data/                     # Runtime data (gitignored)
-    ├── documind.db
-    ├── templates/
-    └── outputs/
+cd setup/ec2/terraform/single
+terraform destroy
 ```
 
 ---
 
-## Architecture
+## Open Source Acknowledgements
 
-### 12-Agent Pipeline
+DocuMind is built on top of many open-source projects:
 
-```
-User request
-    │
-    ▼
-┌─ Planning ──────────────────────────────────────────┐
-│ Research → Narrative → Content Writer → Audience    │
-└─────────────────────────┬───────────────────────────┘
-                          ▼
-┌─ Design ────────────────────────────────────────────┐
-│ Template → Layout → Style → Asset Plan                │
-└─────────────────────────┬───────────────────────────┘
-                          ▼
-┌─ Generation ────────────────────────────────────────┐
-│ Code Agent (parallel) → Consistency → Validation      │
-└─────────────────────────┬───────────────────────────┘
-                          ▼
-┌─ Conversion & QA ─────────────────────────────────────┐
-│ Conversion Engine → QA Critic (VLM) → Export          │
-└─────────────────────────┬───────────────────────────┘
-                          ▼
-                    Final document file
-```
+- Backend/API: `FastAPI`, `Uvicorn`, `SQLAlchemy`, `Pydantic`
+- Agentic runtime: `LangGraph`, `LangChain`
+- LLM/Provider integrations: `OpenAI SDK`, `Anthropic SDK`, `Boto3`
+- Document/rendering stack: `python-pptx`, `PyMuPDF`, `Playwright`, `lxml`, `Pillow`
+- Frontend: `Next.js`, `React`, `Tailwind CSS`, `Zustand`
 
-### Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| API | FastAPI + Uvicorn |
-| Agents | LangGraph + LangChain |
-| LLM | OpenAI, Anthropic, Ollama, and more |
-| Documents | python-pptx, PyMuPDF, native OOXML/HWPX renderers |
-| Rendering | Playwright (Chromium) |
-| Database | SQLAlchemy (SQLite / PostgreSQL) |
-| Web UI | Next.js 14, Tailwind, Zustand |
-
-### Extensibility
-
-- **Formats**: Implement `DocumentRenderer` to add new output types
-- **LLM**: Swap providers via `LLMProvider` / config
-- **Storage**: `StorageBackend` for local, S3, GCS
-- **Agents**: Add or remove LangGraph nodes as needed
-
----
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/documents/generate` | Start document generation |
-| GET | `/api/v1/documents/{id}/status` | Job status |
-| GET | `/api/v1/documents/{id}/download` | Download file |
-| GET | `/api/v1/documents/{id}/versions` | Version history |
-| GET | `/api/v1/documents/{id}/preview` | Browser preview of native output |
-| POST | `/api/v1/chat/sessions` | Create chat session |
-| POST | `/api/v1/chat/sessions/{id}/messages/stream` | SSE streaming generation |
-| POST | `/api/v1/templates/upload` | Upload template |
-| POST | `/api/v1/users/identify` | Identify user (name + email) |
-| GET | `/api/v1/users/{id}/sessions` | List user sessions |
-
----
-
-## Development
-
-```bash
-# Lint (Python)
-npm run lint
-
-# Format (Python)
-npm run format
-
-# DB migrations
-npm run db:init
-
-# Build static web export
-npm run build:web
-```
+Dependency policy and allowed licenses are managed in `pyproject.toml`.
 
 ---
 
 ## License
 
-Apache-2.0 — runtime dependencies use MIT/Apache-2.0/BSD-compatible licenses only.
+Apache License 2.0.  
+See `LICENSE` for details.
+
+## Contact
+
+Suyeong Yoo — `ssu0416@gmail.com`
