@@ -7,7 +7,7 @@ name = "documind"
 version = "0.2.0"
 description = "DocuMind - Agentic AI Document Generation Platform"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 
 dependencies = [
     # Web framework

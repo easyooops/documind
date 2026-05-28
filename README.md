@@ -191,4 +191,4 @@ npm run build:web
 
 ## License
 
-MIT — runtime dependencies use MIT/Apache-2.0/BSD-compatible licenses only.
+Apache-2.0 — runtime dependencies use MIT/Apache-2.0/BSD-compatible licenses only.

@@ -2,6 +2,7 @@
   "name": "documind",
   "version": "0.2.0",
   "description": "DocuMind — Agentic AI document generation platform (PPTX/DOCX/PDF/XLSX)",
+  "license": "Apache-2.0",
   "scripts": {
     "install:all": "node scripts/install-all.mjs",
     "install:playwright": "node scripts/install-playwright.mjs",
