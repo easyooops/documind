@@ -7,8 +7,6 @@ All conversions are pure arithmetic (px → EMU, degrees → 60000ths).
 from __future__ import annotations
 
 import io
-import json
-import math
 import uuid
 from pathlib import Path
 
@@ -19,7 +17,6 @@ from src.formats.pptx.mapper.effects import (
     apply_gradient_fill,
     apply_shadow,
     parse_border,
-    parse_gradient,
 )
 from src.formats.pptx.mapper.html_parser import ParsedElement, parse_slide_html
 from src.formats.pptx.mapper.shape_registry import get_shape_type
@@ -259,10 +256,9 @@ class CSStoOOXMLEngine:
         """Route element to appropriate builder based on pptx_type."""
         pptx_type = element.pptx_type
 
-        # Handle icon insertion for ANY element type that has data-pptx-icon
         icon_name = element.attributes.get("data-pptx-icon", "")
         if icon_name:
-            self._insert_icon_for_element(slide, element, icon_name)
+            self._reserve_icon_space_for_element(element)
 
         if pptx_type == "table":
             self._add_table(slide, element)
@@ -276,6 +272,10 @@ class CSStoOOXMLEngine:
             self._add_placeholder_image(slide, element)
         else:
             self._add_shape(slide, element)
+
+        # Keep icon artwork above the containing card/background shape.
+        if icon_name:
+            self._insert_icon_for_element(slide, element, icon_name)
 
     def _add_shape(self, slide, element: ParsedElement) -> None:
         """Add a shape (rect, oval, arrow, etc.) to the slide."""
@@ -313,6 +313,7 @@ class CSStoOOXMLEngine:
 
         self._apply_fill(pptx_shape, element.styles)
         self._apply_effects(pptx_shape, element)
+        self._apply_shape_options(pptx_shape, element)
 
         if has_text:
             self._apply_text(pptx_shape, element)
@@ -353,6 +354,7 @@ class CSStoOOXMLEngine:
     def _add_table(self, slide, element: ParsedElement) -> None:
         """Add a native PowerPoint table from data-pptx-table-data."""
         from pptx.dml.color import RGBColor
+        from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
         from pptx.util import Emu, Pt
 
         table_data = element.table_data
@@ -395,7 +397,45 @@ class CSStoOOXMLEngine:
         if not row_fill:
             row_fill = "ffffff"
 
+        options = {**element.table_options, **table_data.get("options", {})}
         alt_row_fill = table_data.get("alt_row_fill", "f9fafb")
+        header_font_size = float(options.get("header_font_size", table_data.get("header_font_size", 11)))
+        body_font_size = float(options.get("body_font_size", table_data.get("body_font_size", 10)))
+        header_align = str(options.get("header_align", "center"))
+        body_align = str(options.get("body_align", "left"))
+        numeric_align = str(options.get("numeric_align", "right"))
+        vertical_align = str(options.get("vertical_align", "middle"))
+        align_map = {
+            "left": PP_ALIGN.LEFT,
+            "center": PP_ALIGN.CENTER,
+            "right": PP_ALIGN.RIGHT,
+            "justify": PP_ALIGN.JUSTIFY,
+        }
+        anchor_map = {
+            "top": MSO_ANCHOR.TOP,
+            "middle": MSO_ANCHOR.MIDDLE,
+            "bottom": MSO_ANCHOR.BOTTOM,
+        }
+        padding = options.get("cell_padding", {})
+        pad_left = float(padding.get("left", options.get("padding_left", 8)))
+        pad_right = float(padding.get("right", options.get("padding_right", 8)))
+        pad_top = float(padding.get("top", options.get("padding_top", 4)))
+        pad_bottom = float(padding.get("bottom", options.get("padding_bottom", 4)))
+        col_widths = options.get("column_widths", [])
+        row_heights = options.get("row_heights", [])
+
+        if isinstance(col_widths, list):
+            for c_idx, width_px in enumerate(col_widths[:col_count]):
+                try:
+                    table.columns[c_idx].width = Emu(int(float(width_px) * PX_TO_EMU))
+                except (TypeError, ValueError, IndexError):
+                    pass
+        if isinstance(row_heights, list):
+            for r_idx, height_px in enumerate(row_heights[:row_count]):
+                try:
+                    table.rows[r_idx].height = Emu(int(float(height_px) * PX_TO_EMU))
+                except (TypeError, ValueError, IndexError):
+                    pass
 
         for r_idx, row in enumerate(all_rows):
             if r_idx >= row_count:
@@ -420,24 +460,32 @@ class CSStoOOXMLEngine:
                 except (ValueError, TypeError):
                     pass
 
-                cell.margin_left = Emu(4 * PX_TO_EMU)
-                cell.margin_right = Emu(4 * PX_TO_EMU)
-                cell.margin_top = Emu(3 * PX_TO_EMU)
-                cell.margin_bottom = Emu(3 * PX_TO_EMU)
+                cell.margin_left = Emu(int(pad_left * PX_TO_EMU))
+                cell.margin_right = Emu(int(pad_right * PX_TO_EMU))
+                cell.margin_top = Emu(int(pad_top * PX_TO_EMU))
+                cell.margin_bottom = Emu(int(pad_bottom * PX_TO_EMU))
+                cell.vertical_anchor = anchor_map.get(vertical_align, MSO_ANCHOR.MIDDLE)
 
                 tf = cell.text_frame
+                tf.word_wrap = True
                 p = tf.paragraphs[0]
                 p.text = ""
+                p.alignment = align_map.get(
+                    header_align if is_header else (
+                        numeric_align if self._looks_numeric(text) else body_align
+                    ),
+                    PP_ALIGN.LEFT,
+                )
                 run = p.add_run()
                 run.text = text
-                run.font.size = Pt(10)
+                run.font.size = Pt(header_font_size if is_header else body_font_size)
                 run.font.bold = is_header
-                run.font.name = "Pretendard"
+                run.font.name = str(options.get("font_family", "Pretendard"))
                 text_color = "ffffff" if is_header else "1e293b"
                 run.font.color.rgb = RGBColor.from_string(text_color)
 
         try:
-            self._apply_thin_table_borders(table, col_count, row_count)
+            self._apply_thin_table_borders(table, col_count, row_count, options)
         except (IndexError, ValueError, TypeError):
             pass
 
@@ -445,7 +493,7 @@ class CSStoOOXMLEngine:
         """Add a native PowerPoint chart from data-pptx-chart-data."""
         from pptx.chart.data import ChartData
         from pptx.enum.chart import XL_CHART_TYPE
-        from pptx.util import Emu, Pt
+        from pptx.util import Emu
 
         chart_type_str = element.chart_type or "bar"
         chart_data_raw = element.chart_data
@@ -463,12 +511,27 @@ class CSStoOOXMLEngine:
         }
 
         pptx_chart_data = ChartData()
+        chart_options = element.chart_options
 
         if isinstance(chart_data_raw, list):
-            labels = [item.get("label", "") for item in chart_data_raw]
-            values = [float(item.get("value", 0)) for item in chart_data_raw]
+            labels = []
+            for item in chart_data_raw:
+                label = str(item.get("label", ""))
+                if label not in labels:
+                    labels.append(label)
+            grouped: dict[str, list[float]] = {}
+            for item in chart_data_raw:
+                series_name = str(item.get("series") or chart_options.get("series_name") or "Series")
+                grouped.setdefault(series_name, [0.0 for _ in labels])
+                try:
+                    label_index = labels.index(str(item.get("label", "")))
+                except ValueError:
+                    continue
+                grouped[series_name][label_index] = self._coerce_number(item.get("value", 0))
             pptx_chart_data.categories = labels
-            pptx_chart_data.add_series("Series", values)
+            for series_name, values in grouped.items():
+                pptx_chart_data.add_series(series_name, values)
+            chart_options.setdefault("colors", [item.get("color") for item in chart_data_raw if item.get("color")])
         else:
             self._add_shape(slide, element)
             return
@@ -484,15 +547,71 @@ class CSStoOOXMLEngine:
         )
 
         chart = chart_shape.chart
-        chart.has_legend = True
-        chart.legend.include_in_layout = False
+        self._apply_chart_options(chart, chart_options, chart_type_str)
+
+    def _apply_chart_options(self, chart, options: dict, chart_type: str) -> None:
+        """Apply supported native OOXML chart formatting options."""
+        from pptx.dml.color import RGBColor
+        from pptx.enum.chart import XL_DATA_LABEL_POSITION, XL_LEGEND_POSITION
+        from pptx.util import Pt
+
+        legend_position = str(options.get("legend_position", "none")).lower()
+        chart.has_legend = bool(options.get("show_legend", legend_position != "none"))
+        if chart.has_legend:
+            positions = {
+                "bottom": XL_LEGEND_POSITION.BOTTOM,
+                "right": XL_LEGEND_POSITION.RIGHT,
+                "left": XL_LEGEND_POSITION.LEFT,
+                "top": XL_LEGEND_POSITION.TOP,
+            }
+            chart.legend.position = positions.get(legend_position, XL_LEGEND_POSITION.RIGHT)
+            chart.legend.include_in_layout = False
         try:
             plot = chart.plots[0]
-            plot.has_data_labels = True
+            if chart_type in {"bar", "column"} and "gap_width" in options:
+                plot.gap_width = int(options["gap_width"])
+            plot.has_data_labels = bool(options.get("show_data_labels", True))
             plot.data_labels.show_value = True
-            plot.data_labels.font.size = Pt(9)
+            plot.data_labels.show_category_name = bool(options.get("show_category_name", False))
+            positions = {
+                "outside_end": XL_DATA_LABEL_POSITION.OUTSIDE_END,
+                "inside_end": XL_DATA_LABEL_POSITION.INSIDE_END,
+                "center": XL_DATA_LABEL_POSITION.CENTER,
+                "best_fit": XL_DATA_LABEL_POSITION.BEST_FIT,
+            }
+            label_position = str(options.get("data_label_position", "outside_end"))
+            plot.data_labels.position = positions.get(
+                label_position, XL_DATA_LABEL_POSITION.OUTSIDE_END
+            )
+            plot.data_labels.font.size = Pt(float(options.get("label_font_size", 9)))
         except (IndexError, AttributeError):
             pass
+        for axis_name in ("category_axis", "value_axis"):
+            try:
+                axis = getattr(chart, axis_name)
+                axis.visible = bool(options.get(f"{axis_name}_visible", True))
+                axis.tick_labels.font.size = Pt(float(options.get("axis_font_size", 9)))
+            except (AttributeError, ValueError):
+                pass
+        try:
+            if options.get("grid_lines", "major") == "none":
+                chart.value_axis.has_major_gridlines = False
+            elif options.get("gridline_color"):
+                chart.value_axis.major_gridlines.format.line.color.rgb = RGBColor.from_string(
+                    str(options["gridline_color"]).lstrip("#")[:6]
+                )
+        except (AttributeError, ValueError):
+            pass
+        colors = [color for color in options.get("colors", []) if color]
+        if colors:
+            for idx, series in enumerate(chart.series):
+                try:
+                    color = str(colors[idx % len(colors)]).lstrip("#")[:6]
+                    series.format.fill.solid()
+                    series.format.fill.fore_color.rgb = RGBColor.from_string(color)
+                    series.format.line.color.rgb = RGBColor.from_string(color)
+                except (AttributeError, ValueError):
+                    pass
 
     def _add_connector(self, slide, element: ParsedElement) -> None:
         """Add a connector line with width and style."""
@@ -600,6 +719,41 @@ class CSStoOOXMLEngine:
                 width = min(parsed["width"], 1.0)
                 apply_border(pptx_shape, width, parsed["color"], parsed["style"])
 
+    def _apply_shape_options(self, pptx_shape, element: ParsedElement) -> None:
+        """Apply OOXML-style options for symbol/shape objects."""
+        from pptx.dml.color import RGBColor
+        from pptx.enum.dml import MSO_LINE_DASH_STYLE
+        from pptx.util import Pt
+
+        options = element.shape_options
+        if not options:
+            return
+        if options.get("fill") == "none":
+            pptx_shape.fill.background()
+        if options.get("line_color"):
+            try:
+                pptx_shape.line.color.rgb = RGBColor.from_string(
+                    str(options["line_color"]).lstrip("#")[:6]
+                )
+            except ValueError:
+                pass
+        if options.get("line_width") is not None:
+            try:
+                pptx_shape.line.width = Pt(float(options["line_width"]))
+            except (TypeError, ValueError):
+                pass
+        dash_map = {
+            "dash": MSO_LINE_DASH_STYLE.DASH,
+            "dot": MSO_LINE_DASH_STYLE.ROUND_DOT,
+            "dash_dot": MSO_LINE_DASH_STYLE.DASH_DOT,
+            "solid": MSO_LINE_DASH_STYLE.SOLID,
+        }
+        dash = str(options.get("line_dash", "")).lower()
+        if dash in dash_map:
+            pptx_shape.line.dash_style = dash_map[dash]
+        if options.get("transparency") is not None:
+            self._apply_shape_transparency(pptx_shape, float(options["transparency"]))
+
     def _apply_text(self, pptx_shape, element: ParsedElement) -> None:
         """Apply text content with styling to shape's text frame."""
         from pptx.dml.color import RGBColor
@@ -678,41 +832,22 @@ class CSStoOOXMLEngine:
         container_h = element.position.get("height", 0)
         container_w = element.position.get("width", 0)
 
+        actual_paras = [p for p in text.split("\n") if p.strip()]
         if container_w > 0 and container_h > 0 and text:
-            usable_w = max(1.0, container_w - pad_left - pad_right)
-            usable_h = container_h - pad_top - pad_bottom
-
-            paragraphs_for_calc = [p for p in text.split("\n") if p.strip()]
-            max_line_chars = 0
-            for para in paragraphs_for_calc:
-                max_line_chars = max(max_line_chars, len(para))
-
-            char_width_ratio = 0.75
-            if any('\uac00' <= c <= '\ud7a3' for c in text):
-                char_width_ratio = 0.85
-
-            chars_per_line = (
-                max(1, int(usable_w / (font_size_px * char_width_ratio)))
-                if font_size_px > 0
-                else 999
+            font_size_px, actual_paras = self._fit_text_lines_to_box(
+                text=text,
+                font_size_px=font_size_px,
+                line_height=line_height,
+                container_w=container_w,
+                container_h=container_h,
+                pad_left=pad_left,
+                pad_right=pad_right,
+                pad_top=pad_top,
+                pad_bottom=pad_bottom,
             )
-            actual_lines = 0
-            for para in paragraphs_for_calc:
-                lines_needed = max(1, -(-len(para) // chars_per_line))
-                actual_lines += lines_needed
+            if letter_spacing_px >= 0 and font_size_px <= 9:
+                letter_spacing_px = -0.2
 
-            needed_h = actual_lines * font_size_px * line_height + pad_top + pad_bottom
-
-            if needed_h > container_h and font_size_px > 8:
-                scale = container_h / needed_h
-                # Limit reduction to 95% of original to maintain HTML consistency
-                font_size_px = max(10, font_size_px * max(scale, 0.95))
-
-                if letter_spacing_px >= 0 and scale < 0.9:
-                    letter_spacing_px = -0.2
-
-        paragraphs = text.split("\n")
-        actual_paras = [p for p in paragraphs if p.strip()]
         for i, para_text in enumerate(actual_paras):
             if i == 0:
                 p = tf.paragraphs[0]
@@ -725,7 +860,10 @@ class CSStoOOXMLEngine:
                 p.space_before = Pt(2)
                 p.space_after = Pt(2)
 
-            para_runs = [r for r in element.text_runs if r.get("text", "").strip() and para_text.find(r["text"].strip()) >= 0]
+            para_runs = [
+                r for r in element.text_runs
+                if r.get("text", "").strip() and para_text.find(r["text"].strip()) >= 0
+            ]
 
             if para_runs:
                 for run_data in para_runs:
@@ -755,13 +893,98 @@ class CSStoOOXMLEngine:
                 if letter_spacing_px != 0:
                     self._apply_letter_spacing(run, letter_spacing_px)
 
-    def _apply_thin_table_borders(self, table, col_count: int, row_count: int) -> None:
+    def _fit_text_lines_to_box(
+        self,
+        text: str,
+        font_size_px: float,
+        line_height: float,
+        container_w: float,
+        container_h: float,
+        pad_left: float,
+        pad_right: float,
+        pad_top: float,
+        pad_bottom: float,
+    ) -> tuple[float, list[str]]:
+        """Hard-wrap and shrink text so PPTX export stays inside its card."""
+        min_font_px = 8.0
+        usable_h = max(1.0, container_h - pad_top - pad_bottom)
+        current_size = font_size_px
+        while current_size >= min_font_px:
+            lines = self._wrap_text_for_box(text, current_size, container_w, pad_left, pad_right)
+            needed_h = len(lines) * current_size * line_height
+            if needed_h <= usable_h:
+                return current_size, lines
+            current_size -= 1
+        lines = self._wrap_text_for_box(text, min_font_px, container_w, pad_left, pad_right)
+        max_lines = max(1, int(usable_h / (min_font_px * line_height)))
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            lines[-1] = self._ellipsize(lines[-1], max(8, len(lines[-1]) - 1))
+        return min_font_px, lines
+
+    def _wrap_text_for_box(
+        self,
+        text: str,
+        font_size_px: float,
+        container_w: float,
+        pad_left: float,
+        pad_right: float,
+    ) -> list[str]:
+        usable_w = max(1.0, container_w - pad_left - pad_right)
+        char_ratio = 0.75
+        if any("\uac00" <= c <= "\ud7a3" for c in text):
+            char_ratio = 0.86
+        chars_per_line = max(4, int(usable_w / max(1.0, font_size_px * char_ratio)))
+        lines: list[str] = []
+        for raw in text.replace("\\n", "\n").split("\n"):
+            raw = raw.strip()
+            if not raw:
+                continue
+            lines.extend(self._wrap_one_line(raw, chars_per_line))
+        return lines or [text.strip()]
+
+    def _wrap_one_line(self, line: str, chars_per_line: int) -> list[str]:
+        import re
+
+        marker_match = re.match(r"^([•▸▶→▪◦◆◇✓]|\d+[.)])\s*(.*)", line)
+        marker = ""
+        body = line
+        if marker_match:
+            marker = marker_match.group(1) + " "
+            body = marker_match.group(2).strip()
+            chars_per_line = max(4, chars_per_line - len(marker))
+        if len(marker + body) <= chars_per_line + len(marker):
+            return [marker + body]
+        chunks = []
+        remaining = body
+        while remaining:
+            if len(remaining) <= chars_per_line:
+                chunks.append(remaining)
+                break
+            break_at = remaining.rfind(" ", 0, chars_per_line + 1)
+            if break_at < max(4, chars_per_line // 2):
+                break_at = chars_per_line
+            chunks.append(remaining[:break_at].strip())
+            remaining = remaining[break_at:].strip()
+        return [(marker if idx == 0 else "  ") + chunk for idx, chunk in enumerate(chunks)]
+
+    def _ellipsize(self, text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[: max(1, max_chars - 1)].rstrip() + "…"
+
+    def _apply_thin_table_borders(
+        self, table, col_count: int, row_count: int, options: dict | None = None
+    ) -> None:
         """Apply thin (0.5pt) borders to table cells for a clean look."""
         from pptx.oxml.ns import qn
         from lxml import etree
 
-        border_color = "E2E8F0"
-        border_width = "6350"  # 0.5pt in EMU
+        options = options or {}
+        border = options.get("border", {}) if isinstance(options.get("border"), dict) else {}
+        border_color = str(border.get("color", options.get("border_color", "E2E8F0"))).lstrip("#")[:6]
+        width_pt = float(border.get("width_pt", options.get("border_width", 0.5)))
+        border_width = str(int(width_pt * 12700))
 
         for r_idx in range(row_count):
             for c_idx in range(col_count):
@@ -785,6 +1008,42 @@ class CSStoOOXMLEngine:
                     solidFill = etree.SubElement(ln, qn("a:solidFill"))
                     srgbClr = etree.SubElement(solidFill, qn("a:srgbClr"))
                     srgbClr.set("val", border_color)
+
+    def _looks_numeric(self, value: str) -> bool:
+        import re
+
+        return bool(re.fullmatch(r"\s*[-+]?[\d,.]+%?\s*", value or ""))
+
+    def _coerce_number(self, value: object) -> float:
+        import re
+
+        if isinstance(value, int | float):
+            return float(value)
+        text = str(value)
+        text = text.replace(",", "")
+        match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+        return float(match.group(0)) if match else 0.0
+
+    def _apply_shape_transparency(self, pptx_shape, transparency: float) -> None:
+        """Apply fill transparency via OOXML alpha."""
+        try:
+            from pptx.oxml.ns import qn
+            from lxml import etree
+
+            alpha_val = str(int(max(0.0, min(1.0, 1 - transparency)) * 100000))
+            sp_pr = pptx_shape._element.spPr
+            solid_fill = sp_pr.find(qn("a:solidFill"))
+            if solid_fill is None:
+                return
+            srgb = solid_fill.find(qn("a:srgbClr"))
+            if srgb is None:
+                return
+            for alpha in srgb.findall(qn("a:alpha")):
+                srgb.remove(alpha)
+            alpha = etree.SubElement(srgb, qn("a:alpha"))
+            alpha.set("val", alpha_val)
+        except (AttributeError, TypeError, ValueError):
+            pass
 
     def _has_background(self, styles: dict) -> bool:
         bg = styles.get("background", "")
@@ -839,7 +1098,6 @@ class CSStoOOXMLEngine:
 
     def _parse_line_height(self, value: str) -> float:
         """Parse CSS line-height supporting px, em, %, and unitless values."""
-        import re
         value = value.strip()
         if not value:
             return 1.5
@@ -907,8 +1165,6 @@ class CSStoOOXMLEngine:
 
     def _insert_icon_for_element(self, slide, element: ParsedElement, icon_name: str) -> None:
         """Insert icon for large cards only. Skip small elements."""
-        from pptx.util import Emu
-
         pos = element.position
         card_height = pos.get("height", 0)
         card_width = pos.get("width", 0)
@@ -920,21 +1176,41 @@ class CSStoOOXMLEngine:
         icon_name_clean = icon_name.replace("mdi:", "").replace("_", "-")
         self._try_insert_icon_image(slide, element, icon_name_clean)
 
+    def _reserve_icon_space_for_element(self, element: ParsedElement) -> None:
+        """Reserve card text space before creating a textbox with an icon."""
+        if element.pptx_type not in {"textbox", "shape"} or not element.text_content:
+            return
+        pos = element.position
+        card_h = pos.get("height", 0)
+        card_w = pos.get("width", 0)
+        if card_h < 80 or card_w < 120:
+            return
+        icon_size = min(36, max(24, int(card_h * 0.25)))
+        self._reserve_icon_text_space(element, icon_size, 12)
+
     def _try_insert_icon_image(self, slide, element: ParsedElement, icon_name: str) -> bool:
         """Insert a large, prominent icon in the top-left area of a card."""
         from pptx.util import Emu
-        import io
 
         try:
-            from src.utils.iconify import get_icon_path
-            icon_path = get_icon_path(icon_name, size=32)
+            from src.utils.iconify import (
+                get_fallback_icon_path,
+                get_icon_path,
+                normalize_icon_color,
+            )
+
+            icon_color = normalize_icon_color(
+                self._extract_color(element.styles.get("color", "")) or "1E293B"
+            )
+            icon_path = get_icon_path(icon_name, color=icon_color, size=32)
             if not icon_path or not icon_path.exists():
-                logger.debug("icon_insert.not_cached", icon=icon_name)
+                icon_path = get_fallback_icon_path(icon_name, color=icon_color, size=32)
+            if not icon_path or not icon_path.exists():
+                logger.debug("icon_insert.not_available", icon=icon_name, color=icon_color)
                 return False
 
             pos = element.position
             card_h = pos.get("height", 0)
-            card_w = pos.get("width", 0)
 
             # Icon size proportional to card — large and prominent
             icon_size = min(36, max(24, int(card_h * 0.25)))
@@ -959,14 +1235,20 @@ class CSStoOOXMLEngine:
                 else:
                     return False
 
-            # Offset text down to make room for the icon
-            element.position["top"] = pos["top"] + icon_size + 4
-            element.position["height"] = max(20, card_h - icon_size - 4)
             logger.info("icon_insert.success", icon=icon_name, size=icon_size)
             return True
         except Exception as e:
             logger.warning("icon_insert.failed", icon=icon_name, error=str(e)[:100])
             return False
+
+    def _reserve_icon_text_space(self, element: ParsedElement, icon_size: int, pad: int) -> None:
+        """Keep the card geometry stable while reserving room for its icon."""
+        current_padding = self._extract_px_value(
+            element.styles.get("padding-top", "") or element.styles.get("padding", "")
+        )
+        required_padding = pad + icon_size + 8
+        if current_padding < required_padding:
+            element.styles["padding-top"] = f"{required_padding}px"
 
     def _svg_to_png(self, svg_path) -> bytes | None:
         """Convert SVG file to PNG bytes using svglib+reportlab."""

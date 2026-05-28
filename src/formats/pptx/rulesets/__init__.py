@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 from src.core.logging import get_logger
 
@@ -27,6 +26,7 @@ class RuleSet:
         self._schemas = schemas
         self._presets = presets
         self._version = schemas.get("_meta", {}).get("version", "unknown")
+        self._expanded_layout_patterns = self._build_expanded_layout_patterns()
 
     @property
     def version(self) -> str:
@@ -80,6 +80,18 @@ class RuleSet:
     def evaluation(self) -> dict:
         return self._schemas.get("evaluation", {})
 
+    @property
+    def design_strategy(self) -> dict:
+        return self._schemas.get("design_strategy", {})
+
+    @property
+    def layout_patterns(self) -> dict:
+        return self._expanded_layout_patterns
+
+    @property
+    def layout_zones(self) -> dict:
+        return self._presets.get("layout_zones", {})
+
     def get_slide_preset(self, slide_type: str) -> dict:
         """Get layout preset for a specific slide type."""
         return self._presets.get(f"slide_types/{slide_type}", {})
@@ -125,6 +137,127 @@ class RuleSet:
         """Get the full evaluation rubric for the quality evaluator."""
         return self.evaluation
 
+    def get_body_layout(self, layout_id: str) -> dict | None:
+        """Find a standard body layout by identifier."""
+        for category, definition in self.layout_patterns.get("categories", {}).items():
+            for pattern in definition.get("patterns", []):
+                if pattern.get("id") == layout_id:
+                    return {**pattern, "category": category}
+        return None
+
+    def _build_expanded_layout_patterns(self) -> dict:
+        """Expand curated base patterns into strategy-specific variants."""
+        import copy
+
+        base = copy.deepcopy(self._presets.get("layout_patterns", {}))
+        categories = base.setdefault("categories", {})
+        variant_specs = [
+            ("claim", "claim-led", "Lead with claim title, one proof object, and a short implication rail."),
+            ("evidence", "evidence-heavy", "Prioritize chart/table/proof object with direct labels and source note."),
+            ("executive", "executive-summary", "Use larger whitespace, fewer objects, and decision callouts."),
+        ]
+        additions: dict[str, list[dict]] = {}
+        for category, definition in list(categories.items()):
+            patterns = definition.get("patterns", [])
+            category_additions = []
+            for pattern in patterns:
+                for suffix, variant_name, guidance in variant_specs:
+                    clone = copy.deepcopy(pattern)
+                    clone["id"] = f"{pattern.get('id')}__{suffix}"
+                    clone["name"] = f"{pattern.get('name')} ({variant_name})"
+                    clone["variant_of"] = pattern.get("id")
+                    clone["strategy_variant"] = suffix
+                    clone["structure"] = f"{pattern.get('structure')} | {guidance}"
+                    clone["selection_guidance"] = guidance
+                    category_additions.append(clone)
+            additions[category] = category_additions
+        for category, category_additions in additions.items():
+            categories[category].setdefault("patterns", []).extend(category_additions)
+        base["total_patterns"] = sum(
+            len(definition.get("patterns", [])) for definition in categories.values()
+        )
+        base["expansion_strategy"] = {
+            "base_patterns": self._presets.get("layout_patterns", {}).get("total_patterns", 0),
+            "variants_per_pattern": 4,
+            "target_range": "100-300",
+            "description": "Each base layout is exposed as base, claim-led, evidence-heavy, and executive-summary variants.",
+        }
+        return base
+
+    def get_default_body_layout_id(self, slide_type: str) -> str:
+        """Select a conservative body pattern when the planner omitted one."""
+        defaults = {
+            "data": "dashboard_chart_sidebar",
+            "comparison": "compare_vs",
+            "process": "process_4col",
+            "summary": "numbered_list_card",
+            "solution": "split_60_40",
+            "problem": "split_60_40",
+            "content": "split_60_40",
+        }
+        return defaults.get(slide_type, "split_60_40")
+
+    def resolve_master_layout(self, requested: dict | None = None) -> dict:
+        """Resolve deck-level cover/header/footer choices to known zone definitions."""
+        request = requested if isinstance(requested, dict) else {}
+        catalog = self.layout_zones
+        defaults = catalog.get("defaults", {})
+
+        def pick(group: str, key: str) -> dict:
+            requested_id = request.get(key) or defaults.get(key)
+            items = catalog.get(group, [])
+            return next(
+                (item for item in items if item.get("id") == requested_id),
+                items[0] if items else {},
+            )
+
+        header = pick("header_zones", "header_zone_id")
+        footer = pick("footer_zones", "footer_zone_id")
+        cover = pick("cover_layouts", "cover_layout_id")
+        body_y = header.get("region", {}).get("h", 78) + 4
+        footer_y = footer.get("region", {}).get("y", 518)
+        return {
+            "cover_layout_id": cover.get("id", ""),
+            "header_zone_id": header.get("id", ""),
+            "footer_zone_id": footer.get("id", ""),
+            "cover": cover,
+            "header": header,
+            "footer": footer,
+            "body_region": {"x": 40, "y": body_y, "w": 880, "h": max(80, footer_y - body_y - 4)},
+        }
+
+    def get_planner_layout_rules(self) -> str:
+        """Describe the curated layout choices the planning LLM is permitted to select."""
+        zones = self.layout_zones
+        body_ids = []
+        for category, definition in self.layout_patterns.get("categories", {}).items():
+            ids = [pattern.get("id", "") for pattern in definition.get("patterns", [])]
+            body_ids.append(f"  {category}: {', '.join(ids)}")
+        header_ids = ", ".join(item.get("id", "") for item in zones.get("header_zones", []))
+        footer_ids = ", ".join(item.get("id", "") for item in zones.get("footer_zones", []))
+        cover_ids = ", ".join(item.get("id", "") for item in zones.get("cover_layouts", []))
+        philosophy = self.design_strategy.get("philosophy", {})
+        return "\n".join([
+            "## Slide Designer Principles (MANDATORY)",
+            f"Core principle: {philosophy.get('core_principle', 'One claim and one proof object per slide.')}",
+            "A slide exists to move a decision: express a conclusion, show its proof object, and remove decoration without meaning.",
+            "Use icons as semantic anchors for concepts or navigation, never as filler or approximated brand marks.",
+            "Header and footer zones are master choices: select each once for the deck and keep them unchanged on all body slides.",
+            "",
+            "## Curated Layout Contract (MANDATORY JSON choices)",
+            f"Cover layout IDs: {cover_ids}",
+            f"Header zone IDs: {header_ids}",
+            f"Footer zone IDs: {footer_ids}",
+            "Body layout IDs by family (select one for each non-cover slide):",
+            *body_ids,
+            "A slide may include `sub_layout_ids` only when the selected body pattern needs nested composition.",
+            "",
+            "## OOXML Planning Boundary (MUST BE PRESERVED)",
+            "Plan only elements convertible by the deterministic mapper: textbox, shape, table, chart, image, connector, and icon.",
+            "Do not plan flex/grid CSS, animations, unsupported SVG ornaments, arbitrary HTML widgets, or unverified brand marks.",
+            "Every planned proof object must be representable later through data-pptx-* attributes and absolute pixel geometry.",
+        ])
+
     def get_generator_prompt_rules(self) -> str:
         """Generate a condensed rules summary for LLM system prompts."""
         canvas = self.canvas
@@ -164,7 +297,7 @@ class RuleSet:
             f"Min element gap: {layout.get('spacing', {}).get('min_element_gap_px', 8)}px",
             f"Whitespace target: {layout.get('balance', {}).get('whitespace_target_ratio', {}).get('min', 0.25)}-{layout.get('balance', {}).get('whitespace_target_ratio', {}).get('max', 0.45)}",
             f"Max elements/slide: {layout.get('element_count', {}).get('max_per_slide', 20)}",
-            f"Content overlap: FORBIDDEN",
+            "Content overlap: FORBIDDEN",
         ])
 
         return "\n".join(parts)

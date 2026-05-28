@@ -151,14 +151,34 @@ DATA_ATTRIBUTES = {
         "values": "json_string",
         "required": False,
     },
+    "data-pptx-chart-options": {
+        "description": "JSON-encoded OOXML chart formatting options",
+        "values": "json_object",
+        "required": False,
+    },
     "data-pptx-table-data": {
         "description": "JSON-encoded table data (headers + rows)",
         "values": "json_string",
         "required": False,
     },
+    "data-pptx-table-options": {
+        "description": "JSON-encoded OOXML table formatting options",
+        "values": "json_object",
+        "required": False,
+    },
     "data-pptx-connector-type": {
         "description": "Connector line type",
         "values": ["straight", "elbow", "curved"],
+        "required": False,
+    },
+    "data-pptx-icon": {
+        "description": "Semantic Iconify icon name placed in a sufficiently large element",
+        "values": "approved_icon_name",
+        "required": False,
+    },
+    "data-pptx-shape-options": {
+        "description": "JSON-encoded OOXML shape formatting options",
+        "values": "json_object",
         "required": False,
     },
 }
@@ -288,4 +308,6 @@ All positioning: position:absolute with px values ONLY
 4. No nested absolute positioning deeper than 2 levels
 5. Table/chart data goes in data-pptx-table-data / data-pptx-chart-data as JSON
 6. Stacking order via data-pptx-z attribute (integer), NOT z-index CSS
-7. Use premium fonts: Pretendard, Noto Sans KR, Inter, Aptos, Segoe UI"""
+7. Icons use data-pptx-icon on a large semantic container; they are resolved to cached assets before conversion
+8. OOXML object formatting goes in data-pptx-chart-options, data-pptx-table-options, or data-pptx-shape-options
+9. Use premium fonts: Pretendard, Noto Sans KR, Inter, Aptos, Segoe UI"""

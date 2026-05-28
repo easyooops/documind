@@ -69,6 +69,10 @@ class ParsedElement:
         return None
 
     @property
+    def chart_options(self) -> dict:
+        return _json_attr(self.attributes.get("data-pptx-chart-options"), {})
+
+    @property
     def table_data(self) -> dict | None:
         raw = self.attributes.get("data-pptx-table-data")
         if raw:
@@ -84,6 +88,26 @@ class ParsedElement:
             except (json.JSONDecodeError, TypeError):
                 return None
         return None
+
+    @property
+    def table_options(self) -> dict:
+        return _json_attr(self.attributes.get("data-pptx-table-options"), {})
+
+    @property
+    def shape_options(self) -> dict:
+        return _json_attr(self.attributes.get("data-pptx-shape-options"), {})
+
+
+def _json_attr(raw: Any, default: dict) -> dict:
+    if not raw:
+        return default
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else default
+    except (json.JSONDecodeError, TypeError):
+        return default
 
 
 def parse_slide_html(html: str) -> list[ParsedElement]:
@@ -197,7 +221,18 @@ def _extract_text_content(node, pptx_type: str) -> str:
         elif isinstance(child, str) and child.strip():
             texts.append(child.strip())
 
-    return "\n".join(texts)
+    return _normalize_text_lines("\n".join(texts))
+
+
+def _normalize_text_lines(text: str) -> str:
+    """Recover list-like line breaks that LLMs often flatten in HTML text."""
+    if not text:
+        return ""
+    normalized = text.replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"\s+([•▸▶→▪◦◆◇✓])\s+", r"\n\1 ", normalized)
+    normalized = re.sub(r"\s+(\d+[.)])\s+", r"\n\1 ", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return "\n".join(line.strip() for line in normalized.split("\n") if line.strip())
 
 
 def _extract_text_runs(node, pptx_type: str) -> list[dict]:

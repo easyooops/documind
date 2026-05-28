@@ -1,0 +1,61 @@
+{
+  "$id": "layout_zones",
+  "version": "1.0.0",
+  "description": "Standard master-zone library. Pick one header and one footer per deck; body layouts are selected per slide from layout_patterns.",
+  "defaults": {
+    "cover_layout_id": "cover_editorial",
+    "header_zone_id": "header_claim_bar",
+    "footer_zone_id": "footer_source_page"
+  },
+  "cover_layouts": [
+    {"id": "cover_editorial", "use_case": "executive thesis", "body_region": {"x": 72, "y": 112, "w": 816, "h": 320}},
+    {"id": "cover_metric_rail", "use_case": "headline metric", "body_region": {"x": 64, "y": 108, "w": 832, "h": 350}},
+    {"id": "cover_split_visual", "use_case": "visual narrative", "body_region": {"x": 64, "y": 90, "w": 832, "h": 374}},
+    {"id": "cover_board_memo", "use_case": "decision memo", "body_region": {"x": 72, "y": 124, "w": 760, "h": 300}},
+    {"id": "cover_technical", "use_case": "architecture briefing", "body_region": {"x": 64, "y": 106, "w": 832, "h": 332}}
+  ],
+  "header_zones": [
+    {"id": "header_claim_bar", "use_case": "default claim slide", "region": {"x": 0, "y": 0, "w": 960, "h": 74}, "elements": {"section_label": {"x": 40, "y": 16, "w": 300, "h": 14}, "slide_title": {"x": 40, "y": 32, "w": 860, "h": 30}, "accent_bar": {"x": 40, "y": 68, "w": 48, "h": 3}}},
+    {"id": "header_claim_rule", "use_case": "long findings", "region": {"x": 0, "y": 0, "w": 960, "h": 78}, "elements": {"section_label": {"x": 40, "y": 14, "w": 280, "h": 14}, "slide_title": {"x": 40, "y": 31, "w": 870, "h": 31}, "accent_bar": {"x": 40, "y": 72, "w": 880, "h": 1}}},
+    {"id": "header_kicker_left", "use_case": "consulting chapter", "region": {"x": 0, "y": 0, "w": 960, "h": 82}, "elements": {"section_label": {"x": 40, "y": 20, "w": 120, "h": 16}, "slide_title": {"x": 176, "y": 18, "w": 724, "h": 34}, "accent_bar": {"x": 40, "y": 57, "w": 860, "h": 2}}},
+    {"id": "header_side_rule", "use_case": "editorial claim", "region": {"x": 0, "y": 0, "w": 960, "h": 86}, "elements": {"section_label": {"x": 52, "y": 16, "w": 250, "h": 14}, "slide_title": {"x": 52, "y": 35, "w": 830, "h": 35}, "accent_bar": {"x": 40, "y": 16, "w": 4, "h": 54}}},
+    {"id": "header_center_title", "use_case": "synthesis", "region": {"x": 0, "y": 0, "w": 960, "h": 88}, "elements": {"section_label": {"x": 330, "y": 14, "w": 300, "h": 14}, "slide_title": {"x": 80, "y": 34, "w": 800, "h": 34}, "accent_bar": {"x": 432, "y": 77, "w": 96, "h": 2}}},
+    {"id": "header_compact", "use_case": "dense table", "region": {"x": 0, "y": 0, "w": 960, "h": 62}, "elements": {"section_label": {"x": 40, "y": 12, "w": 250, "h": 12}, "slide_title": {"x": 40, "y": 28, "w": 860, "h": 25}, "accent_bar": {"x": 40, "y": 58, "w": 36, "h": 2}}},
+    {"id": "header_data_axis", "use_case": "charts", "region": {"x": 0, "y": 0, "w": 960, "h": 76}, "elements": {"section_label": {"x": 40, "y": 18, "w": 170, "h": 14}, "slide_title": {"x": 224, "y": 16, "w": 676, "h": 32}, "accent_bar": {"x": 40, "y": 64, "w": 860, "h": 1}}},
+    {"id": "header_metric_focus", "use_case": "KPI evidence", "region": {"x": 0, "y": 0, "w": 960, "h": 84}, "elements": {"section_label": {"x": 40, "y": 15, "w": 300, "h": 14}, "slide_title": {"x": 40, "y": 35, "w": 840, "h": 34}, "accent_bar": {"x": 884, "y": 17, "w": 4, "h": 52}}},
+    {"id": "header_chapter_tag", "use_case": "multi chapter", "region": {"x": 0, "y": 0, "w": 960, "h": 80}, "elements": {"section_label": {"x": 40, "y": 21, "w": 154, "h": 20}, "slide_title": {"x": 214, "y": 18, "w": 686, "h": 32}, "accent_bar": {"x": 40, "y": 68, "w": 860, "h": 1}}},
+    {"id": "header_source_forward", "use_case": "research briefing", "region": {"x": 0, "y": 0, "w": 960, "h": 82}, "elements": {"section_label": {"x": 650, "y": 14, "w": 250, "h": 14}, "slide_title": {"x": 40, "y": 30, "w": 860, "h": 35}, "accent_bar": {"x": 40, "y": 72, "w": 62, "h": 2}}},
+    {"id": "header_minimal_rule", "use_case": "open composition", "region": {"x": 0, "y": 0, "w": 960, "h": 70}, "elements": {"section_label": {"x": 40, "y": 15, "w": 250, "h": 12}, "slide_title": {"x": 40, "y": 31, "w": 860, "h": 28}, "accent_bar": {"x": 40, "y": 66, "w": 880, "h": 1}}},
+    {"id": "header_high_contrast", "use_case": "urgent decision", "region": {"x": 0, "y": 0, "w": 960, "h": 86}, "elements": {"section_label": {"x": 44, "y": 17, "w": 272, "h": 15}, "slide_title": {"x": 44, "y": 39, "w": 846, "h": 34}, "accent_bar": {"x": 40, "y": 12, "w": 4, "h": 62}}},
+    {"id": "header_numbered", "use_case": "ordered story", "region": {"x": 0, "y": 0, "w": 960, "h": 80}, "elements": {"section_label": {"x": 40, "y": 16, "w": 94, "h": 30}, "slide_title": {"x": 152, "y": 19, "w": 748, "h": 32}, "accent_bar": {"x": 152, "y": 62, "w": 748, "h": 1}}},
+    {"id": "header_product", "use_case": "product map", "region": {"x": 0, "y": 0, "w": 960, "h": 82}, "elements": {"section_label": {"x": 42, "y": 18, "w": 180, "h": 14}, "slide_title": {"x": 42, "y": 36, "w": 700, "h": 32}, "accent_bar": {"x": 760, "y": 39, "w": 140, "h": 2}}},
+    {"id": "header_finance", "use_case": "financial result", "region": {"x": 0, "y": 0, "w": 960, "h": 72}, "elements": {"section_label": {"x": 40, "y": 14, "w": 180, "h": 12}, "slide_title": {"x": 40, "y": 29, "w": 680, "h": 28}, "accent_bar": {"x": 738, "y": 32, "w": 162, "h": 2}}},
+    {"id": "header_workshop", "use_case": "workshop output", "region": {"x": 0, "y": 0, "w": 960, "h": 86}, "elements": {"section_label": {"x": 40, "y": 17, "w": 300, "h": 14}, "slide_title": {"x": 40, "y": 39, "w": 860, "h": 34}, "accent_bar": {"x": 40, "y": 79, "w": 24, "h": 3}}},
+    {"id": "header_roadmap", "use_case": "time based plan", "region": {"x": 0, "y": 0, "w": 960, "h": 74}, "elements": {"section_label": {"x": 40, "y": 15, "w": 215, "h": 13}, "slide_title": {"x": 40, "y": 31, "w": 860, "h": 30}, "accent_bar": {"x": 40, "y": 69, "w": 860, "h": 2}}},
+    {"id": "header_architecture", "use_case": "technical diagram", "region": {"x": 0, "y": 0, "w": 960, "h": 78}, "elements": {"section_label": {"x": 40, "y": 16, "w": 200, "h": 14}, "slide_title": {"x": 258, "y": 17, "w": 642, "h": 34}, "accent_bar": {"x": 258, "y": 61, "w": 642, "h": 1}}},
+    {"id": "header_case_study", "use_case": "case evidence", "region": {"x": 0, "y": 0, "w": 960, "h": 84}, "elements": {"section_label": {"x": 44, "y": 14, "w": 280, "h": 15}, "slide_title": {"x": 44, "y": 37, "w": 842, "h": 34}, "accent_bar": {"x": 44, "y": 77, "w": 92, "h": 2}}},
+    {"id": "header_appendix", "use_case": "appendix reference", "region": {"x": 0, "y": 0, "w": 960, "h": 60}, "elements": {"section_label": {"x": 40, "y": 10, "w": 200, "h": 12}, "slide_title": {"x": 40, "y": 26, "w": 860, "h": 24}, "accent_bar": {"x": 40, "y": 56, "w": 860, "h": 1}}}
+  ],
+  "footer_zones": [
+    {"id": "footer_source_page", "use_case": "default source and page", "region": {"x": 0, "y": 518, "w": 960, "h": 22}, "elements": {"footer_left": {"x": 40, "y": 522, "w": 650, "h": 14}, "footer_right": {"x": 850, "y": 522, "w": 80, "h": 14}}},
+    {"id": "footer_rule_source", "use_case": "sourced exhibits", "region": {"x": 0, "y": 510, "w": 960, "h": 30}, "elements": {"footer_left": {"x": 40, "y": 520, "w": 690, "h": 14}, "footer_right": {"x": 860, "y": 520, "w": 60, "h": 14}}},
+    {"id": "footer_compact", "use_case": "dense tables", "region": {"x": 0, "y": 524, "w": 960, "h": 16}, "elements": {"footer_left": {"x": 40, "y": 526, "w": 720, "h": 11}, "footer_right": {"x": 868, "y": 526, "w": 52, "h": 11}}},
+    {"id": "footer_center_page", "use_case": "editorial", "region": {"x": 0, "y": 516, "w": 960, "h": 24}, "elements": {"footer_left": {"x": 40, "y": 521, "w": 340, "h": 13}, "footer_right": {"x": 452, "y": 521, "w": 56, "h": 13}}},
+    {"id": "footer_brand_page", "use_case": "client delivery", "region": {"x": 0, "y": 516, "w": 960, "h": 24}, "elements": {"footer_left": {"x": 40, "y": 521, "w": 420, "h": 13}, "footer_right": {"x": 850, "y": 521, "w": 80, "h": 13}}},
+    {"id": "footer_source_two_line", "use_case": "research heavy", "region": {"x": 0, "y": 504, "w": 960, "h": 36}, "elements": {"footer_left": {"x": 40, "y": 510, "w": 730, "h": 24}, "footer_right": {"x": 858, "y": 518, "w": 62, "h": 13}}},
+    {"id": "footer_disclosure", "use_case": "financial disclosure", "region": {"x": 0, "y": 506, "w": 960, "h": 34}, "elements": {"footer_left": {"x": 40, "y": 511, "w": 750, "h": 22}, "footer_right": {"x": 862, "y": 515, "w": 58, "h": 14}}},
+    {"id": "footer_dark_rail", "use_case": "dark canvas", "region": {"x": 0, "y": 514, "w": 960, "h": 26}, "elements": {"footer_left": {"x": 40, "y": 520, "w": 600, "h": 14}, "footer_right": {"x": 854, "y": 520, "w": 66, "h": 14}}},
+    {"id": "footer_section_page", "use_case": "chapter sequence", "region": {"x": 0, "y": 518, "w": 960, "h": 22}, "elements": {"footer_left": {"x": 40, "y": 522, "w": 280, "h": 13}, "footer_right": {"x": 820, "y": 522, "w": 100, "h": 13}}},
+    {"id": "footer_confidential", "use_case": "board material", "region": {"x": 0, "y": 514, "w": 960, "h": 26}, "elements": {"footer_left": {"x": 40, "y": 520, "w": 670, "h": 14}, "footer_right": {"x": 850, "y": 520, "w": 70, "h": 14}}},
+    {"id": "footer_data_provenance", "use_case": "chart source", "region": {"x": 0, "y": 508, "w": 960, "h": 32}, "elements": {"footer_left": {"x": 40, "y": 513, "w": 760, "h": 20}, "footer_right": {"x": 868, "y": 516, "w": 52, "h": 14}}},
+    {"id": "footer_product", "use_case": "product presentation", "region": {"x": 0, "y": 518, "w": 960, "h": 22}, "elements": {"footer_left": {"x": 48, "y": 522, "w": 520, "h": 13}, "footer_right": {"x": 852, "y": 522, "w": 60, "h": 13}}},
+    {"id": "footer_technical", "use_case": "technical appendix", "region": {"x": 0, "y": 516, "w": 960, "h": 24}, "elements": {"footer_left": {"x": 40, "y": 521, "w": 700, "h": 13}, "footer_right": {"x": 852, "y": 521, "w": 68, "h": 13}}},
+    {"id": "footer_minimal_page", "use_case": "clean visual", "region": {"x": 0, "y": 520, "w": 960, "h": 20}, "elements": {"footer_left": {"x": 40, "y": 524, "w": 300, "h": 12}, "footer_right": {"x": 876, "y": 524, "w": 44, "h": 12}}},
+    {"id": "footer_workshop", "use_case": "workshop output", "region": {"x": 0, "y": 516, "w": 960, "h": 24}, "elements": {"footer_left": {"x": 40, "y": 521, "w": 500, "h": 13}, "footer_right": {"x": 832, "y": 521, "w": 88, "h": 13}}},
+    {"id": "footer_timeline", "use_case": "roadmap", "region": {"x": 0, "y": 516, "w": 960, "h": 24}, "elements": {"footer_left": {"x": 40, "y": 521, "w": 660, "h": 13}, "footer_right": {"x": 856, "y": 521, "w": 64, "h": 13}}},
+    {"id": "footer_case", "use_case": "case study", "region": {"x": 0, "y": 514, "w": 960, "h": 26}, "elements": {"footer_left": {"x": 44, "y": 520, "w": 620, "h": 14}, "footer_right": {"x": 854, "y": 520, "w": 66, "h": 14}}},
+    {"id": "footer_market", "use_case": "market scan", "region": {"x": 0, "y": 510, "w": 960, "h": 30}, "elements": {"footer_left": {"x": 40, "y": 516, "w": 730, "h": 18}, "footer_right": {"x": 862, "y": 518, "w": 58, "h": 14}}},
+    {"id": "footer_appendix", "use_case": "appendix", "region": {"x": 0, "y": 522, "w": 960, "h": 18}, "elements": {"footer_left": {"x": 40, "y": 526, "w": 700, "h": 11}, "footer_right": {"x": 870, "y": 526, "w": 50, "h": 11}}},
+    {"id": "footer_legal", "use_case": "restricted content", "region": {"x": 0, "y": 504, "w": 960, "h": 36}, "elements": {"footer_left": {"x": 40, "y": 510, "w": 770, "h": 24}, "footer_right": {"x": 868, "y": 518, "w": 52, "h": 13}}}
+  ]
+}

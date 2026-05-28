@@ -6,7 +6,6 @@ Supports 200,000+ icons from Material Design, Phosphor, Tabler, Lucide, etc.
 
 from __future__ import annotations
 
-import io
 import hashlib
 from pathlib import Path
 from typing import Optional
@@ -256,6 +255,34 @@ ICON_NAME_ALIASES = {
 }
 
 
+def normalize_icon_id(icon_name: str) -> str:
+    """Normalize planner-friendly aliases into one Iconify identifier."""
+    normalized = (icon_name or "").strip().replace("_", "-")
+    icon_id = RECOMMENDED_ICONS.get(normalized, normalized)
+    if ":" not in icon_id:
+        icon_id = f"mdi:{icon_id}"
+    prefix, name = icon_id.split(":", 1)
+    if prefix == "mdi":
+        name = ICON_NAME_ALIASES.get(name, name)
+    return f"{prefix}:{name}"
+
+
+def normalize_icon_color(color: str | None, fallback: str = "1E293B") -> str:
+    """Return a six-character cache-safe RGB value."""
+    value = (color or fallback).strip().lstrip("#")
+    if len(value) == 3:
+        value = "".join(char * 2 for char in value)
+    if len(value) < 6 or any(char not in "0123456789abcdefABCDEF" for char in value[:6]):
+        return fallback.upper()
+    return value[:6].upper()
+
+
+def _icon_cache_path(icon_id: str, color: str, size: int, extension: str) -> Path:
+    suffix = "_png" if extension == "png" else ""
+    key = hashlib.md5(f"{icon_id}_{color}_{size}{suffix}".encode()).hexdigest()
+    return ICON_CACHE_DIR / f"{key}.{extension}"
+
+
 async def fetch_icon_svg(icon_name: str, color: str = "1E293B", size: int = 48) -> Optional[bytes]:
     """Fetch an SVG icon from Iconify API.
 
@@ -267,32 +294,18 @@ async def fetch_icon_svg(icon_name: str, color: str = "1E293B", size: int = 48) 
     Returns:
         SVG bytes or None if fetch failed
     """
-    icon_name = icon_name.replace("_", "-")
-    icon_id = RECOMMENDED_ICONS.get(icon_name, icon_name)
-    if ":" not in icon_id:
-        icon_id = f"mdi:{icon_id}"
-
+    icon_id = normalize_icon_id(icon_name)
+    color = normalize_icon_color(color)
     prefix, name = icon_id.split(":", 1)
-    # Apply alias mapping for commonly misnamed icons (Lucide/Feather → MDI)
-    if prefix == "mdi" and name in ICON_NAME_ALIASES:
-        name = ICON_NAME_ALIASES[name]
-        icon_id = f"mdi:{name}"
 
     url = f"{ICONIFY_API_BASE}/{prefix}/{name}.svg?color=%23{color}&width={size}&height={size}"
-
-    cache_key = hashlib.md5(f"{icon_id}_{color}_{size}".encode()).hexdigest()
-    cache_path = ICON_CACHE_DIR / f"{cache_key}.svg"
+    cache_path = _icon_cache_path(icon_id, color, size, "svg")
 
     if cache_path.exists():
         return cache_path.read_bytes()
 
     try:
-        import ssl
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-
-        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url)
             if response.status_code == 200:
                 svg_data = response.content
@@ -318,17 +331,9 @@ async def fetch_icon_png(icon_name: str, color: str = "1E293B", size: int = 48) 
     if not svg_data:
         return None
 
-    icon_name_clean = icon_name.replace("_", "-")
-    icon_id = RECOMMENDED_ICONS.get(icon_name_clean, icon_name_clean)
-    if ":" not in icon_id:
-        icon_id = f"mdi:{icon_id}"
-    prefix, name = icon_id.split(":", 1)
-    if prefix == "mdi" and name in ICON_NAME_ALIASES:
-        name = ICON_NAME_ALIASES[name]
-        icon_id = f"mdi:{name}"
-
-    png_cache_key = hashlib.md5(f"{icon_id}_{color}_{size}_png".encode()).hexdigest()
-    png_cache_path = ICON_CACHE_DIR / f"{png_cache_key}.png"
+    icon_id = normalize_icon_id(icon_name)
+    color = normalize_icon_color(color)
+    png_cache_path = _icon_cache_path(icon_id, color, size, "png")
     if png_cache_path.exists():
         return png_cache_path.read_bytes()
 
@@ -336,11 +341,7 @@ async def fetch_icon_png(icon_name: str, color: str = "1E293B", size: int = 48) 
     try:
         from svglib.svglib import svg2rlg
         from reportlab.graphics import renderPM
-        import tempfile
-
-        # Write SVG to temp file for svglib
-        svg_cache_key = hashlib.md5(f"{icon_id}_{color}_{size}".encode()).hexdigest()
-        svg_path = ICON_CACHE_DIR / f"{svg_cache_key}.svg"
+        svg_path = _icon_cache_path(icon_id, color, size, "svg")
         if not svg_path.exists():
             svg_path.write_bytes(svg_data)
 
@@ -369,63 +370,65 @@ async def fetch_icon_png(icon_name: str, color: str = "1E293B", size: int = 48) 
     except (ImportError, Exception):
         pass
 
-    # Method 3: Pillow colored circle placeholder (last resort)
-    try:
-        from PIL import Image, ImageDraw
-        import io
-        img_size = max(size, 64)
-        img = Image.new("RGBA", (img_size, img_size), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        r = int(color[0:2], 16) if len(color) >= 6 else 30
-        g = int(color[2:4], 16) if len(color) >= 6 else 41
-        b = int(color[4:6], 16) if len(color) >= 6 else 59
-        margin = img_size // 6
-        draw.ellipse([margin, margin, img_size - margin, img_size - margin], fill=(r, g, b, 255))
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        png_data = buffer.getvalue()
-        png_cache_path.write_bytes(png_data)
-        return png_data
-    except ImportError:
-        return None
+    logger.warning("iconify.png_conversion_failed", icon=icon_id)
+    return None
 
 
 def get_icon_path(icon_name: str, color: str = "1E293B", size: int = 48) -> Optional[Path]:
     """Get cached icon path synchronously (for use in mapper). Returns None if not cached.
 
-    Searches for PNG first (best PowerPoint compatibility), then SVG as fallback.
-    Tries multiple color variants and sizes to find a cached icon.
+    Searches for the exact rendered color and size, so preview and PPTX output
+    cannot silently disagree about icon styling.
     """
-    icon_name = icon_name.replace("_", "-")
-    icon_id = RECOMMENDED_ICONS.get(icon_name, icon_name)
-    if ":" not in icon_id:
-        icon_id = f"mdi:{icon_id}"
-
-    prefix, name = icon_id.split(":", 1)
-    if prefix == "mdi" and name in ICON_NAME_ALIASES:
-        name = ICON_NAME_ALIASES[name]
-        icon_id = f"mdi:{name}"
-
-    common_colors = [color, "1E293B", "10B981", "2563EB", "F59E0B", "6366F1", "059669", "ffffff", "000000"]
-    common_sizes = [size, 32, 48, 24]
-
-    # Search PNG first (PowerPoint compatible)
-    for test_size in common_sizes:
-        for test_color in common_colors:
-            png_key = hashlib.md5(f"{icon_id}_{test_color}_{test_size}_png".encode()).hexdigest()
-            png_path = ICON_CACHE_DIR / f"{png_key}.png"
-            if png_path.exists():
-                return png_path
-
-    # Fallback: search SVG
-    for test_size in common_sizes:
-        for test_color in common_colors:
-            cache_key = hashlib.md5(f"{icon_id}_{test_color}_{test_size}".encode()).hexdigest()
-            cache_path = ICON_CACHE_DIR / f"{cache_key}.svg"
-            if cache_path.exists():
-                return cache_path
-
+    icon_id = normalize_icon_id(icon_name)
+    color = normalize_icon_color(color)
+    for extension in ("png", "svg"):
+        path = _icon_cache_path(icon_id, color, size, extension)
+        if path.exists():
+            return path
     return None
+
+
+def get_fallback_icon_path(icon_name: str, color: str = "1E293B", size: int = 32) -> Path | None:
+    """Create a simple visible fallback icon when Iconify is unavailable."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return None
+
+    icon_id = normalize_icon_id(icon_name)
+    color = normalize_icon_color(color)
+    cache_path = _icon_cache_path(f"fallback:{icon_id}", color, size, "png")
+    if cache_path.exists():
+        return cache_path
+
+    ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    image_size = max(size, 32)
+    img = Image.new("RGBA", (image_size, image_size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    rgb = tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
+    stroke = max(2, image_size // 12)
+    margin = max(4, image_size // 8)
+    draw.rounded_rectangle(
+        [margin, margin, image_size - margin, image_size - margin],
+        radius=max(4, image_size // 6),
+        outline=rgb + (255,),
+        width=stroke,
+    )
+    label = icon_id.split(":", 1)[1][:1].upper()
+    try:
+        font = ImageFont.truetype("arial.ttf", image_size // 2)
+    except OSError:
+        font = ImageFont.load_default()
+    bbox = draw.textbbox((0, 0), label, font=font)
+    draw.text(
+        ((image_size - (bbox[2] - bbox[0])) / 2, (image_size - (bbox[3] - bbox[1])) / 2 - 1),
+        label,
+        fill=rgb + (255,),
+        font=font,
+    )
+    img.save(cache_path, format="PNG")
+    return cache_path
 
 
 def get_available_icon_names() -> list[str]:

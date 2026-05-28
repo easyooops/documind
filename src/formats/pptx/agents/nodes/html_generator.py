@@ -14,7 +14,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.agents.loader import get_llm_for_agent, load_agent_config, load_agent_prompt
 from src.core.logging import get_logger
 from src.formats.pptx.css_spec import generate_css_spec_prompt
-from src.formats.pptx.master_context import OBJECT_CATALOG
 from src.schemas.agents import DocuMindState
 from src.utils.language import output_language_instruction
 
@@ -104,6 +103,7 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
                 prior["metadata"] = {
                     "slide_type": blueprint.get("slide_type", "content"),
                     "layout_hint": blueprint.get("layout_hint", "balanced"),
+                    "layout_plan": blueprint.get("layout_plan", {}),
                 }
                 slides_html.append(prior)
                 tracker.record(prior.get("elements_used", []))
@@ -195,8 +195,17 @@ async def _generate_single_slide(
     revision_scope: str = "minimal_patch",
 ) -> dict:
     """Generate Constrained HTML for a single slide."""
+    from src.formats.pptx.rulesets import get_ruleset
+
     llm = get_llm_for_agent(AGENT_NAME, format_id=FORMAT_ID)
     idx = blueprint.get("index", 1)
+    layout_plan = blueprint.get("layout_plan", {})
+    body_layout = get_ruleset().get_body_layout(layout_plan.get("body_layout_id", ""))
+    body_region = _get_master_layout(design_system).get(
+        "body_region", {"x": 40, "y": 78, "w": 880, "h": 436}
+    )
+    if body_layout:
+        body_layout = {**body_layout, "body_region": body_region}
 
     if original_html and revision_scope == "minimal_patch":
         patched_html = await _patch_existing_slide(
@@ -218,6 +227,7 @@ async def _generate_single_slide(
                     "layout_hint": (original_blueprint or blueprint).get(
                         "layout_hint", "balanced"
                     ),
+                    "layout_plan": (original_blueprint or blueprint).get("layout_plan", {}),
                 },
             }
 
@@ -230,7 +240,13 @@ async def _generate_single_slide(
         f"Purpose: {blueprint.get('purpose', '')}",
         f"Layout Hint: {blueprint.get('layout_hint', 'balanced')}",
         f"Suggested Elements: {', '.join(blueprint.get('suggested_elements', []))}",
+        f"Approved Layout Plan: {json.dumps(layout_plan, ensure_ascii=False)}",
     ]
+    if body_layout:
+        context_parts.append(
+            "\n### Approved Standard Body Layout (binding)\n"
+            f"{json.dumps(body_layout, ensure_ascii=False, indent=2)}"
+        )
 
     slide_type = blueprint.get("slide_type", "content")
     if original_html and revision_scope == "minimal_patch":
@@ -267,10 +283,10 @@ async def _generate_single_slide(
 ### BODY-ONLY GENERATION (Header/Footer/Background are AUTO-INJECTED by system)
 
 DO NOT generate header, footer, or background elements.
-Generate ONLY content elements within the body region: y:78 to y:514, x:40 to x:920.
+Generate ONLY content elements within the body region: y:{body_region['y']} to y:{body_region['y'] + body_region['h']}, x:{body_region['x']} to x:{body_region['x'] + body_region['w']}.
 The system will automatically prepend/append the fixed header/footer/background.
 
-Available body area: 880px wide × 436px tall (starting at x:40, y:78)
+Available body area: {body_region['w']}px wide × {body_region['h']}px tall (starting at x:{body_region['x']}, y:{body_region['y']})
 """)
 
     if blueprint.get("content_blocks"):
@@ -287,7 +303,7 @@ Available body area: 880px wide × 436px tall (starting at x:40, y:78)
 
     if fix_instructions:
         context_parts.append(
-            f"\n### FIX REQUIRED (from VLM QA):\n"
+            "\n### FIX REQUIRED (from VLM QA):\n"
             + "\n".join(f"- {fix}" for fix in fix_instructions)
         )
 
@@ -320,6 +336,7 @@ Available body area: 880px wide × 436px tall (starting at x:40, y:78)
         "metadata": {
             "slide_type": blueprint.get("slide_type", "content"),
             "layout_hint": blueprint.get("layout_hint", "balanced"),
+            "layout_plan": blueprint.get("layout_plan", {}),
         },
     }
 
@@ -402,6 +419,7 @@ def _build_system_prompt(design_system: dict, master_context: dict) -> str:
     css_spec = generate_css_spec_prompt()
     ruleset = get_ruleset()
     ooxml_rules = ruleset.get_generator_prompt_rules()
+    planner_layout_rules = ruleset.get_planner_layout_rules()
 
     base_prompt = load_agent_prompt(AGENT_NAME, format_id=FORMAT_ID) or ""
 
@@ -447,20 +465,29 @@ CRITICAL COLOR RULES:
 - Keep independent content boxes, tables, and charts separated by at least 12px.
 - Do not create a second title element in the body; the header title is injected once.
 """
-        hf = design_system.get("header_footer", {})
-        if hf:
+        master_layout = _get_master_layout(design_system)
+        if master_layout:
             design_section += """
 ## Template Auto-Injection (IMPORTANT)
 For content slides: Header, footer, background are AUTO-INJECTED by the system.
-You generate ONLY body content (y:78 to y:514).
-DO NOT create any elements above y:78 or below y:514 for content slides.
+You generate ONLY body content within the selected master layout body_region.
+DO NOT create elements in the selected fixed header/footer zones for content slides.
 The system guarantees pixel-identical header/footer/background across all content slides.
 """
+            design_section += (
+                "\nSelected deck-level master layout (binding):\n"
+                f"{json.dumps(master_layout, ensure_ascii=False, indent=2)}\n"
+            )
 
     if base_prompt:
-        return f"{base_prompt}\n\n{ooxml_rules}\n\n{css_spec}\n\n{design_section}"
+        return (
+            f"{base_prompt}\n\n{planner_layout_rules}\n\n{ooxml_rules}\n\n"
+            f"{css_spec}\n\n{design_section}"
+        )
 
     return f"""You are an expert PPT slide designer that generates Constrained HTML for PPTX conversion.
+
+{planner_layout_rules}
 
 {ooxml_rules}
 
@@ -546,6 +573,30 @@ def _inject_cover_background(html: str, slide_index: int, design_system: dict) -
     return html
 
 
+def _get_master_layout(design_system: dict) -> dict:
+    """Return a resolved deck master, falling back to the standard default."""
+    master_layout = design_system.get("master_layout", {})
+    if master_layout:
+        return master_layout
+    from src.formats.pptx.rulesets import get_ruleset
+
+    return get_ruleset().resolve_master_layout()
+
+
+def _zone_element(zone: dict, element_name: str, fallback: dict) -> dict:
+    """Read a positioned master-zone element with a backwards-compatible fallback."""
+    element = zone.get("elements", {}).get(element_name, {})
+    return element if element else fallback
+
+
+def _box_style(box: dict) -> str:
+    """Convert a catalog position record into deterministic CSS geometry."""
+    return (
+        f"left:{box['x']}px;top:{box['y']}px;"
+        f"width:{box['w']}px;height:{box['h']}px;"
+    )
+
+
 def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_system: dict) -> str:
     """Inject fixed background/header/footer/accent bar into content slide HTML.
 
@@ -559,6 +610,25 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
     text_primary = design_system.get("text_primary", primary)
     font_heading = design_system.get("font_heading", "Pretendard")
     font_body = design_system.get("font_body", font_heading)
+    master_layout = _get_master_layout(design_system)
+    header_zone = master_layout.get("header", {})
+    footer_zone = master_layout.get("footer", {})
+    body_region = master_layout.get("body_region", {"x": 40, "y": 78, "w": 880, "h": 436})
+    section_box = _zone_element(
+        header_zone, "section_label", {"x": 40, "y": 16, "w": 300, "h": 14}
+    )
+    title_box = _zone_element(
+        header_zone, "slide_title", {"x": 40, "y": 32, "w": 860, "h": 30}
+    )
+    accent_box = _zone_element(
+        header_zone, "accent_bar", {"x": 40, "y": 68, "w": 48, "h": 3}
+    )
+    footer_left_box = _zone_element(
+        footer_zone, "footer_left", {"x": 40, "y": 522, "w": 400, "h": 14}
+    )
+    footer_right_box = _zone_element(
+        footer_zone, "footer_right", {"x": 850, "y": 522, "w": 80, "h": 14}
+    )
 
     hf = design_system.get("header_footer", {})
     section_label = blueprint.get("section_label", "")
@@ -569,7 +639,7 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
     # Ensure single-line page number
     footer_right = footer_right_tpl.replace("{n}", str(slide_index)).replace("\n", " ").strip()
 
-    body_elements = _extract_body_only(html)
+    body_elements = _extract_body_only(html, body_region)
 
     bg_html = (
         f'<div data-pptx-region="background" data-pptx-type="shape" style="position:absolute;left:0;top:0;'
@@ -577,21 +647,21 @@ def _inject_fixed_template(html: str, slide_index: int, blueprint: dict, design_
     )
 
     header_html = (
-        f'<div data-pptx-region="header" data-pptx-type="textbox" style="position:absolute;left:40px;top:16px;'
-        f"width:300px;height:14px;font-size:11px;font-weight:500;font-family:'{font_body}';color:{accent}\">"
+        f'<div data-pptx-region="header" data-pptx-type="textbox" style="position:absolute;{_box_style(section_box)}'
+        f"font-size:11px;font-weight:500;font-family:'{font_body}';color:{accent}\">"
         f'{section_label}</div>\n'
-        f'  <div data-pptx-region="header" data-pptx-type="textbox" style="position:absolute;left:40px;top:32px;'
-        f"width:860px;height:30px;font-size:{title_font_size}px;font-weight:700;font-family:'{font_heading}';color:{text_primary}\">"
+        f'  <div data-pptx-region="header" data-pptx-type="textbox" style="position:absolute;{_box_style(title_box)}'
+        f"font-size:{title_font_size}px;font-weight:700;font-family:'{font_heading}';color:{text_primary}\">"
         f'{title_text}</div>\n'
         f'  <div data-pptx-region="header" data-pptx-type="shape" data-pptx-shape="rect" style="position:absolute;'
-        f'left:40px;top:68px;width:48px;height:3px;background-color:{accent}"></div>'
+        f'{_box_style(accent_box)}background-color:{accent}"></div>'
     )
 
     footer_html = (
-        f'<div data-pptx-region="footer" data-pptx-type="textbox" style="position:absolute;left:40px;top:522px;'
-        f"width:400px;height:14px;font-size:9px;font-weight:400;line-height:1.2;font-family:'{font_body}';color:#94A3B8\">{footer_left}</div>\n"
-        f'  <div data-pptx-region="footer" data-pptx-type="textbox" style="position:absolute;left:850px;top:522px;'
-        f"width:80px;height:14px;font-size:9px;font-weight:400;line-height:1.2;font-family:'{font_body}';color:#94A3B8;text-align:right\">"
+        f'<div data-pptx-region="footer" data-pptx-type="textbox" style="position:absolute;{_box_style(footer_left_box)}'
+        f"font-size:9px;font-weight:400;line-height:1.2;font-family:'{font_body}';color:#94A3B8\">{footer_left}</div>\n"
+        f'  <div data-pptx-region="footer" data-pptx-type="textbox" style="position:absolute;{_box_style(footer_right_box)}'
+        f"font-size:9px;font-weight:400;line-height:1.2;font-family:'{font_body}';color:#94A3B8;text-align:right\">"
         f'{footer_right}</div>'
     )
 
@@ -625,8 +695,11 @@ def _header_title_font_size(title: str) -> int:
     return 18
 
 
-def _extract_body_only(html: str) -> list[str]:
+def _extract_body_only(html: str, body_region: dict | None = None) -> list[str]:
     """Extract only body-region elements (y >= 72, y < 510) from generated HTML."""
+    region = body_region or {"y": 72, "h": 443}
+    min_y = float(region.get("y", 72)) - 6
+    max_y = float(region.get("y", 72)) + float(region.get("h", 443)) + 2
     body_elements = []
     for element in _top_level_slide_elements(html):
         region = element.attrs.get("data-pptx-region")
@@ -637,7 +710,7 @@ def _extract_body_only(html: str) -> list[str]:
             continue
         if width_val >= 950 and height_val >= 530 and top_val <= 5:
             continue
-        if top_val < 72 or top_val >= 515:
+        if top_val < min_y or top_val >= max_y:
             continue
         body_elements.append(str(element))
     return body_elements
@@ -839,23 +912,27 @@ def _as_dict(value: object) -> dict:
 async def _prefetch_icons(slides_html: list[dict], design_system: dict) -> None:
     """Pre-download all icons used in slides from Iconify API and convert to PNG."""
     import re
-    from src.utils.iconify import fetch_icon_png, RECOMMENDED_ICONS
 
-    icon_pattern = re.compile(r'data-pptx-icon="([^"]+)"')
-    accent_color = (design_system.get("accent", "#1E293B") or "#1E293B").lstrip("#")
+    from bs4 import BeautifulSoup
 
-    icons_to_fetch = set()
+    from src.utils.iconify import fetch_icon_png, normalize_icon_color
+
+    fallback_color = normalize_icon_color("#1E293B")
+    icons_to_fetch: set[tuple[str, str]] = set()
     for slide in slides_html:
-        html = slide.get("html", "")
-        matches = icon_pattern.findall(html)
-        icons_to_fetch.update(matches)
+        soup = BeautifulSoup(slide.get("html", ""), "html.parser")
+        for node in soup.find_all(attrs={"data-pptx-icon": True}):
+            style = str(node.attrs.get("style", ""))
+            color_match = re.search(r"(?:^|;)\s*color\s*:\s*(#[0-9a-fA-F]{3,8})", style)
+            color = normalize_icon_color(color_match.group(1) if color_match else fallback_color)
+            icons_to_fetch.add((str(node.attrs["data-pptx-icon"]), color))
 
     if not icons_to_fetch:
         return
 
     tasks = []
-    for icon_name in icons_to_fetch:
-        tasks.append(fetch_icon_png(icon_name, color=accent_color, size=32))
+    for icon_name, color in icons_to_fetch:
+        tasks.append(fetch_icon_png(icon_name, color=color, size=32))
 
     await asyncio.gather(*tasks, return_exceptions=True)
     logger.info("iconify.prefetch_complete", count=len(icons_to_fetch))

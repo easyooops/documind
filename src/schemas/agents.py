@@ -48,6 +48,8 @@ class DocuMindState(TypedDict, total=False):
     research_data: dict | None
     slide_blueprints: list[dict]
     design_system: dict
+    presentation_strategy: dict
+    layout_system: dict
     title: str
     changed_slide_indices: list[int]
     format_rules: dict
@@ -97,6 +99,7 @@ class SlideBlueprint(BaseModel):
     suggested_elements: list[str] = Field(default_factory=list)
     visual_style: str = ""
     source_citations: list[str] = Field(default_factory=list)
+    layout_plan: dict = Field(default_factory=dict)
 
 
 class PlanningOutput(BaseModel):
@@ -108,6 +111,8 @@ class PlanningOutput(BaseModel):
     tone: str = "professional"
     slides: list[SlideBlueprint]
     design_tokens: dict = Field(default_factory=dict)
+    presentation_strategy: dict = Field(default_factory=dict)
+    layout_system: dict = Field(default_factory=dict)
 
 
 # ═══ HTML Generation Schemas ═══

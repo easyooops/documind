@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import re
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -110,6 +112,7 @@ async def _capture_slides(slides_html: list[dict]) -> list[str]:
 
 def _wrap_slide_html(slide_html: str) -> str:
     """Wrap a slide div in a complete HTML document for rendering."""
+    slide_html = _embed_cached_icons(slide_html)
     return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8"/>
@@ -120,6 +123,41 @@ body {{ width:960px; height:540px; overflow:hidden; font-family:'Pretendard',sys
 </head>
 <body>{slide_html}</body>
 </html>"""
+
+
+def _embed_cached_icons(slide_html: str) -> str:
+    """Render previews with the same cached icon artifacts used by PPTX output."""
+    from bs4 import BeautifulSoup
+
+    from src.utils.iconify import get_fallback_icon_path, get_icon_path, normalize_icon_color
+
+    soup = BeautifulSoup(slide_html, "html.parser")
+    for node in soup.find_all(attrs={"data-pptx-icon": True}):
+        style = str(node.attrs.get("style", ""))
+        if _style_number(style, "height") < 80 or _style_number(style, "width") < 120:
+            continue
+        color_match = re.search(r"(?:^|;)\s*color\s*:\s*(#[0-9a-fA-F]{3,8})", style)
+        color = normalize_icon_color(color_match.group(1) if color_match else "1E293B")
+        path = get_icon_path(str(node.attrs["data-pptx-icon"]), color=color, size=32)
+        if not path:
+            path = get_fallback_icon_path(str(node.attrs["data-pptx-icon"]), color=color, size=32)
+        if not path:
+            continue
+        mime_type = "image/png" if path.suffix.lower() == ".png" else "image/svg+xml"
+        icon_data = base64.b64encode(path.read_bytes()).decode("ascii")
+        image = soup.new_tag("img", src=f"data:{mime_type};base64,{icon_data}")
+        image["style"] = (
+            "position:absolute;left:12px;top:12px;width:32px;height:32px;display:block"
+        )
+        node.insert(0, image)
+        if "padding-top" not in style:
+            node["style"] = f"{style};padding-top:52px"
+    return str(soup)
+
+
+def _style_number(style: str, property_name: str) -> float:
+    match = re.search(rf"(?:^|;)\s*{property_name}\s*:\s*(\d+(?:\.\d+)?)px", style)
+    return float(match.group(1)) if match else 0.0
 
 
 def _screenshot_sync(html: str) -> bytes | None:
@@ -158,7 +196,8 @@ def _save_html_preview(slides_html: list[dict], output_dir: Path) -> str:
     preview_path = output_dir / f"preview_{file_id}.html"
 
     slides_content = "\n".join(
-        slide.get("html", "") for slide in sorted(slides_html, key=lambda s: s.get("index", 0))
+        _embed_cached_icons(slide.get("html", ""))
+        for slide in sorted(slides_html, key=lambda s: s.get("index", 0))
     )
 
     html = f"""<!DOCTYPE html>
@@ -172,8 +211,7 @@ body {{ background:#1a1a2e; display:flex; flex-direction:column; align-items:cen
 <script>
 function renderTables(){{document.querySelectorAll('[data-pptx-table-data]').forEach(function(el){{try{{var d=JSON.parse(el.getAttribute('data-pptx-table-data'));if(!d)return;var h=d.headers||[],rows=d.rows||[];var t='<table style="width:100%;height:100%;border-collapse:collapse;font-size:11px;font-family:Pretendard,sans-serif">';if(h.length){{t+='<tr>';h.forEach(function(c){{t+='<th style="background:#1e293b;color:#fff;padding:6px 8px;text-align:center;font-weight:600">'+c+'</th>';}});t+='</tr>';}}rows.forEach(function(r,i){{t+='<tr>';(Array.isArray(r)?r:Object.values(r)).forEach(function(c){{t+='<td style="padding:5px 8px;border-bottom:1px solid #e5e7eb;background:'+(i%2?'#f9fafb':'#fff')+'">'+c+'</td>';}});t+='</tr>';}});t+='</table>';el.innerHTML=t;}}catch(e){{}}}});}};
 function renderCharts(){{document.querySelectorAll('[data-pptx-chart-data]').forEach(function(el){{try{{var d=JSON.parse(el.getAttribute('data-pptx-chart-data'));if(!d||!d.length)return;var max=Math.max.apply(null,d.map(function(i){{return parseFloat(i.value)||0;}}));var html='<div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:stretch;height:100%;padding:8px;gap:4px;font-family:Pretendard,sans-serif;font-size:10px">';d.forEach(function(item){{var pct=max>0?((parseFloat(item.value)||0)/max*100):0;html+='<div style="display:flex;align-items:center;gap:6px"><span style="min-width:60px;text-align:right;color:#64748b">'+item.label+'</span><div style="flex:1;background:#e2e8f0;border-radius:3px;height:18px;position:relative"><div style="width:'+pct+'%;height:100%;background:#3b82f6;border-radius:3px"></div></div><span style="min-width:36px;color:#1e293b;font-weight:500">'+item.value+'</span></div>';}});html+='</div>';el.innerHTML=html;}}catch(e){{}}}});}};
-document.addEventListener('DOMContentLoaded',function(){{renderTables();renderCharts();renderIcons();}});
-function renderIcons(){{document.querySelectorAll('[data-pptx-icon]').forEach(function(el){{var name=el.getAttribute('data-pptx-icon');if(!name)return;name=name.replace(/_/g,'-');var color=getComputedStyle(el).color||'#1e293b';var hex=color.startsWith('#')?color.slice(1):'1e293b';var url='https://api.iconify.design/mdi/'+name+'.svg?color=%23'+hex+'&width=16&height=16';var img=document.createElement('img');img.src=url;img.style.cssText='width:16px;height:16px;vertical-align:middle;margin-right:4px;display:inline-block';img.onerror=function(){{this.style.display='none'}};el.insertBefore(img,el.firstChild);}});}};
+document.addEventListener('DOMContentLoaded',function(){{renderTables();renderCharts();}});
 </script>
 </head><body>
 {slides_content}

@@ -56,6 +56,7 @@ async def unified_planner(state: DocuMindState) -> dict:
     from src.formats.pptx.rulesets import get_ruleset
     ruleset = get_ruleset()
     ooxml_constraints = ruleset.get_generator_prompt_rules()
+    planner_layout_rules = ruleset.get_planner_layout_rules()
 
     context_parts = [
         output_language_instruction(output_language),
@@ -128,6 +129,7 @@ async def unified_planner(state: DocuMindState) -> dict:
         "text: textbox, placeholder\n"
     )
 
+    context_parts.append(f"\n{planner_layout_rules}")
     context_parts.append(f"\n## OOXML Design Constraints\n{ooxml_constraints}")
 
     requested_slide_count = _extract_requested_slide_count(user_query)
@@ -156,7 +158,14 @@ async def unified_planner(state: DocuMindState) -> dict:
         logger.warning("unified_planner.parse_fallback")
         result = _fallback_blueprints(user_query, design_direction)
 
-    slide_blueprints = _normalize_blueprints(result.get("slides", []))
+    presentation_strategy = _normalize_presentation_strategy(
+        result.get("presentation_strategy"), user_query
+    )
+    if locked_design_system and locked_design_system.get("master_layout"):
+        layout_system = locked_design_system["master_layout"]
+    else:
+        layout_system = ruleset.resolve_master_layout(result.get("layout_system"))
+    slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset)
 
     requested_count = _extract_requested_slide_count(user_query)
     if requested_count and len(slide_blueprints) < requested_count:
@@ -170,7 +179,7 @@ async def unified_planner(state: DocuMindState) -> dict:
     generated_design = result.get("design_tokens", {})
     template_design = _build_design_system(design_direction, template_info)
     if locked_design_system:
-        design_system = locked_design_system
+        design_system = dict(locked_design_system)
     elif template_info:
         design_system = {**generated_design, **template_design}
     else:
@@ -185,6 +194,11 @@ async def unified_planner(state: DocuMindState) -> dict:
     header_footer = result.get("header_footer", {})
     if header_footer and not locked_design_system:
         design_system["header_footer"] = header_footer
+    design_system.setdefault("master_layout", layout_system)
+    design_system.setdefault(
+        "designer_principles",
+        ruleset.design_strategy.get("philosophy", {}),
+    )
 
     changed_indices = result.get("changed_slide_indices")
     if base_version:
@@ -225,7 +239,7 @@ async def unified_planner(state: DocuMindState) -> dict:
                 bp for bp in slide_blueprints
                 if bp.get("index") not in parent_indices and bp.get("index") in changed_set
             )
-        slide_blueprints = _normalize_blueprints(merged_plan)
+        slide_blueprints = _normalize_blueprints(merged_plan, ruleset)
 
     revision_scope = (
         _normalize_revision_scope(result.get("revision_scope"), user_query)
@@ -237,6 +251,8 @@ async def unified_planner(state: DocuMindState) -> dict:
     return {
         "slide_blueprints": slide_blueprints,
         "design_system": design_system,
+        "presentation_strategy": presentation_strategy,
+        "layout_system": layout_system,
         "title": title,
         "changed_slide_indices": changed_indices,
         "revision_instruction": (
@@ -304,15 +320,48 @@ def _requests_slide_deletion(user_query: str) -> bool:
     )
 
 
-def _normalize_blueprints(slides: list) -> list[dict]:
+def _normalize_presentation_strategy(value: object, user_query: str) -> dict:
+    """Keep the deck's consulting decision intent explicit downstream."""
+    strategy = value if isinstance(value, dict) else {}
+    return {
+        "request_intent": strategy.get("request_intent", user_query[:160]),
+        "presentation_objective": strategy.get(
+            "presentation_objective", "Communicate a supported recommendation."
+        ),
+        "audience": strategy.get("audience", "professional stakeholders"),
+        "decision_to_enable": strategy.get(
+            "decision_to_enable", "Align on the proposed direction and next action."
+        ),
+        "narrative_arc": strategy.get(
+            "narrative_arc", "context -> evidence -> recommendation -> action"
+        ),
+        "tone": strategy.get("tone", "clear and decision-oriented"),
+    }
+
+
+def _normalize_blueprints(slides: list, ruleset=None) -> list[dict]:
     """Normalize LLM output into clean blueprint dicts."""
+    if ruleset is None:
+        from src.formats.pptx.rulesets import get_ruleset
+
+        ruleset = get_ruleset()
     blueprints = []
     for idx, slide in enumerate(slides, 1):
         if not isinstance(slide, dict):
             continue
+        slide_type = slide.get("slide_type", "content")
+        raw_layout_plan = slide.get("layout_plan", {})
+        layout_plan = raw_layout_plan if isinstance(raw_layout_plan, dict) else {}
+        body_layout_id = layout_plan.get("body_layout_id") or slide.get("body_layout_id", "")
+        if slide_type not in {"cover", "section"} and not ruleset.get_body_layout(body_layout_id):
+            body_layout_id = ruleset.get_default_body_layout_id(slide_type)
+        sub_layout_ids = [
+            layout_id for layout_id in layout_plan.get("sub_layout_ids", [])
+            if ruleset.get_body_layout(layout_id)
+        ]
         blueprints.append({
             "index": slide.get("index", idx),
-            "slide_type": slide.get("slide_type", "content"),
+            "slide_type": slide_type,
             "title": slide.get("title", f"Slide {idx}"),
             "section_label": slide.get("section_label", ""),
             "subtitle": slide.get("subtitle", ""),
@@ -327,6 +376,12 @@ def _normalize_blueprints(slides: list) -> list[dict]:
             "visual_density": slide.get("visual_density", "high"),
             "bottom_note": slide.get("bottom_note", ""),
             "source_citations": slide.get("source_citations", []),
+            "layout_plan": {
+                "master_role": "cover" if slide_type in {"cover", "section"} else "content",
+                "body_layout_id": body_layout_id if slide_type not in {"cover", "section"} else "",
+                "sub_layout_ids": sub_layout_ids,
+                "element_placements": layout_plan.get("element_placements", []),
+            },
         })
     return blueprints or _minimal_blueprints()
 
@@ -436,6 +491,19 @@ def _default_system_prompt() -> str:
 Output ONLY valid JSON with this structure:
 {
   "title": "Presentation Title",
+  "presentation_strategy": {
+    "request_intent": "What the user is trying to achieve",
+    "presentation_objective": "What this deck must accomplish",
+    "audience": "Who must decide or act",
+    "decision_to_enable": "Concrete decision or next action",
+    "narrative_arc": "context -> evidence -> recommendation -> action",
+    "tone": "clear and decision-oriented"
+  },
+  "layout_system": {
+    "cover_layout_id": "approved cover layout ID",
+    "header_zone_id": "approved fixed header zone ID",
+    "footer_zone_id": "approved fixed footer zone ID"
+  },
   "slides": [
     {
       "index": 1,
@@ -450,6 +518,11 @@ Output ONLY valid JSON with this structure:
         {"label": "Metric", "value": "42%", "context": "Year over year growth"}
       ],
       "layout_hint": "center_dominant|balanced|left_heavy|right_heavy|grid_3|two_column",
+      "layout_plan": {
+        "body_layout_id": "approved body layout ID",
+        "sub_layout_ids": [],
+        "element_placements": [{"element": "chart", "role": "proof_object"}]
+      },
       "suggested_elements": ["rounded_rect", "table", "chart_bar", "connector", ...],
       "visual_style": "Brief description of visual treatment",
       "source_citations": ["Source 1", "Source 2"]
@@ -468,7 +541,9 @@ Rules:
 4. suggested_elements should use DIVERSE PPTX objects (tables, charts, shapes, connectors)
 5. Content must be substantive — no placeholder text
 6. data_points should contain real or realistic data
-7. Output ONLY valid JSON, no markdown fences or explanations"""
+7. Select one fixed header/footer pair for every non-cover slide
+8. Plan only elements convertible through the deterministic OOXML mapper
+9. Output ONLY valid JSON, no markdown fences or explanations"""
 
 
 def _extract_requested_slide_count(user_query: str) -> int | None:
