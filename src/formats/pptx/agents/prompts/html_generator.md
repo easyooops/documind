@@ -134,12 +134,24 @@ Apply box-shadow on cards that need emphasis:
 8. Prefer icon + short label combinations over long explanations
 
 ### Icon Usage (semantic and reliable)
+MANDATORY NEW CONTRACT:
+- Icons are independent visual elements. Prefer data-pptx-type="icon" with its own absolute rectangle.
+- Do NOT put data-pptx-icon on textboxes for new layouts. Create a separate icon element and a separate textbox.
+- Text and icon areas must be separate boxes with at least 8px clear gap. Do not rely on padding-left to make room.
+- Every icon must use data-pptx-icon-placement with a standard role such as card_lead_left, metric_symbol_left, process_step_header, timeline_node, callout_lead, diagram_node_top, chart_annotation_icon, or empty_space_anchor.
+- Use 3-8 meaningful icons per content slide when they clarify the story; avoid text-only slides.
+- Example:
+  <div data-pptx-type="icon" data-pptx-icon="database" data-pptx-icon-placement="card_lead_left" style="position:absolute;left:52px;top:112px;width:28px;height:28px;color:#1E293B"></div>
+  <div data-pptx-type="textbox" style="position:absolute;left:92px;top:108px;width:220px;height:42px;font-size:14px;font-weight:700;color:#1E293B">데이터 수집 파이프라인</div>
 - Place icons ONLY on LARGE cards (min height 100px+, width 150px+)
-- DO NOT put data-pptx-icon on small labels, KPI numbers, or inline text
-- If a card is too small for an icon (< 80px tall), do NOT add data-pptx-icon
-- Icon + Title combination: large content cards may have data-pptx-icon when it carries meaning
+- Legacy only: data-pptx-icon on textboxes may be converted, but do not generate it for new slides.
+- Small KPI/title icons are allowed only as separate data-pptx-type="icon" elements.
+- Icon + title combinations must use two boxes: an icon box and a text box.
 - Use relevant icons: database for data, rocket for growth, shield for security, brain for AI, chart-line for metrics, target for goals, lightbulb for insights
 - Equal-role cards should use a consistent icon treatment when icons are selected
+- Use data-pptx-icon-placement on the independent icon element to declare the layout role.
+- Use the icon element width/height for sizing; data-pptx-icon-size exists only for legacy compatibility.
+- Icons are managed as transparent PPTX PNG and HTML SVG pairs; do not create white icon boxes, emoji-only substitutes, or inline image URLs
 - Icons will render LARGE (24-36px) at the top-left of cards — leave space for them
 
 ### Bullet Points & List Formatting
@@ -154,8 +166,8 @@ Apply box-shadow on cards that need emphasis:
 - Use symbols to highlight key insights: "★", "✓", "⚡", "▶", "◆"
 - Emphasis format: "⚡ 핵심 포인트: ..." or "★ Key Takeaway: ..."
 - Call-out boxes at top/bottom: accent-colored background + icon + bold text
-- Pattern: data-pptx-icon="lightbulb" + bold text for insights
-- Pattern: data-pptx-icon="warning" + accent bg for warnings/alerts
+- Pattern: separate data-pptx-type="icon" with data-pptx-icon="lightbulb" + adjacent bold text for insights
+- Pattern: separate data-pptx-type="icon" with data-pptx-icon="warning" + accent bg for warnings/alerts
 - Add a call-out only when it communicates a genuine implication or decision.
 
 ## Card & Container Composition (Z-ORDER RULES)
@@ -174,7 +186,8 @@ When creating nested cards, ALWAYS place in this order:
 <!-- 2. Header strip (middle layer, same x/y as container top) -->
 <div data-pptx-type="shape" data-pptx-shape="rounded_rect" style="...;background-color:#1E293B"></div>
 <!-- 3. Header text (top layer) -->
-<div data-pptx-type="textbox" data-pptx-icon="database" style="...;color:#F1F5F9">Title</div>
+<div data-pptx-type="icon" data-pptx-icon="database" data-pptx-icon-placement="card_lead_left" style="position:absolute;left:52px;top:112px;width:24px;height:24px;color:#F1F5F9"></div>
+<div data-pptx-type="textbox" style="...;left:84px;color:#F1F5F9">Title</div>
 <!-- 4. Body text (top layer, below header) -->
 <div data-pptx-type="textbox" style="...;color:#1E293B">Content</div>
 ```
@@ -199,8 +212,13 @@ When creating nested cards, ALWAYS place in this order:
 ## Element Diversity (CRITICAL — NOT JUST BOXES)
 
 You MUST use a VARIETY of element types. DO NOT make slides with only uniform cards/boxes.
+Use independent data-pptx-type="icon" elements as visual proof anchors, not as text padding hacks.
 
 ### Required element mix per slide (use at least 3 different types):
+- **Independent icons** (data-pptx-type="icon"): semantic anchors, step markers, chart annotations, KPI symbols, callout leads
+  <div data-pptx-type="icon" data-pptx-icon="brain" data-pptx-icon-placement="diagram_node_top" style="position:absolute;left:80px;top:150px;width:32px;height:32px;color:#1E1B4B"></div>
+  <div data-pptx-type="textbox" style="position:absolute;left:120px;top:146px;width:220px;height:44px;color:#1E1B4B">AI 분석 엔진</div>
+  CRITICAL: icon and text must be separate rectangles in HTML, with 8px+ gap.
 - **Textbox cards** (rounded_rect background): Content containers
 - **Tables** (data-pptx-type="table"): For structured data, comparisons, specs
   <div data-pptx-type="table" data-pptx-table-data='{"headers":["Col A","Col B"],"rows":[["1","2"],["3","4"]],"header_fill":"1e293b","row_fill":"ffffff","alt_row_fill":"f1f5f9"}' style="..."></div>
@@ -211,13 +229,15 @@ You MUST use a VARIETY of element types. DO NOT make slides with only uniform ca
   <div data-pptx-type="chart" data-pptx-chart-data='[{"label":"X","value":"42"}]' style="..."></div>
   Use data-pptx-chart-options for OOXML formatting:
   '{"show_legend":false,"legend_position":"none","show_data_labels":true,"data_label_position":"outside_end","axis_font_size":9,"label_font_size":9,"gap_width":50,"grid_lines":"major","colors":["#3B82F6","#10B981"]}'
-- **Icon cards** (data-pptx-icon on LARGE cards): Use icons inside major cards
-  <div data-pptx-type="textbox" data-pptx-icon="database" style="position:absolute;left:40px;top:100px;width:260px;height:120px;font-size:14px;font-weight:700;color:#1E293B;background-color:#F1F5F9;border-radius:8px;padding:16px">데이터 수집 파이프라인</div>
-  CRITICAL: data-pptx-icon belongs on LARGE cards (min 100px tall), NOT tiny labels.
+- **Icon cards**: Use independent icons inside major cards with separate text boxes
+  <div data-pptx-type="icon" data-pptx-icon="database" data-pptx-icon-placement="card_lead_left" style="position:absolute;left:52px;top:112px;width:28px;height:28px;color:#1E293B"></div>
+  <div data-pptx-type="textbox" style="position:absolute;left:92px;top:108px;width:208px;height:38px;font-size:14px;font-weight:700;color:#1E293B">데이터 수집 파이프라인</div>
+  CRITICAL: icon and text are separate rectangles. Never depend on text padding to create the icon area.
   Icon names: database, rocket, brain, chart-line, shield, lightbulb, target, layers, people, trending-up, gear, warning, flash, puzzle, link, refresh, robot
 - **KPI numbers**: Large 28-36px numbers + 10px labels (impact metrics)
 - **Call-out / Insight boxes**: accent background + icon + emphasis text
-  <div data-pptx-type="textbox" data-pptx-icon="lightbulb" style="...;background-color:#ECFDF5;font-weight:600;color:#059669">⚡ 핵심: 자동화로 40% 비용 절감</div>
+  <div data-pptx-type="icon" data-pptx-icon="lightbulb" data-pptx-icon-placement="callout_lead" style="position:absolute;left:52px;top:450px;width:22px;height:22px;color:#059669"></div>
+  <div data-pptx-type="textbox" style="position:absolute;left:84px;top:446px;width:780px;height:34px;background-color:#ECFDF5;font-weight:600;color:#059669">핵심: 자동화로 40% 비용 절감</div>
 - **Separator lines**: rect shapes, height:1-2px, to divide sections visually
 - **Process arrows**: right_arrow shapes between sequential elements
 
@@ -242,8 +262,11 @@ Use data-pptx-shape-options for OOXML shape formatting when needed:
 
 ## Icon Usage (Iconify API — 100+ icons available)
 
-Use data-pptx-icon attribute for rich visual anchors inside cards:
-<div data-pptx-type="textbox" data-pptx-icon="database" ...>Text content</div>
+Use independent icon elements for rich visual anchors:
+<div data-pptx-type="icon" data-pptx-icon="database" data-pptx-icon-placement="diagram_node_left" style="position:absolute;left:60px;top:140px;width:32px;height:32px;color:#1E293B"></div>
+<div data-pptx-type="textbox" style="position:absolute;left:104px;top:136px;width:240px;height:48px;color:#1E293B">Text content</div>
+
+Do not put data-pptx-icon on the textbox. The icon box must be visible in HTML and map 1:1 into PPTX.
 
 Available icons (choose only those that clarify the information):
 - Data/Tech: database, server, cpu, network, api, pipeline, data_flow, code, terminal, chip, robot, brain
@@ -280,7 +303,8 @@ You are a **graphic designer**, not a text document writer. Design each slide UN
   <!-- Card 1: Dark header + light body -->
   <div data-pptx-type="shape" data-pptx-shape="rounded_rect" style="position:absolute;left:40px;top:108px;width:200px;height:260px;background-color:#ECFDF5;border-radius:8px"></div>
   <div data-pptx-type="shape" data-pptx-shape="rounded_rect" style="position:absolute;left:40px;top:108px;width:200px;height:32px;background-color:#064E3B;border-radius:8px 8px 0 0"></div>
-  <div data-pptx-type="textbox" data-pptx-icon="database" style="position:absolute;left:52px;top:112px;width:176px;height:24px;font-size:14px;font-weight:700;font-family:'Pretendard';color:#ECFDF5">Data Engineer</div>
+  <div data-pptx-type="icon" data-pptx-icon="database" data-pptx-icon-placement="card_lead_left" style="position:absolute;left:52px;top:113px;width:22px;height:22px;color:#ECFDF5"></div>
+  <div data-pptx-type="textbox" style="position:absolute;left:84px;top:112px;width:144px;height:24px;font-size:14px;font-weight:700;font-family:'Pretendard';color:#ECFDF5">Data Engineer</div>
   <div data-pptx-type="textbox" style="position:absolute;left:52px;top:148px;width:176px;height:210px;font-size:11px;font-weight:400;font-family:'Pretendard';color:#022C22;line-height:1.5">데이터를 끌어오고 다듬는 구간
 • Data Ingestion·수집·정제
 • Databricks 파이프라인 구축

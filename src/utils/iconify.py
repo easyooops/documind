@@ -6,9 +6,14 @@ Supports 200,000+ icons from Material Design, Phosphor, Tabler, Lucide, etc.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import io
+import sqlite3
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 
@@ -18,6 +23,17 @@ logger = get_logger(__name__)
 
 ICONIFY_API_BASE = "https://api.iconify.design"
 ICON_CACHE_DIR = Path("data/cache/icons")
+ICON_DB_PATH = ICON_CACHE_DIR / "icons.db"
+DEFAULT_ICON_SIZE = 32
+DEFAULT_ICON_COLORS = (
+    "1E293B",
+    "FFFFFF",
+    "0F766E",
+    "10B981",
+    "3B82F6",
+    "F43F5E",
+    "F59E0B",
+)
 
 ICON_SETS = {
     "mdi": "Material Design Icons",
@@ -255,6 +271,33 @@ ICON_NAME_ALIASES = {
 }
 
 
+@dataclass(frozen=True)
+class IconAsset:
+    """Registered HTML/PPTX icon artifact pair."""
+
+    icon_id: str
+    alias: str
+    color: str
+    size: int
+    html_path: Path | None
+    pptx_path: Path | None
+    html_type: str = "svg"
+    pptx_type: str = "png"
+    source: str = "iconify"
+
+
+SAFE_ICON_FALLBACKS = (
+    "lightbulb",
+    "target",
+    "layers",
+    "chart-line",
+    "brain",
+    "rocket",
+    "database",
+    "shield",
+)
+
+
 def normalize_icon_id(icon_name: str) -> str:
     """Normalize planner-friendly aliases into one Iconify identifier."""
     normalized = (icon_name or "").strip().replace("_", "-")
@@ -281,6 +324,177 @@ def _icon_cache_path(icon_id: str, color: str, size: int, extension: str) -> Pat
     suffix = "_png" if extension == "png" else ""
     key = hashlib.md5(f"{icon_id}_{color}_{size}{suffix}".encode()).hexdigest()
     return ICON_CACHE_DIR / f"{key}.{extension}"
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _connect_icon_db() -> sqlite3.Connection:
+    ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(ICON_DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def ensure_icon_registry() -> None:
+    """Create the local icon registry used to map HTML and PPTX assets."""
+    with _connect_icon_db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS icons (
+                icon_id TEXT NOT NULL,
+                alias TEXT NOT NULL,
+                color TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                html_path TEXT,
+                html_type TEXT NOT NULL DEFAULT 'svg',
+                pptx_path TEXT,
+                pptx_type TEXT NOT NULL DEFAULT 'png',
+                source TEXT NOT NULL DEFAULT 'iconify',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (icon_id, color, size)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_icons_alias ON icons(alias)")
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(icons)").fetchall()
+        }
+        if "source" not in columns:
+            conn.execute("ALTER TABLE icons ADD COLUMN source TEXT NOT NULL DEFAULT 'iconify'")
+
+
+def _path_or_none(value: str | None) -> Path | None:
+    if not value:
+        return None
+    path = Path(value)
+    return path if path.exists() else None
+
+
+def _record_to_asset(row: sqlite3.Row | None) -> IconAsset | None:
+    if row is None:
+        return None
+    return IconAsset(
+        icon_id=str(row["icon_id"]),
+        alias=str(row["alias"]),
+        color=str(row["color"]),
+        size=int(row["size"]),
+        html_path=_path_or_none(row["html_path"]),
+        pptx_path=_path_or_none(row["pptx_path"]),
+        html_type=str(row["html_type"]),
+        pptx_type=str(row["pptx_type"]),
+        source=str(row["source"]) if "source" in row.keys() else "iconify",
+    )
+
+
+def _get_registered_icon(icon_name: str, color: str, size: int) -> IconAsset | None:
+    ensure_icon_registry()
+    icon_id = normalize_icon_id(icon_name)
+    color = normalize_icon_color(color)
+    with _connect_icon_db() as conn:
+        row = conn.execute(
+            """
+            SELECT icon_id, alias, color, size, html_path, html_type, pptx_path, pptx_type, source
+            FROM icons
+            WHERE icon_id = ? AND color = ? AND size = ?
+            """,
+            (icon_id, color, size),
+        ).fetchone()
+    asset = _record_to_asset(row)
+    if asset and (asset.html_path or asset.pptx_path):
+        return asset
+    return None
+
+
+def _upsert_icon_record(
+    icon_name: str,
+    color: str,
+    size: int,
+    *,
+    html_path: Path | None,
+    pptx_path: Path | None,
+    html_type: str = "svg",
+    pptx_type: str = "png",
+    source: str = "iconify",
+) -> IconAsset:
+    ensure_icon_registry()
+    icon_id = normalize_icon_id(icon_name)
+    color = normalize_icon_color(color)
+    with _connect_icon_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO icons (
+                icon_id, alias, color, size, html_path, html_type,
+                pptx_path, pptx_type, source, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(icon_id, color, size) DO UPDATE SET
+                alias = excluded.alias,
+                html_path = COALESCE(excluded.html_path, icons.html_path),
+                html_type = excluded.html_type,
+                pptx_path = COALESCE(excluded.pptx_path, icons.pptx_path),
+                pptx_type = excluded.pptx_type,
+                source = excluded.source,
+                updated_at = excluded.updated_at
+            """,
+            (
+                icon_id,
+                icon_name,
+                color,
+                size,
+                str(html_path) if html_path else None,
+                html_type,
+                str(pptx_path) if pptx_path else None,
+                pptx_type,
+                source,
+                _utc_now(),
+            ),
+        )
+    return IconAsset(
+        icon_id=icon_id,
+        alias=icon_name,
+        color=color,
+        size=size,
+        html_path=html_path if html_path and html_path.exists() else None,
+        pptx_path=pptx_path if pptx_path and pptx_path.exists() else None,
+        html_type=html_type,
+        pptx_type=pptx_type,
+        source=source,
+    )
+
+
+def _is_white_icon(color: str) -> bool:
+    color = normalize_icon_color(color)
+    return color.upper() in {"FFFFFF", "F8FAFC", "F9FAFB"}
+
+
+def _transparent_png(png_data: bytes, requested_color: str) -> bytes:
+    """Normalize converted icon PNGs so PPTX never receives a white tile."""
+    if _is_white_icon(requested_color):
+        return png_data
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return png_data
+
+    try:
+        with Image.open(io.BytesIO(png_data)) as image:
+            rgba = image.convert("RGBA")
+            pixels = rgba.load()
+            width, height = rgba.size
+            for y in range(height):
+                for x in range(width):
+                    r, g, b, a = pixels[x, y]
+                    if a and r >= 245 and g >= 245 and b >= 245:
+                        pixels[x, y] = (r, g, b, 0)
+            output = io.BytesIO()
+            rgba.save(output, format="PNG")
+            return output.getvalue()
+    except Exception:
+        return png_data
 
 
 async def fetch_icon_svg(icon_name: str, color: str = "1E293B", size: int = 48) -> Optional[bytes]:
@@ -327,15 +541,17 @@ async def fetch_icon_png(icon_name: str, color: str = "1E293B", size: int = 48) 
     Uses svglib+reportlab (pure Python, cross-platform) for SVG→PNG conversion.
     Falls back to cairosvg if available, then Pillow placeholder.
     """
-    svg_data = await fetch_icon_svg(icon_name, color, size)
-    if not svg_data:
-        return None
-
     icon_id = normalize_icon_id(icon_name)
     color = normalize_icon_color(color)
     png_cache_path = _icon_cache_path(icon_id, color, size, "png")
     if png_cache_path.exists():
-        return png_cache_path.read_bytes()
+        png_data = _transparent_png(png_cache_path.read_bytes(), color)
+        png_cache_path.write_bytes(png_data)
+        return png_data
+
+    svg_data = await fetch_icon_svg(icon_name, color, size)
+    if not svg_data:
+        return None
 
     # Method 1: svglib + reportlab (pure Python, best cross-platform)
     try:
@@ -354,6 +570,7 @@ async def fetch_icon_png(icon_name: str, color: str = "1E293B", size: int = 48) 
             drawing.height = render_size
             drawing.scale(sx, sy)
             png_data = renderPM.drawToString(drawing, fmt="PNG", dpi=72)
+            png_data = _transparent_png(png_data, color)
             ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
             png_cache_path.write_bytes(png_data)
             logger.info("iconify.png_converted", icon=icon_id, method="svglib")
@@ -364,7 +581,13 @@ async def fetch_icon_png(icon_name: str, color: str = "1E293B", size: int = 48) 
     # Method 2: cairosvg
     try:
         import cairosvg
-        png_data = cairosvg.svg2png(bytestring=svg_data, output_width=size, output_height=size)
+        png_data = cairosvg.svg2png(
+            bytestring=svg_data,
+            output_width=size,
+            output_height=size,
+            background_color=None,
+        )
+        png_data = _transparent_png(png_data, color)
         png_cache_path.write_bytes(png_data)
         return png_data
     except (ImportError, Exception):
@@ -374,31 +597,187 @@ async def fetch_icon_png(icon_name: str, color: str = "1E293B", size: int = 48) 
     return None
 
 
+async def ensure_icon_assets(
+    icon_name: str,
+    color: str = "1E293B",
+    size: int = DEFAULT_ICON_SIZE,
+    *,
+    force: bool = False,
+) -> IconAsset:
+    """Ensure both browser-friendly SVG and PPTX-friendly PNG assets exist."""
+    color = normalize_icon_color(color)
+    size = int(size or DEFAULT_ICON_SIZE)
+    if not force:
+        registered = _get_registered_icon(icon_name, color, size)
+        if registered:
+            return registered
+
+    icon_id = normalize_icon_id(icon_name)
+    svg_path = _icon_cache_path(icon_id, color, size, "svg")
+    png_path = _icon_cache_path(icon_id, color, size, "png")
+
+    svg_data = await fetch_icon_svg(icon_name, color=color, size=size)
+    if not svg_data and not svg_path.exists():
+        fallback = get_fallback_icon_path(icon_name, color=color, size=size)
+        return _upsert_icon_record(
+            icon_name,
+            color,
+            size,
+            html_path=fallback,
+            pptx_path=fallback,
+            html_type="png",
+            source="fallback",
+        )
+
+    png_data = await fetch_icon_png(icon_name, color=color, size=size)
+    if not png_data and not png_path.exists():
+        fallback = get_fallback_icon_path(icon_name, color=color, size=size)
+        return _upsert_icon_record(
+            icon_name,
+            color,
+            size,
+            html_path=svg_path if svg_path.exists() else fallback,
+            pptx_path=fallback,
+            html_type="svg" if svg_path.exists() else "png",
+            source="fallback",
+        )
+
+    return _upsert_icon_record(
+        icon_name,
+        color,
+        size,
+        html_path=svg_path if svg_path.exists() else None,
+        pptx_path=png_path if png_path.exists() else None,
+    )
+
+
+async def ensure_safe_icon_assets(
+    icon_name: str,
+    color: str = "1E293B",
+    size: int = DEFAULT_ICON_SIZE,
+) -> tuple[str, IconAsset]:
+    """Resolve an icon to a guaranteed visible Iconify-backed asset.
+
+    If the requested icon is unknown or only produced a generated fallback, a
+    curated safe icon is used instead. This prevents blank/square placeholders
+    from entering HTML or PPTX output.
+    """
+    candidates = [icon_name, *SAFE_ICON_FALLBACKS]
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = (candidate or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        asset = await ensure_icon_assets(normalized, color=color, size=size)
+        if asset.html_path and asset.pptx_path and (
+            asset.source != "fallback" or asset.html_type == "svg"
+        ):
+            return normalized, asset
+
+    fallback_name = SAFE_ICON_FALLBACKS[0]
+    return fallback_name, await ensure_icon_assets(fallback_name, color=color, size=size)
+
+
+async def preload_recommended_icons(
+    *,
+    colors: list[str] | tuple[str, ...] | None = None,
+    size: int = DEFAULT_ICON_SIZE,
+    limit: int | None = None,
+    force: bool = False,
+    concurrency: int = 8,
+) -> dict[str, int]:
+    """Warm the icon registry on server startup.
+
+    The operation is idempotent: registered icons with existing SVG and PNG assets
+    are skipped, so subsequent server starts avoid repeated network calls.
+    """
+    ensure_icon_registry()
+    selected_colors = tuple(normalize_icon_color(color) for color in (colors or DEFAULT_ICON_COLORS))
+    icon_names = list(RECOMMENDED_ICONS.keys())
+    if limit is not None:
+        icon_names = icon_names[: max(0, limit)]
+
+    pairs = [(icon_name, color) for icon_name in icon_names for color in selected_colors]
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    skipped = 0
+    created = 0
+    failed = 0
+
+    async def _ensure(icon_name: str, color: str) -> None:
+        nonlocal skipped, created, failed
+        if not force and _get_registered_icon(icon_name, color, size):
+            skipped += 1
+            return
+        async with semaphore:
+            try:
+                asset = await ensure_icon_assets(icon_name, color=color, size=size, force=force)
+                if asset.pptx_path or asset.html_path:
+                    created += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                failed += 1
+                logger.debug("iconify.preload_failed", icon=icon_name, color=color, error=str(exc)[:100])
+
+    await asyncio.gather(*(_ensure(icon_name, color) for icon_name, color in pairs))
+    logger.info("iconify.preload_complete", total=len(pairs), created=created, skipped=skipped, failed=failed)
+    return {"total": len(pairs), "created": created, "skipped": skipped, "failed": failed}
+
+
+def get_icon_asset_path(
+    icon_name: str,
+    color: str = "1E293B",
+    size: int = DEFAULT_ICON_SIZE,
+    *,
+    target: Literal["html", "pptx"] = "pptx",
+) -> Optional[Path]:
+    """Get a registered icon artifact path for the requested rendering target."""
+    asset = _get_registered_icon(icon_name, color, size)
+    if asset:
+        if target == "html":
+            return asset.html_path or asset.pptx_path
+        return asset.pptx_path or asset.html_path
+
+    icon_id = normalize_icon_id(icon_name)
+    color = normalize_icon_color(color)
+    extension = "svg" if target == "html" else "png"
+    path = _icon_cache_path(icon_id, color, size, extension)
+    if path.exists():
+        return path
+    return None
+
+
 def get_icon_path(icon_name: str, color: str = "1E293B", size: int = 48) -> Optional[Path]:
     """Get cached icon path synchronously (for use in mapper). Returns None if not cached.
 
     Searches for the exact rendered color and size, so preview and PPTX output
     cannot silently disagree about icon styling.
     """
-    icon_id = normalize_icon_id(icon_name)
-    color = normalize_icon_color(color)
-    for extension in ("png", "svg"):
-        path = _icon_cache_path(icon_id, color, size, extension)
-        if path.exists():
-            return path
-    return None
+    return get_icon_asset_path(icon_name, color=color, size=size, target="pptx") or get_icon_asset_path(
+        icon_name, color=color, size=size, target="html"
+    )
+
+
+def get_icon_assets_sync(
+    icon_name: str,
+    color: str = "1E293B",
+    size: int = DEFAULT_ICON_SIZE,
+) -> IconAsset | None:
+    """Return a registered icon asset pair without performing network I/O."""
+    return _get_registered_icon(icon_name, color, size)
 
 
 def get_fallback_icon_path(icon_name: str, color: str = "1E293B", size: int = 32) -> Path | None:
     """Create a simple visible fallback icon when Iconify is unavailable."""
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
     except ImportError:
         return None
 
     icon_id = normalize_icon_id(icon_name)
     color = normalize_icon_color(color)
-    cache_path = _icon_cache_path(f"fallback:{icon_id}", color, size, "png")
+    cache_path = _icon_cache_path(f"fallback-v2:{icon_id}", color, size, "png")
     if cache_path.exists():
         return cache_path
 
@@ -408,27 +787,60 @@ def get_fallback_icon_path(icon_name: str, color: str = "1E293B", size: int = 32
     draw = ImageDraw.Draw(img)
     rgb = tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
     stroke = max(2, image_size // 12)
-    margin = max(4, image_size // 8)
-    draw.rounded_rectangle(
-        [margin, margin, image_size - margin, image_size - margin],
-        radius=max(4, image_size // 6),
-        outline=rgb + (255,),
-        width=stroke,
-    )
-    label = icon_id.split(":", 1)[1][:1].upper()
-    try:
-        font = ImageFont.truetype("arial.ttf", image_size // 2)
-    except OSError:
-        font = ImageFont.load_default()
-    bbox = draw.textbbox((0, 0), label, font=font)
-    draw.text(
-        ((image_size - (bbox[2] - bbox[0])) / 2, (image_size - (bbox[3] - bbox[1])) / 2 - 1),
-        label,
-        fill=rgb + (255,),
-        font=font,
-    )
+    _draw_fallback_symbol(draw, icon_id.split(":", 1)[1], rgb, image_size, stroke)
     img.save(cache_path, format="PNG")
     return cache_path
+
+
+def _draw_fallback_symbol(draw, icon_name: str, rgb: tuple[int, int, int], size: int, stroke: int) -> None:
+    """Draw a transparent, non-boxy semantic fallback symbol."""
+    color = rgb + (255,)
+    m = max(4, size // 7)
+    c = size / 2
+    name = icon_name.replace("_", "-")
+
+    if "target" in name:
+        draw.ellipse([m, m, size - m, size - m], outline=color, width=stroke)
+        draw.ellipse([size * 0.34, size * 0.34, size * 0.66, size * 0.66], outline=color, width=stroke)
+        draw.line([c, m, c, size - m], fill=color, width=max(1, stroke // 2))
+        draw.line([m, c, size - m, c], fill=color, width=max(1, stroke // 2))
+        return
+    if "layer" in name:
+        draw.polygon([(c, m), (size - m, c * 0.85), (c, size * 0.62), (m, c * 0.85)], outline=color)
+        draw.line([m, c * 1.05, c, size * 0.82, size - m, c * 1.05], fill=color, width=stroke)
+        return
+    if "chart" in name or "trend" in name:
+        points = [(m, size - m), (size * 0.38, size * 0.62), (size * 0.58, size * 0.7), (size - m, m)]
+        draw.line(points, fill=color, width=stroke, joint="curve")
+        draw.line([size - m, m, size - m, size * 0.34], fill=color, width=stroke)
+        draw.line([size - m, m, size * 0.66, m], fill=color, width=stroke)
+        return
+    if "database" in name:
+        draw.ellipse([m, m, size - m, size * 0.36], outline=color, width=stroke)
+        draw.line([m, size * 0.18, m, size * 0.76], fill=color, width=stroke)
+        draw.line([size - m, size * 0.18, size - m, size * 0.76], fill=color, width=stroke)
+        draw.ellipse([m, size * 0.58, size - m, size - m], outline=color, width=stroke)
+        return
+    if "shield" in name:
+        draw.polygon([(c, m), (size - m, size * 0.28), (size * 0.76, size * 0.72), (c, size - m), (size * 0.24, size * 0.72), (m, size * 0.28)], outline=color)
+        draw.line([size * 0.34, c, size * 0.46, size * 0.64, size * 0.68, size * 0.38], fill=color, width=stroke)
+        return
+    if "rocket" in name:
+        draw.polygon([(c, m), (size * 0.72, size * 0.56), (c, size - m), (size * 0.28, size * 0.56)], outline=color)
+        draw.ellipse([size * 0.42, size * 0.32, size * 0.58, size * 0.48], outline=color, width=stroke)
+        return
+    if "brain" in name:
+        draw.arc([m, m, c + stroke, c + stroke], 90, 300, fill=color, width=stroke)
+        draw.arc([c - stroke, m, size - m, c + stroke], 240, 90, fill=color, width=stroke)
+        draw.arc([m, c - stroke, c + stroke, size - m], 60, 260, fill=color, width=stroke)
+        draw.arc([c - stroke, c - stroke, size - m, size - m], 280, 120, fill=color, width=stroke)
+        draw.line([c, size * 0.22, c, size * 0.78], fill=color, width=max(1, stroke // 2))
+        return
+
+    draw.line([c, m, c, size * 0.58], fill=color, width=stroke)
+    draw.ellipse([size * 0.32, size * 0.18, size * 0.68, size * 0.54], outline=color, width=stroke)
+    draw.line([size * 0.36, size * 0.78, size * 0.64, size * 0.78], fill=color, width=stroke)
+    draw.line([size * 0.4, size - m, size * 0.6, size - m], fill=color, width=stroke)
 
 
 def get_available_icon_names() -> list[str]:

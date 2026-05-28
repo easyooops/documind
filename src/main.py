@@ -28,6 +28,14 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("database.initialized")
 
+    try:
+        from src.utils.iconify import preload_recommended_icons
+
+        icon_stats = await preload_recommended_icons()
+        logger.info("icons.registry_initialized", **icon_stats)
+    except Exception as exc:
+        logger.warning("icons.registry_init_failed", error=str(exc)[:200])
+
     yield
 
     from src.infrastructure.database import close_db

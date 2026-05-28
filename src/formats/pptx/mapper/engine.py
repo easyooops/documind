@@ -256,6 +256,10 @@ class CSStoOOXMLEngine:
         """Route element to appropriate builder based on pptx_type."""
         pptx_type = element.pptx_type
 
+        if pptx_type == "icon":
+            self._add_icon(slide, element)
+            return
+
         icon_name = element.attributes.get("data-pptx-icon", "")
         if icon_name:
             self._reserve_icon_space_for_element(element)
@@ -1164,29 +1168,34 @@ class CSStoOOXMLEngine:
             return False
 
     def _insert_icon_for_element(self, slide, element: ParsedElement, icon_name: str) -> None:
-        """Insert icon for large cards only. Skip small elements."""
-        pos = element.position
-        card_height = pos.get("height", 0)
-        card_width = pos.get("width", 0)
-
-        # Only insert icons on large cards (min 80px tall, 120px wide)
-        if card_height < 80 or card_width < 120:
+        """Insert icons for large cards or explicit icon slots."""
+        if not self._should_render_icon_for_element(element):
             return
 
         icon_name_clean = icon_name.replace("mdi:", "").replace("_", "-")
         self._try_insert_icon_image(slide, element, icon_name_clean)
 
     def _reserve_icon_space_for_element(self, element: ParsedElement) -> None:
-        """Reserve card text space before creating a textbox with an icon."""
+        """Reserve text space before creating a textbox with an icon."""
         if element.pptx_type not in {"textbox", "shape"} or not element.text_content:
             return
-        pos = element.position
-        card_h = pos.get("height", 0)
-        card_w = pos.get("width", 0)
-        if card_h < 80 or card_w < 120:
+        if not self._should_render_icon_for_element(element):
             return
-        icon_size = min(36, max(24, int(card_h * 0.25)))
-        self._reserve_icon_text_space(element, icon_size, 12)
+        icon_size = self._icon_size_for_element(element)
+        icon_layout = self._icon_layout_for_element(element)
+        self._reserve_icon_text_space(element, icon_size, 12, icon_layout)
+
+    def _should_render_icon_for_element(self, element: ParsedElement) -> bool:
+        pos = element.position
+        width = pos.get("width", 0)
+        height = pos.get("height", 0)
+        has_explicit_slot = bool(
+            element.attributes.get("data-pptx-icon-layout")
+            or element.attributes.get("data-pptx-icon-size")
+        )
+        if has_explicit_slot:
+            return width >= 24 and height >= 18
+        return width >= 120 and height >= 80
 
     def _try_insert_icon_image(self, slide, element: ParsedElement, icon_name: str) -> bool:
         """Insert a large, prominent icon in the top-left area of a card."""
@@ -1195,31 +1204,27 @@ class CSStoOOXMLEngine:
         try:
             from src.utils.iconify import (
                 get_fallback_icon_path,
-                get_icon_path,
+                get_icon_asset_path,
                 normalize_icon_color,
             )
 
             icon_color = normalize_icon_color(
                 self._extract_color(element.styles.get("color", "")) or "1E293B"
             )
-            icon_path = get_icon_path(icon_name, color=icon_color, size=32)
+            icon_path = get_icon_asset_path(icon_name, color=icon_color, size=32, target="pptx")
             if not icon_path or not icon_path.exists():
                 icon_path = get_fallback_icon_path(icon_name, color=icon_color, size=32)
             if not icon_path or not icon_path.exists():
                 logger.debug("icon_insert.not_available", icon=icon_name, color=icon_color)
                 return False
 
-            pos = element.position
-            card_h = pos.get("height", 0)
 
             # Icon size proportional to card — large and prominent
-            icon_size = min(36, max(24, int(card_h * 0.25)))
+            icon_size = self._icon_size_for_element(element)
             icon_emu = int(icon_size * PX_TO_EMU)
 
             # Position: top-left corner of the card with padding
-            pad = 12
-            ix = int((pos["left"] + pad) * PX_TO_EMU)
-            iy = int((pos["top"] + pad) * PX_TO_EMU)
+            ix, iy = self._icon_position_for_element(element, icon_size, pad=12)
 
             if str(icon_path).endswith(".png"):
                 slide.shapes.add_picture(
@@ -1241,14 +1246,124 @@ class CSStoOOXMLEngine:
             logger.warning("icon_insert.failed", icon=icon_name, error=str(e)[:100])
             return False
 
-    def _reserve_icon_text_space(self, element: ParsedElement, icon_size: int, pad: int) -> None:
+    def _icon_layout_for_element(self, element: ParsedElement) -> str:
+        layout = str(element.attributes.get("data-pptx-icon-layout", "top-left")).strip()
+        allowed = {"top-left", "inline-left", "badge-top-right", "metric-left"}
+        layout = layout if layout in allowed else "top-left"
+        if layout == "top-left" and element.position.get("height", 0) < 64:
+            return "inline-left"
+        return layout
+
+    def _icon_size_for_element(self, element: ParsedElement) -> int:
+        raw_size = element.attributes.get("data-pptx-icon-size")
+        try:
+            requested = int(str(raw_size)) if raw_size else 0
+        except ValueError:
+            requested = 0
+        height = element.position.get("height", 0)
+        if requested:
+            return min(44, max(16, requested))
+        if height < 64:
+            return min(28, max(16, int(height * 0.75)))
+        return min(44, max(24, int(height * 0.25)))
+
+    def _icon_position_for_element(
+        self,
+        element: ParsedElement,
+        icon_size: int,
+        *,
+        pad: int,
+    ) -> tuple[int, int]:
+        pos = element.position
+        layout = self._icon_layout_for_element(element)
+        left = pos["left"] + pad
+        top = pos["top"] + pad
+        if layout in {"inline-left", "metric-left"}:
+            left = pos["left"] + min(8, max(2, pad // 2))
+            top = pos["top"] + (pos.get("height", icon_size) - icon_size) / 2
+        elif layout == "badge-top-right":
+            left = pos["left"] + pos.get("width", icon_size) - pad - icon_size
+        return int(left * PX_TO_EMU), int(top * PX_TO_EMU)
+
+    def _reserve_icon_text_space(
+        self,
+        element: ParsedElement,
+        icon_size: int,
+        pad: int,
+        layout: str,
+    ) -> None:
         """Keep the card geometry stable while reserving room for its icon."""
+        if layout in {"inline-left", "metric-left"}:
+            current_padding = self._extract_px_value(
+                element.styles.get("padding-left", "") or element.styles.get("padding", "")
+            )
+            required_padding = min(8, max(2, pad // 2)) + icon_size + 8
+            if current_padding < required_padding:
+                element.styles["padding-left"] = f"{required_padding}px"
+            return
+        if layout == "badge-top-right":
+            return
         current_padding = self._extract_px_value(
             element.styles.get("padding-top", "") or element.styles.get("padding", "")
         )
         required_padding = pad + icon_size + 8
         if current_padding < required_padding:
             element.styles["padding-top"] = f"{required_padding}px"
+
+    def _add_icon(self, slide, element: ParsedElement) -> bool:
+        """Add an independent icon element using the HTML element box exactly."""
+        from pptx.util import Emu
+
+        icon_name = element.attributes.get("data-pptx-icon", "")
+        if not icon_name:
+            return False
+
+        try:
+            from src.utils.iconify import (
+                get_fallback_icon_path,
+                get_icon_asset_path,
+                normalize_icon_color,
+            )
+
+            icon_color = normalize_icon_color(
+                element.attributes.get("data-pptx-icon-color")
+                or self._extract_color(element.styles.get("color", ""))
+                or self._extract_color(element.styles.get("background-color", ""))
+                or "1E293B"
+            )
+            icon_path = get_icon_asset_path(icon_name, color=icon_color, size=32, target="pptx")
+            if not icon_path or not icon_path.exists():
+                icon_path = get_fallback_icon_path(icon_name, color=icon_color, size=32)
+            if not icon_path or not icon_path.exists():
+                logger.debug("icon_element.not_available", icon=icon_name, color=icon_color)
+                return False
+
+            pos = element.position
+            x = int(pos["left"] * PX_TO_EMU)
+            y = int(pos["top"] * PX_TO_EMU)
+            w = int(max(1, pos.get("width", 32)) * PX_TO_EMU)
+            h = int(max(1, pos.get("height", 32)) * PX_TO_EMU)
+
+            if str(icon_path).endswith(".png"):
+                slide.shapes.add_picture(str(icon_path), Emu(x), Emu(y), Emu(w), Emu(h))
+            else:
+                png_data = self._svg_to_png(icon_path)
+                if not png_data:
+                    return False
+                slide.shapes.add_picture(io.BytesIO(png_data), Emu(x), Emu(y), Emu(w), Emu(h))
+
+            logger.info(
+                "icon_element.success",
+                icon=icon_name,
+                x=pos["left"],
+                y=pos["top"],
+                w=pos.get("width", 32),
+                h=pos.get("height", 32),
+            )
+            return True
+        except Exception as e:
+            logger.warning("icon_element.failed", icon=icon_name, error=str(e)[:100])
+            return False
 
     def _svg_to_png(self, svg_path) -> bytes | None:
         """Convert SVG file to PNG bytes using svglib+reportlab."""

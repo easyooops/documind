@@ -1,0 +1,49 @@
+{
+  "version": "1.0.0",
+  "principles": [
+    "Icons are semantic visual anchors, not inline text decoration.",
+    "Prefer a separate data-pptx-type=\"icon\" element with its own absolute box.",
+    "Do not place data-pptx-icon on textboxes except for legacy compatibility.",
+    "Text and icon regions must be separate rectangles with at least 8px clear gap.",
+    "HTML preview is the source of truth; PPTX must map the same icon element geometry."
+  ],
+  "defaults": {
+    "size_px": 28,
+    "min_gap_px": 8,
+    "max_icons_per_slide": 12,
+    "recommended_icons_per_slide": {
+      "min": 3,
+      "max": 8
+    }
+  },
+  "placements": [
+    {"id": "card_lead_left", "role": "card", "size_px": 28, "description": "Icon occupies a fixed left gutter; title/body starts to the right."},
+    {"id": "card_lead_top", "role": "card", "size_px": 32, "description": "Icon sits in its own top-left icon row; title begins below or to the right."},
+    {"id": "card_badge_corner", "role": "card", "size_px": 24, "description": "Small semantic badge in the top-right corner, separate from copy."},
+    {"id": "metric_symbol_left", "role": "metric", "size_px": 30, "description": "Metric card uses an icon column at left and value column at right."},
+    {"id": "metric_symbol_top", "role": "metric", "size_px": 34, "description": "Icon marks the metric theme above the number without sharing the text box."},
+    {"id": "hero_symbol", "role": "cover", "size_px": 56, "description": "Large low-density symbol supporting the cover thesis."},
+    {"id": "hero_watermark", "role": "cover", "size_px": 96, "description": "Low-opacity background symbol; never overlaps title readability."},
+    {"id": "section_marker", "role": "navigation", "size_px": 22, "description": "Small marker paired with section kicker in a dedicated box."},
+    {"id": "timeline_node", "role": "timeline", "size_px": 26, "description": "Icon is the node marker on a timeline, label sits in a separate card."},
+    {"id": "process_step_header", "role": "process", "size_px": 28, "description": "Each process step reserves a header icon cell."},
+    {"id": "process_step_circle", "role": "process", "size_px": 30, "description": "Icon inside an independent circular step marker."},
+    {"id": "flow_connector_marker", "role": "flow", "size_px": 22, "description": "Icon marks a connector transition or gate; copy remains in adjacent boxes."},
+    {"id": "callout_lead", "role": "callout", "size_px": 24, "description": "Insight/caution callout reserves a left icon lane."},
+    {"id": "callout_badge", "role": "callout", "size_px": 26, "description": "Badge icon sits outside the callout text block but inside the callout container."},
+    {"id": "diagram_node_top", "role": "diagram", "size_px": 30, "description": "Diagram node uses icon above label as two stacked boxes."},
+    {"id": "diagram_node_left", "role": "diagram", "size_px": 26, "description": "Diagram node uses icon cell and label cell side by side."},
+    {"id": "comparison_entity_marker", "role": "comparison", "size_px": 30, "description": "Each compared entity gets a consistent icon marker box."},
+    {"id": "evidence_source_marker", "role": "evidence", "size_px": 22, "description": "Small icon tags a proof source or case evidence row."},
+    {"id": "risk_marker", "role": "risk", "size_px": 30, "description": "Risk/warning icon sits in a reserved alert zone."},
+    {"id": "opportunity_marker", "role": "opportunity", "size_px": 30, "description": "Opportunity/growth icon sits in a reserved opportunity zone."},
+    {"id": "table_header_icon", "role": "table", "size_px": 20, "description": "Optional icon in a table header rail, not inside table cells."},
+    {"id": "chart_annotation_icon", "role": "chart", "size_px": 20, "description": "Icon marks a chart annotation callout with a separate label."},
+    {"id": "sidebar_nav_icon", "role": "navigation", "size_px": 22, "description": "Sidebar navigation/icon rail separate from main copy."},
+    {"id": "empty_space_anchor", "role": "composition", "size_px": 40, "description": "Large semantic anchor in whitespace, used sparingly to balance composition."}
+  ],
+  "html_contract": {
+    "preferred": "<div data-pptx-type=\"icon\" data-pptx-icon=\"brain\" data-pptx-icon-placement=\"diagram_node_top\" style=\"position:absolute;left:80px;top:150px;width:32px;height:32px;color:#1E1B4B\"></div>",
+    "paired_text": "<div data-pptx-type=\"textbox\" style=\"position:absolute;left:120px;top:146px;width:220px;height:44px\">Separate text box</div>"
+  }
+}

@@ -207,7 +207,7 @@ def _extract_text_content(node, pptx_type: str) -> str:
     For textbox elements, gets the direct text.
     For other types, skips nested data-pptx elements.
     """
-    if pptx_type in ("table", "chart", "image", "connector"):
+    if pptx_type in ("table", "chart", "image", "connector", "icon"):
         return ""
 
     texts = []
@@ -240,7 +240,7 @@ def _extract_text_runs(node, pptx_type: str) -> list[dict]:
 
     Returns a list of dicts: [{"text": str, "bold": bool, "italic": bool, "color": str, "size": str}]
     """
-    if pptx_type in ("table", "chart", "image", "connector"):
+    if pptx_type in ("table", "chart", "image", "connector", "icon"):
         return []
 
     runs = []

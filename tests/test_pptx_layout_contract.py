@@ -5,6 +5,11 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from src.formats.pptx.agents.nodes.html_generator import _inject_fixed_template
+from src.formats.pptx.agents.nodes.html_generator import _materialize_html_icon_node
+from src.formats.pptx.agents.nodes.render_convert import (
+    _embed_cached_icons,
+    _normalize_legacy_icon_nodes,
+)
 from src.formats.pptx.agents.nodes.unified_planner import _normalize_blueprints
 from src.formats.pptx.mapper.engine import CSStoOOXMLEngine
 from src.formats.pptx.mapper.html_parser import ParsedElement, parse_slide_html
@@ -17,6 +22,8 @@ def test_standard_layout_catalog_exposes_master_zones_and_body_patterns() -> Non
 
     assert len(ruleset.layout_zones["header_zones"]) >= 20
     assert len(ruleset.layout_zones["footer_zones"]) >= 20
+    assert len(ruleset.icon_layouts["placements"]) >= 20
+    assert "data-pptx-type=\"icon\"" in ruleset.get_icon_layout_rules()
     assert (
         ruleset.layout_patterns["total_patterns"] >= 100
         and ruleset.layout_patterns["total_patterns"] <= 300
@@ -79,7 +86,7 @@ def test_fixed_template_uses_selected_master_zone_positions() -> None:
 def test_icon_is_layered_above_card_without_moving_card(tmp_path: Path, monkeypatch) -> None:
     icon_path = tmp_path / "icon.png"
     Image.new("RGBA", (32, 32), (12, 34, 56, 255)).save(icon_path)
-    monkeypatch.setattr("src.utils.iconify.get_icon_path", lambda *args, **kwargs: icon_path)
+    monkeypatch.setattr("src.utils.iconify.get_icon_asset_path", lambda *args, **kwargs: icon_path)
 
     element = ParsedElement(
         pptx_type="textbox",
@@ -104,6 +111,134 @@ def test_icon_is_layered_above_card_without_moving_card(tmp_path: Path, monkeypa
     assert element.styles["padding-top"] == "50px"
     assert slide.shapes[0].shape_type != MSO_SHAPE_TYPE.PICTURE
     assert slide.shapes[1].shape_type == MSO_SHAPE_TYPE.PICTURE
+
+
+def test_explicit_icon_slot_renders_on_compact_heading(tmp_path: Path, monkeypatch) -> None:
+    icon_path = tmp_path / "icon.png"
+    Image.new("RGBA", (32, 32), (12, 34, 56, 255)).save(icon_path)
+    monkeypatch.setattr("src.utils.iconify.get_icon_asset_path", lambda *args, **kwargs: icon_path)
+
+    element = ParsedElement(
+        pptx_type="textbox",
+        pptx_shape=None,
+        position={"left": 40, "top": 100, "width": 220, "height": 24},
+        styles={"color": "#112233", "font-size": "14px"},
+        text_content="Compact heading",
+        children=[],
+        attributes={
+            "data-pptx-icon": "database",
+            "data-pptx-icon-layout": "inline-left",
+            "data-pptx-icon-size": "20",
+        },
+    )
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+
+    CSStoOOXMLEngine()._add_element(slide, element)
+
+    assert element.styles["padding-left"] == "34px"
+    assert slide.shapes[0].shape_type != MSO_SHAPE_TYPE.PICTURE
+    assert slide.shapes[1].shape_type == MSO_SHAPE_TYPE.PICTURE
+
+
+def test_html_preview_embeds_icons_for_explicit_compact_slots(monkeypatch, tmp_path: Path) -> None:
+    icon_path = tmp_path / "icon.svg"
+    icon_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">'
+        '<path fill="#112233" d="M4 4h24v24H4z"/></svg>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("src.utils.iconify.get_icon_asset_path", lambda *args, **kwargs: icon_path)
+
+    html = (
+        '<div data-slide="1">'
+        '<div data-pptx-type="textbox" data-pptx-icon="database" '
+        'data-pptx-icon-layout="inline-left" data-pptx-icon-size="20" '
+        'style="position:absolute;left:40px;top:100px;width:220px;height:24px;'
+        'color:#112233;font-size:14px">Compact heading</div></div>'
+    )
+
+    output = _embed_cached_icons(html)
+
+    assert "data:image/svg+xml;base64" in output
+    assert "width:20px;height:20px" in output
+    assert "padding-left:34px" in output
+
+
+def test_independent_icon_element_maps_to_html_and_pptx(tmp_path: Path, monkeypatch) -> None:
+    png_path = tmp_path / "icon.png"
+    svg_path = tmp_path / "icon.svg"
+    Image.new("RGBA", (32, 32), (12, 34, 56, 255)).save(png_path)
+    svg_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">'
+        '<path fill="#112233" d="M4 4h24v24H4z"/></svg>',
+        encoding="utf-8",
+    )
+
+    def fake_asset(*args, **kwargs):
+        return svg_path if kwargs.get("target") == "html" else png_path
+
+    monkeypatch.setattr("src.utils.iconify.get_icon_asset_path", fake_asset)
+    html = (
+        '<div data-slide="1">'
+        '<div data-pptx-type="icon" data-pptx-icon="brain" '
+        'data-pptx-icon-placement="diagram_node_top" '
+        'style="position:absolute;left:40px;top:100px;width:32px;height:32px;'
+        'color:#112233"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:84px;top:96px;'
+        'width:220px;height:44px;color:#112233">AI Engine</div></div>'
+    )
+
+    preview = _embed_cached_icons(html)
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    for element in parse_slide_html(html):
+        CSStoOOXMLEngine()._add_element(slide, element)
+
+    assert "data:image/svg+xml;base64" in preview
+    assert "left:40px;top:100px;width:32px;height:32px" in preview
+    assert slide.shapes[0].shape_type == MSO_SHAPE_TYPE.PICTURE
+    assert slide.shapes[1].shape_type != MSO_SHAPE_TYPE.PICTURE
+
+
+def test_generated_html_icon_node_is_materialized_with_data_image(tmp_path: Path) -> None:
+    from bs4 import BeautifulSoup
+
+    icon_path = tmp_path / "icon.svg"
+    icon_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">'
+        '<path fill="#112233" d="M4 4h24v24H4z"/></svg>',
+        encoding="utf-8",
+    )
+    soup = BeautifulSoup(
+        '<div data-pptx-type="icon" data-pptx-icon="brain" '
+        'style="position:absolute;left:40px;top:100px;width:32px;height:32px;'
+        'background-color:#A855F7;color:#112233"></div>',
+        "html.parser",
+    )
+
+    _materialize_html_icon_node(soup.div, icon_path)
+
+    style = soup.div["style"]
+    assert "background-image:url(data:image/svg+xml;base64," in style
+    assert "background-color:transparent" in style
+    assert "background-color:#A855F7" not in style
+
+
+def test_legacy_textbox_icon_is_normalized_to_separate_icon_area() -> None:
+    html = (
+        '<div data-slide="1">'
+        '<div data-pptx-type="textbox" data-pptx-icon="brain" '
+        'style="position:absolute;left:40px;top:100px;width:220px;height:32px;'
+        'color:#112233;font-size:14px">AI Engine</div></div>'
+    )
+
+    output = _normalize_legacy_icon_nodes(html)
+
+    assert 'data-pptx-type="icon"' in output
+    assert 'data-pptx-icon-placement="card_lead_left"' in output
+    assert output.count('data-pptx-icon="brain"') == 1
+    assert "left:74px" in output
 
 
 def test_parser_recovers_flattened_bullet_line_breaks() -> None:
@@ -171,3 +306,6 @@ def test_fallback_icon_is_created_when_iconify_cache_is_missing() -> None:
 
     assert path is not None
     assert path.exists()
+    with Image.open(path) as image:
+        assert image.mode == "RGBA"
+        assert image.getpixel((0, 0))[3] == 0

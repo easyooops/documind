@@ -92,6 +92,10 @@ class RuleSet:
     def layout_zones(self) -> dict:
         return self._presets.get("layout_zones", {})
 
+    @property
+    def icon_layouts(self) -> dict:
+        return self._presets.get("icon_layouts", {})
+
     def get_slide_preset(self, slide_type: str) -> dict:
         """Get layout preset for a specific slide type."""
         return self._presets.get(f"slide_types/{slide_type}", {})
@@ -256,6 +260,28 @@ class RuleSet:
             "Plan only elements convertible by the deterministic mapper: textbox, shape, table, chart, image, connector, and icon.",
             "Do not plan flex/grid CSS, animations, unsupported SVG ornaments, arbitrary HTML widgets, or unverified brand marks.",
             "Every planned proof object must be representable later through data-pptx-* attributes and absolute pixel geometry.",
+            "",
+            self.get_icon_layout_rules(),
+        ])
+
+    def get_icon_layout_rules(self) -> str:
+        """Describe the standard icon placement contract for planner/generator prompts."""
+        catalog = self.icon_layouts
+        placements = catalog.get("placements", [])
+        placement_lines = [
+            f"  {item.get('id')}: {item.get('description')}"
+            for item in placements
+        ]
+        defaults = catalog.get("defaults", {})
+        return "\n".join([
+            "## Icon Layout Contract (MANDATORY)",
+            "Icons are independent semantic elements. Prefer data-pptx-type=\"icon\" with its own absolute rectangle.",
+            "Do not attach data-pptx-icon to textboxes unless preserving legacy HTML; create a separate icon element and a separate text element.",
+            "The HTML icon rectangle is the source of truth for PPTX conversion: same left/top/width/height/color.",
+            f"Recommended icons/slide: {defaults.get('recommended_icons_per_slide', {}).get('min', 3)}-{defaults.get('recommended_icons_per_slide', {}).get('max', 8)}; max {defaults.get('max_icons_per_slide', 12)}.",
+            f"Minimum clear gap between icon and text regions: {defaults.get('min_gap_px', 8)}px.",
+            "Standard icon placement IDs:",
+            *placement_lines,
         ])
 
     def get_generator_prompt_rules(self) -> str:
@@ -298,6 +324,8 @@ class RuleSet:
             f"Whitespace target: {layout.get('balance', {}).get('whitespace_target_ratio', {}).get('min', 0.25)}-{layout.get('balance', {}).get('whitespace_target_ratio', {}).get('max', 0.45)}",
             f"Max elements/slide: {layout.get('element_count', {}).get('max_per_slide', 20)}",
             "Content overlap: FORBIDDEN",
+            "",
+            self.get_icon_layout_rules(),
         ])
 
         return "\n".join(parts)

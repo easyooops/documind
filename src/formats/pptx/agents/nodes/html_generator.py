@@ -7,7 +7,9 @@ and includes data attributes that enable deterministic OOXML conversion.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -910,32 +912,66 @@ def _as_dict(value: object) -> dict:
 
 
 async def _prefetch_icons(slides_html: list[dict], design_system: dict) -> None:
-    """Pre-download all icons used in slides from Iconify API and convert to PNG."""
-    import re
+    """Pre-download, validate, and materialize all icons used in slides."""
 
     from bs4 import BeautifulSoup
 
-    from src.utils.iconify import fetch_icon_png, normalize_icon_color
+    from src.formats.pptx.agents.nodes.render_convert import _normalize_legacy_icon_nodes
+    from src.utils.iconify import ensure_safe_icon_assets, normalize_icon_color
 
     fallback_color = normalize_icon_color("#1E293B")
-    icons_to_fetch: set[tuple[str, str]] = set()
+    materialized_count = 0
+    resolved_count = 0
     for slide in slides_html:
+        slide["html"] = _normalize_legacy_icon_nodes(str(slide.get("html", "")))
         soup = BeautifulSoup(slide.get("html", ""), "html.parser")
         for node in soup.find_all(attrs={"data-pptx-icon": True}):
             style = str(node.attrs.get("style", ""))
             color_match = re.search(r"(?:^|;)\s*color\s*:\s*(#[0-9a-fA-F]{3,8})", style)
             color = normalize_icon_color(color_match.group(1) if color_match else fallback_color)
-            icons_to_fetch.add((str(node.attrs["data-pptx-icon"]), color))
+            requested_icon = str(node.attrs["data-pptx-icon"])
+            safe_icon, asset = await ensure_safe_icon_assets(requested_icon, color=color, size=32)
+            if safe_icon != requested_icon:
+                resolved_count += 1
+                node.attrs["data-pptx-icon"] = safe_icon
+            if str(node.attrs.get("data-pptx-type", "")) == "icon" and asset.html_path:
+                _materialize_html_icon_node(node, asset.html_path)
+                materialized_count += 1
+        slide["html"] = str(soup)
 
-    if not icons_to_fetch:
+    logger.info(
+        "iconify.prefetch_complete",
+        materialized=materialized_count,
+        resolved=resolved_count,
+    )
+
+
+def _materialize_html_icon_node(node, icon_path) -> None:
+    """Make standalone icon elements visible in raw HTML before conversion."""
+    path = icon_path
+    if not path or not path.exists():
         return
+    mime_type = "image/png" if path.suffix.lower() == ".png" else "image/svg+xml"
+    data_uri = base64.b64encode(path.read_bytes()).decode("ascii")
+    style = str(node.attrs.get("style", ""))
+    style = _remove_style_properties(style, {"background", "background-color"})
+    node.attrs["style"] = (
+        f"{style};background-color:transparent;"
+        f"background-image:url(data:{mime_type};base64,{data_uri});"
+        "background-size:contain;background-repeat:no-repeat;background-position:center"
+    )
 
-    tasks = []
-    for icon_name, color in icons_to_fetch:
-        tasks.append(fetch_icon_png(icon_name, color=color, size=32))
 
-    await asyncio.gather(*tasks, return_exceptions=True)
-    logger.info("iconify.prefetch_complete", count=len(icons_to_fetch))
+def _remove_style_properties(style: str, property_names: set[str]) -> str:
+    declarations = []
+    for declaration in style.split(";"):
+        if ":" not in declaration:
+            continue
+        name, _, value = declaration.partition(":")
+        if name.strip().lower() in property_names:
+            continue
+        declarations.append(f"{name.strip()}:{value.strip()}")
+    return ";".join(declarations)
 
 
 async def _generate_slide_images(slides_html: list[dict]) -> None:

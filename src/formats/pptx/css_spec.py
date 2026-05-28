@@ -172,8 +172,23 @@ DATA_ATTRIBUTES = {
         "required": False,
     },
     "data-pptx-icon": {
-        "description": "Semantic Iconify icon name placed in a sufficiently large element",
+        "description": "Semantic Iconify icon name. Prefer on data-pptx-type='icon' elements.",
         "values": "approved_icon_name",
+        "required": False,
+    },
+    "data-pptx-icon-placement": {
+        "description": "Standard icon placement rule ID from icon_layouts.json",
+        "values": "icon_placement_id",
+        "required": False,
+    },
+    "data-pptx-icon-layout": {
+        "description": "Reserved icon slot inside the element",
+        "values": ["top-left", "inline-left", "badge-top-right", "metric-left"],
+        "required": False,
+    },
+    "data-pptx-icon-size": {
+        "description": "Icon slot size in pixels, normally 24-44",
+        "values": "integer_px",
         "required": False,
     },
     "data-pptx-shape-options": {
@@ -308,6 +323,6 @@ All positioning: position:absolute with px values ONLY
 4. No nested absolute positioning deeper than 2 levels
 5. Table/chart data goes in data-pptx-table-data / data-pptx-chart-data as JSON
 6. Stacking order via data-pptx-z attribute (integer), NOT z-index CSS
-7. Icons use data-pptx-icon on a large semantic container; they are resolved to cached assets before conversion
+7. Icons should be independent data-pptx-type="icon" elements with data-pptx-icon and data-pptx-icon-placement; HTML geometry maps 1:1 to PPTX
 8. OOXML object formatting goes in data-pptx-chart-options, data-pptx-table-options, or data-pptx-shape-options
 9. Use premium fonts: Pretendard, Noto Sans KR, Inter, Aptos, Segoe UI"""
