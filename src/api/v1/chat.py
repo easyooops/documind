@@ -691,6 +691,7 @@ async def stream_generation(
 
     async def event_generator():
         from src.engine import _get_format_pipeline
+        from src.agents.research_intent import analyze_research_intent
         from src.infrastructure.database import get_session_factory
         from src.schemas.agents import DocuMindState
         from src.utils.language import detect_output_language
@@ -806,6 +807,13 @@ async def stream_generation(
                 }),
             }
 
+        research_intent = await analyze_research_intent(request.query)
+        logger.info(
+            "chat.research_intent",
+            needs_research=research_intent.needs_research,
+            intent=research_intent.intent_label,
+            reason=research_intent.reason,
+        )
         initial_state: DocuMindState = {
             "user_query": request.query,
             "session_id": session_id,
@@ -814,7 +822,7 @@ async def stream_generation(
             "document_format": request.format,
             "locale": str(request_options.get("locale", "ko")),
             "output_language": detect_output_language(request.query),
-            "needs_research": True,
+            "needs_research": research_intent.needs_research,
             "template_provided": document.template_id is not None,
             "current_phase": "planning",
             "errors": [],

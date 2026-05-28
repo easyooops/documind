@@ -125,7 +125,7 @@ class DocuMind:
         query: str,
         format: str = "pptx",
         template_id: str | None = None,
-        needs_research: bool = True,
+        needs_research: bool | None = None,
         **options: Any,
     ) -> GenerationResult:
         """Generate a document from a natural language query.
@@ -134,7 +134,7 @@ class DocuMind:
             query: Natural language description of the document to create.
             format: Output format (pptx|docx|pdf|md|xlsx|hwp).
             template_id: Optional template ID for design reference.
-            needs_research: Whether to run web research first.
+            needs_research: Whether to run web research first. If None, infer from query intent.
             **options: Additional pipeline options.
 
         Returns:
@@ -144,6 +144,13 @@ class DocuMind:
 
         from src.schemas.agents import DocuMindState
         from src.utils.language import detect_output_language
+        from src.agents.research_intent import analyze_research_intent
+
+        inferred_needs_research = (
+            (await analyze_research_intent(query)).needs_research
+            if needs_research is None
+            else needs_research
+        )
 
         initial_state: DocuMindState = {
             "user_query": query,
@@ -153,7 +160,7 @@ class DocuMind:
             "document_format": format,
             "locale": options.get("locale", "ko"),
             "output_language": detect_output_language(query),
-            "needs_research": needs_research,
+            "needs_research": inferred_needs_research,
             "template_provided": template_id is not None,
             "current_phase": "planning",
             "errors": [],
@@ -183,7 +190,7 @@ async def generate_document(
     query: str,
     format: str = "pptx",
     template_id: str | None = None,
-    needs_research: bool = True,
+    needs_research: bool | None = None,
     **config: Any,
 ) -> GenerationResult:
     """Convenience function for one-shot document generation.
@@ -202,7 +209,7 @@ async def generate_document(
         query: Natural language description of the document.
             format: Output format (pptx|docx|pdf|md|xlsx|hwp).
         template_id: Optional template for design reference.
-        needs_research: Whether to gather external data first.
+        needs_research: Whether to gather external data first. If None, infer from query intent.
         **config: Any DocuMind/Settings config overrides.
 
     Returns:

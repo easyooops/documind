@@ -374,11 +374,34 @@ def has_planned_content(value: object) -> bool:
     return bool(summary.strip() or sections)
 
 
+def is_content_removal_request(query: str) -> bool:
+    """Detect explicit user intent to remove/prune existing document content."""
+    lowered = str(query or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "불필요",
+            "삭제",
+            "제거",
+            "빼줘",
+            "빼고",
+            "지워",
+            "remove",
+            "delete",
+            "omit",
+            "exclude",
+            "trim",
+            "prune",
+        )
+    )
+
+
 def merge_revision_spec(
     base_spec: dict,
     revised_spec: dict,
     *,
     allow_new_sections: bool = True,
+    prune_missing_sections: bool = False,
 ) -> dict:
     """Keep a prior document intact while applying explicitly planned revised sections."""
     if not base_spec:
@@ -390,8 +413,18 @@ def merge_revision_spec(
     if revised_spec.get("executive_summary"):
         result["executive_summary"] = revised_spec["executive_summary"]
     result["metadata"] = _merge_metadata(result.get("metadata", []), revised_spec.get("metadata", []))
+    revised_sections = deepcopy(revised_spec.get("sections", []))
+    if prune_missing_sections and revised_sections:
+        result["sections"] = [
+            {**section, "index": index}
+            for index, section in enumerate(revised_sections, 1)
+        ]
+        if revised_spec.get("sources"):
+            result["sources"] = revised_spec["sources"]
+        return result
+
     sections = deepcopy(result.get("sections", []))
-    for revised in revised_spec.get("sections", []):
+    for revised in revised_sections:
         revised_key = _match_key(revised.get("title", ""))
         revised_ordinal = _section_ordinal(revised.get("title", ""))
         matched = next(

@@ -12,6 +12,7 @@ from langgraph.graph import END, StateGraph
 
 from src.agents.loader import get_llm_for_agent
 from src.agents.nodes.research import research_agent
+from src.agents.research_intent import analyze_research_intent
 from src.core.config import settings
 from src.core.logging import get_logger
 from src.infrastructure.web_search import search_web
@@ -24,6 +25,7 @@ from .spec import (
     as_list,
     has_planned_content,
     infer_document_intent,
+    is_content_removal_request,
     merge_revision_spec,
     normalize_design_system,
     normalize_document_intent,
@@ -139,28 +141,37 @@ def build_native_document_pipeline(format_id: str, renderer_class: type, ruleset
                 "current_phase": "designing",
             }
         if not state.get("_template_bytes"):
-            search_queries = document_intent.get("template_search_queries", [])
-            if not search_queries:
-                search_queries = [
-                    ruleset["template_search_query"].format(topic=state.get("user_query", "")[:80])
-                ]
-            seen_urls: set[str] = set()
-            for query in search_queries[:3]:
-                try:
-                    for result in await search_web(str(query), max_results=3):
-                        url = str(result.get("url", ""))
-                        if url and url not in seen_urls:
-                            seen_urls.add(url)
-                            references.append(result)
-                except Exception as exc:
-                    logger.warning(
-                        "native_template_reference.failed",
-                        format=format_id,
-                        query=str(query)[:80],
-                        error=str(exc)[:120],
-                    )
-                if len(references) >= 6:
-                    break
+            search_intent = await analyze_research_intent(state.get("user_query", ""))
+            if search_intent.needs_research:
+                search_queries = document_intent.get("template_search_queries", [])
+                if not search_queries:
+                    search_queries = [
+                        ruleset["template_search_query"].format(topic=state.get("user_query", "")[:80])
+                    ]
+                seen_urls: set[str] = set()
+                for query in search_queries[:3]:
+                    try:
+                        for result in await search_web(str(query), max_results=3):
+                            url = str(result.get("url", ""))
+                            if url and url not in seen_urls:
+                                seen_urls.add(url)
+                                references.append(result)
+                    except Exception as exc:
+                        logger.warning(
+                            "native_template_reference.failed",
+                            format=format_id,
+                            query=str(query)[:80],
+                            error=str(exc)[:120],
+                        )
+                    if len(references) >= 6:
+                        break
+            else:
+                logger.info(
+                    "native_template_reference.skipped",
+                    format=format_id,
+                    reason=search_intent.reason,
+                    intent=search_intent.intent_label,
+                )
 
         prompt = (
             "You are a document art director. Design a production-ready native document template. "
@@ -209,13 +220,17 @@ def build_native_document_pipeline(format_id: str, renderer_class: type, ruleset
 
     async def document_plan(state: DocuMindState) -> dict:
         base_spec = state.get("_base_document_spec", {})
+        user_query = str(state.get("user_query", ""))
+        delete_requested = is_content_removal_request(user_query)
         revision = ""
         if base_spec:
             revision = (
                 "\nThis is a revision of an existing document. Preserve its title, layout, unchanged "
-                "sections and populated content unless the user explicitly requests replacement. "
-                "Return only changed/new sections and changed metadata or summary; omitted existing "
-                "sections will remain in the document. Never convert it to a generic report. "
+                "sections and populated content unless the user explicitly requests replacement or removal. "
+                "If the user asks to remove/delete unnecessary content, return the complete list of "
+                "remaining sections after deletion (do not include removed sections). "
+                "Otherwise, return only changed/new sections and changed metadata or summary; omitted "
+                "existing sections will remain in the document. Never convert it to a generic report. "
                 "Existing document specification:\n"
                 + json.dumps(base_spec, ensure_ascii=False)[:6000]
             )
@@ -239,7 +254,7 @@ def build_native_document_pipeline(format_id: str, renderer_class: type, ruleset
             f"Template design: {json.dumps(state.get('design_system', {}), ensure_ascii=False)}\n"
             f"Uploaded native template fields: {json.dumps(state.get('_template_analysis', {}), ensure_ascii=False)[:4000]}\n"
             f"Document intent: {json.dumps(state.get('document_intent', {}), ensure_ascii=False)}\n"
-            f"User request: {state.get('user_query', '')}\n"
+            f"User request: {user_query}\n"
             "Use the inferred artifact name as the title; do not copy an instruction sentence as "
             "the document title. Use labels and headings native to the target language. "
             "Do not invent a weekly/status report structure unless the user requests that artifact. "
@@ -339,6 +354,7 @@ def build_native_document_pipeline(format_id: str, renderer_class: type, ruleset
                     existing_spec,
                     spec,
                     allow_new_sections=not summary_only_pdf_revision,
+                    prune_missing_sections=delete_requested and not summary_only_pdf_revision,
                 )
         else:
             spec = existing_spec or normalize_document_spec(

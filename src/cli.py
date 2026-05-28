@@ -16,18 +16,26 @@ async def generate(query: str, format: str = "pptx") -> None:
     logger.info("cli.generate.start", query=query, format=format)
 
     from src.engine import _get_format_pipeline
+    from src.agents.research_intent import analyze_research_intent
     from src.infrastructure.database import init_db
     from src.schemas.agents import DocuMindState
 
     await init_db()
 
+    research_intent = await analyze_research_intent(query)
+    logger.info(
+        "cli.research_intent",
+        needs_research=research_intent.needs_research,
+        intent=research_intent.intent_label,
+        reason=research_intent.reason,
+    )
     initial_state: DocuMindState = {
         "user_query": query,
         "session_id": "cli-session",
         "template_id": None,
         "conversation_history": [],
         "document_format": format,
-        "needs_research": True,
+        "needs_research": research_intent.needs_research,
         "template_provided": False,
         "current_phase": "planning",
         "errors": [],

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import re
 import urllib.parse
@@ -91,8 +90,6 @@ async def search_web(query: str, *, max_results: int = 8) -> list[dict[str, str]
         ("duckduckgo_html", _search_duckduckgo_html),
         ("duckduckgo_lite", _search_duckduckgo_lite),
     ]
-    if importlib.util.find_spec("ddgs") and importlib.util.find_spec("langchain_community"):
-        providers.insert(5, ("langchain_duckduckgo", _search_langchain_duckduckgo))
 
     tasks = [func(query, max_results=max_results) for _, func in providers]
     settled = await asyncio.gather(*tasks, return_exceptions=True)
@@ -138,30 +135,6 @@ async def _search_duckduckgo_lite(query: str, *, max_results: int) -> list[Searc
     parser = _DuckDuckGoParser("duckduckgo_lite")
     parser.feed(html)
     return parser.results[:max_results]
-
-
-async def _search_langchain_duckduckgo(query: str, *, max_results: int) -> list[SearchResult]:
-    return await asyncio.to_thread(_search_langchain_duckduckgo_sync, query, max_results)
-
-
-def _search_langchain_duckduckgo_sync(query: str, max_results: int) -> list[SearchResult]:
-    from langchain_community.tools import DuckDuckGoSearchResults
-
-    tool = DuckDuckGoSearchResults(num_results=max_results, output_format="list")
-    raw_results = tool.invoke(query)
-    if isinstance(raw_results, str):
-        return []
-
-    results = []
-    for item in raw_results[:max_results]:
-        if not isinstance(item, dict):
-            continue
-        title = _clean_text(str(item.get("title", "")))
-        link = str(item.get("link") or item.get("href") or item.get("url") or "")
-        snippet = _clean_text(str(item.get("snippet") or item.get("body") or ""))
-        if title and link:
-            results.append(SearchResult(title, link, snippet, "langchain_duckduckgo"))
-    return results
 
 
 async def _search_google_news_rss(query: str, *, max_results: int) -> list[SearchResult]:

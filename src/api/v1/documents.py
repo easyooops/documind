@@ -605,6 +605,7 @@ async def _run_pipeline(job_id: str, request: GenerateRequest) -> None:
     from sqlalchemy import select
 
     from src.engine import _get_format_pipeline
+    from src.agents.research_intent import analyze_research_intent
     from src.infrastructure.database import get_session_factory
     from src.infrastructure.models import Template
     from src.infrastructure.storage import create_storage_backend
@@ -634,6 +635,13 @@ async def _run_pipeline(job_id: str, request: GenerateRequest) -> None:
                         **analyze_template(template_bytes, template.filename),
                     }
 
+    research_intent = await analyze_research_intent(request.query)
+    logger.info(
+        "documents.research_intent",
+        needs_research=research_intent.needs_research,
+        intent=research_intent.intent_label,
+        reason=research_intent.reason,
+    )
     initial_state: DocuMindState = {
         "user_query": request.query,
         "session_id": request.session_id or "",
@@ -642,7 +650,7 @@ async def _run_pipeline(job_id: str, request: GenerateRequest) -> None:
         "document_format": request.format,
         "locale": str(request.options.get("locale", "ko")),
         "output_language": detect_output_language(request.query),
-        "needs_research": True,
+        "needs_research": research_intent.needs_research,
         "template_provided": request.template_id is not None,
         "current_phase": "planning",
         "errors": [],

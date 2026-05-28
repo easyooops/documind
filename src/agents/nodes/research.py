@@ -8,6 +8,7 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents.loader import get_llm_for_agent, load_agent_prompt
+from src.agents.research_intent import analyze_research_intent
 from src.core.logging import get_logger
 from src.infrastructure.web_search import search_web
 from src.schemas.agents import DocuMindState
@@ -23,7 +24,13 @@ async def research_agent(state: DocuMindState) -> dict:
     """Execute research to gather external data for the presentation."""
     logger.info("research_agent.start", query=state["user_query"])
 
-    if not state.get("needs_research", False):
+    intent = await analyze_research_intent(state.get("user_query", ""))
+    if not state.get("needs_research", False) or not intent.needs_research:
+        logger.info(
+            "research_agent.skip",
+            reason=intent.reason,
+            intent_label=intent.intent_label,
+        )
         return {"research_data": None, "current_phase": "planning"}
 
     llm = get_llm_for_agent(AGENT_NAME)
