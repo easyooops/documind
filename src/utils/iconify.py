@@ -198,6 +198,12 @@ ICON_NAME_ALIASES = {
     "cloud": "cloud",
     "cloud-upload": "cloud-upload",
     "cloud-download": "cloud-download",
+    # Non-existent/variant MDI names observed in runtime logs
+    "cloud-network": "cloud",
+    "building-network": "office-building",
+    "document-check": "file-document",
+    "download-simple": "download",
+    "server-check": "server",
     "lock": "lock",
     "unlock": "lock-open",
     "shield": "shield-check",
