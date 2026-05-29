@@ -347,6 +347,7 @@ async def preview_document(
         slide_html = [slide.html_content or "" for slide in sorted_slides]
 
     if sorted_slides:
+        slide_html = [_embed_pptx_preview_assets(html) for html in slide_html]
         html_parts = [
             '<html><head><meta charset="utf-8"><style>',
             "*{box-sizing:border-box;margin:0;padding:0}",
@@ -403,6 +404,19 @@ async def preview_document(
     return HTMLResponse(
         content="<html><body><p>Preview is not available.</p></body></html>"
     )
+
+
+def _embed_pptx_preview_assets(slide_html: str) -> str:
+    """Embed local PPTX preview assets in DB-backed HTML previews."""
+    try:
+        from src.formats.pptx.agents.nodes.render_convert import (
+            _embed_cached_icons,
+            _embed_local_images,
+        )
+
+        return _embed_local_images(_embed_cached_icons(slide_html))
+    except Exception:
+        return slide_html
 
 
 def _rendered_pages_preview(paths: list[Path], label: str) -> str:

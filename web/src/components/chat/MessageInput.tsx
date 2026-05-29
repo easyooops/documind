@@ -225,7 +225,7 @@ export function MessageInput() {
             const assistantMsg = {
               id: generateId(),
               role: "assistant" as const,
-              content: t("chat.docGeneratedSuccess"),
+              content: data.assistant_message || t("chat.docGeneratedSuccess"),
               generationJobId: data.job_id,
               createdAt: new Date().toISOString(),
             };

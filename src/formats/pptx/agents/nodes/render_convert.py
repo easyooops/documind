@@ -113,6 +113,7 @@ async def _capture_slides(slides_html: list[dict]) -> list[str]:
 def _wrap_slide_html(slide_html: str) -> str:
     """Wrap a slide div in a complete HTML document for rendering."""
     slide_html = _embed_cached_icons(slide_html)
+    slide_html = _embed_local_images(slide_html)
     return f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8"/>
@@ -126,13 +127,40 @@ body {{ width:960px; height:540px; overflow:hidden; font-family:'Pretendard',sys
 
 
 def _normalize_slide_icon_layouts(slides_html: list[dict]) -> list[dict]:
-    """Convert legacy textbox icons into explicit icon elements before render/convert."""
+    """Normalize slide geometry before render/convert."""
     normalized = []
     for slide in slides_html:
         copied = dict(slide)
-        copied["html"] = _normalize_legacy_icon_nodes(str(slide.get("html", "")))
+        copied["html"] = _normalize_slide_html(str(slide.get("html", "")))
         normalized.append(copied)
     return normalized
+
+
+def _normalize_slide_html(slide_html: str) -> str:
+    """Stabilize HTML so preview and PPTX use the same non-overlapping boxes."""
+    from bs4 import BeautifulSoup
+
+    slide_html = _normalize_legacy_icon_nodes(slide_html)
+    soup = BeautifulSoup(slide_html, "html.parser")
+    wrapper = soup.find(attrs={"data-slide": True})
+    if not wrapper:
+        return str(soup)
+
+    elements = [
+        node for node in wrapper.find_all(recursive=False)
+        if getattr(node, "attrs", {}).get("data-pptx-type")
+    ]
+    for node in elements:
+        styles = _parse_style(str(node.attrs.get("style", "")))
+        _clamp_element_box(node, styles)
+        _normalize_textbox_lists(node)
+        _normalize_text_alignment_attrs(node, styles)
+        _fit_text_element(node, styles)
+        node.attrs["style"] = _style_to_string(styles)
+
+    _enforce_text_contrast(elements)
+    _resolve_content_overlaps(elements)
+    return str(soup)
 
 
 def _normalize_legacy_icon_nodes(slide_html: str) -> str:
@@ -226,9 +254,570 @@ def _embed_cached_icons(slide_html: str) -> str:
     return str(soup)
 
 
+def _embed_local_images(slide_html: str) -> str:
+    """Render local visual asset image nodes in HTML previews/screenshots."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(slide_html, "html.parser")
+    for node in soup.find_all(attrs={"data-pptx-image-path": True}):
+        if str(node.attrs.get("data-pptx-type", "")) != "image":
+            continue
+        path = Path(str(node.attrs.get("data-pptx-image-path", "")))
+        if not path.exists() or not path.is_file():
+            continue
+        mime_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        image_data = base64.b64encode(path.read_bytes()).decode("ascii")
+        style = str(node.attrs.get("style", ""))
+        style = _remove_preview_image_background(style)
+        node.attrs["style"] = (
+            f"{style};background-image:url(data:{mime_type};base64,{image_data});"
+            "background-size:contain;background-repeat:no-repeat;background-position:center"
+        )
+        node.attrs.pop("data-pptx-image-path", None)
+    return str(soup)
+
+
+def _remove_preview_image_background(style: str) -> str:
+    declarations = []
+    for declaration in style.split(";"):
+        if ":" not in declaration:
+            continue
+        name, _, value = declaration.partition(":")
+        if name.strip().lower() in {"background", "background-image"}:
+            continue
+        declarations.append(f"{name.strip()}:{value.strip()}")
+    return ";".join(declarations)
+
+
 def _style_number(style: str, property_name: str) -> float:
-    match = re.search(rf"(?:^|;)\s*{property_name}\s*:\s*(\d+(?:\.\d+)?)px", style)
+    match = re.search(rf"(?:^|;)\s*{property_name}\s*:\s*(-?\d+(?:\.\d+)?)px", style)
     return float(match.group(1)) if match else 0.0
+
+
+def _parse_style(style: str) -> dict[str, str]:
+    parsed = {}
+    for declaration in style.split(";"):
+        if ":" not in declaration:
+            continue
+        name, _, value = declaration.partition(":")
+        parsed[name.strip().lower()] = value.strip()
+    return parsed
+
+
+def _style_to_string(styles: dict[str, str]) -> str:
+    return ";".join(f"{name}:{value}" for name, value in styles.items() if value != "")
+
+
+def _style_px(styles: dict[str, str], name: str, fallback: float = 0.0) -> float:
+    raw = styles.get(name, "")
+    match = re.match(r"\s*(-?\d+(?:\.\d+)?)", str(raw).replace("px", ""))
+    return float(match.group(1)) if match else fallback
+
+
+def _set_style_px(styles: dict[str, str], name: str, value: float) -> None:
+    styles[name] = f"{value:g}px"
+
+
+def _extract_color(value: str) -> str | None:
+    colors = _extract_colors(value)
+    return colors[0] if colors else None
+
+
+def _extract_colors(value: str) -> list[str]:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"transparent", "none", "inherit", "initial"}:
+        return []
+    colors: list[str] = []
+    for hex_value in re.findall(r"#([0-9a-fA-F]{3,8})", text):
+        if len(hex_value) == 3:
+            colors.append("".join(char * 2 for char in hex_value).lower())
+        elif len(hex_value) >= 6:
+            colors.append(hex_value[:6].lower())
+    for rgba in re.findall(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", text):
+        r, g, b = (max(0, min(255, int(channel))) for channel in rgba)
+        colors.append(f"{r:02x}{g:02x}{b:02x}")
+    return colors
+
+
+def _contrast_ratio(color_a: str, color_b: str) -> float:
+    lighter = max(_relative_luminance(color_a), _relative_luminance(color_b))
+    darker = min(_relative_luminance(color_a), _relative_luminance(color_b))
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _relative_luminance(hex_color: str) -> float:
+    try:
+        channels = [
+            int(str(hex_color).lstrip("#")[i:i + 2], 16) / 255
+            for i in (0, 2, 4)
+        ]
+    except (ValueError, IndexError):
+        return 1.0
+
+    def linear(channel: float) -> float:
+        if channel <= 0.03928:
+            return channel / 12.92
+        return ((channel + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (linear(channel) for channel in channels)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _clamp_element_box(node, styles: dict[str, str]) -> None:
+    pptx_type = str(node.attrs.get("data-pptx-type", ""))
+    region = str(node.attrs.get("data-pptx-region", ""))
+    left = _style_px(styles, "left")
+    top = _style_px(styles, "top")
+    width = _style_px(styles, "width", 100)
+    height = _style_px(styles, "height", 50)
+
+    is_background = (
+        region == "background"
+        or (pptx_type == "shape" and width >= 950 and height >= 530 and left <= 5 and top <= 5)
+    )
+    if is_background:
+        return
+
+    left = max(0, min(left, 956))
+    top = max(0, min(top, 536))
+    width = max(1, min(width, 960 - left))
+    height = max(1, min(height, 540 - top))
+    _set_style_px(styles, "left", left)
+    _set_style_px(styles, "top", top)
+    _set_style_px(styles, "width", width)
+    _set_style_px(styles, "height", height)
+
+
+def _fit_text_element(node, styles: dict[str, str]) -> None:
+    pptx_type = str(node.attrs.get("data-pptx-type", ""))
+    if pptx_type not in {"textbox", "shape"}:
+        return
+    if str(node.attrs.get("data-pptx-region", "")) in {"header", "footer"}:
+        styles.setdefault("overflow", "hidden")
+        return
+
+    text = _direct_text(node)
+    if not text:
+        return
+
+    width = _style_px(styles, "width", 100)
+    height = _style_px(styles, "height", 50)
+    if width <= 0 or height <= 0:
+        return
+
+    font_size = _style_px(styles, "font-size", 16)
+    line_height = _line_height_ratio(styles.get("line-height", "1.35"))
+    pad_top, pad_right, pad_bottom, pad_left = _padding_box(styles)
+    min_size = 9 if font_size <= 28 else 18
+
+    current = font_size
+    while current >= min_size:
+        lines = _wrap_text(text, current, max(1, width - pad_left - pad_right))
+        if len(lines) * current * line_height <= max(1, height - pad_top - pad_bottom):
+            break
+        current -= 1
+
+    if current < font_size:
+        styles["font-size"] = f"{max(min_size, current):g}px"
+    styles.setdefault("overflow", "hidden")
+
+
+def _enforce_text_contrast(elements: list) -> None:
+    """Force text colors to pass contrast against owned or backing fills."""
+    parsed = [
+        {"node": node, "styles": _parse_style(str(node.attrs.get("style", ""))), "box": None}
+        for node in elements
+    ]
+    for item in parsed:
+        item["box"] = _box(item["styles"])
+
+    for index, item in enumerate(parsed):
+        node = item["node"]
+        styles = item["styles"]
+        if str(node.attrs.get("data-pptx-type", "")) not in {"textbox", "shape"}:
+            continue
+        if str(node.attrs.get("data-pptx-region", "")) in {"background", "footer"}:
+            continue
+        text = _direct_text(node)
+        if not text:
+            continue
+
+        bg_colors = _node_background_colors(styles)
+        if not bg_colors:
+            bg_colors = _backing_fill_colors(item, parsed[:index])
+        if not bg_colors:
+            continue
+
+        current = _extract_color(styles.get("color", "")) or "1e293b"
+        font_size = _style_px(styles, "font-size", 16)
+        font_weight = str(styles.get("font-weight", "400"))
+        is_bold = font_weight in {"bold", "600", "700", "800", "900"} or (
+            font_weight.isdigit() and int(font_weight) >= 600
+        )
+        threshold = 3.0 if font_size >= 24 or (is_bold and font_size >= 18.5) else 4.5
+        if all(_contrast_ratio(current, bg) >= threshold for bg in bg_colors):
+            continue
+
+        candidates = ["ffffff", "111827"]
+        best = max(
+            candidates,
+            key=lambda color: min(_contrast_ratio(color, bg) for bg in bg_colors),
+        )
+        styles["color"] = f"#{best.upper()}"
+        node.attrs["style"] = _style_to_string(styles)
+
+
+def _node_background_colors(styles: dict[str, str]) -> list[str]:
+    colors: list[str] = []
+    for name in ("background-color", "background"):
+        value = styles.get(name, "")
+        if not value:
+            continue
+        if value.strip().lower() in {"transparent", "none", "inherit", "initial"}:
+            continue
+        colors.extend(_extract_colors(value))
+    return colors
+
+
+def _backing_fill_colors(item: dict, prior_items: list[dict]) -> list[str]:
+    text_box = item["box"]
+    if not text_box:
+        return []
+    candidates: list[tuple[float, list[str]]] = []
+    for prior in prior_items:
+        node = prior["node"]
+        pptx_type = str(node.attrs.get("data-pptx-type", ""))
+        if pptx_type not in {"shape", "textbox"}:
+            continue
+        colors = _node_background_colors(prior["styles"])
+        if not colors:
+            continue
+        box = prior["box"]
+        if not box:
+            continue
+        overlap = _overlap_ratio(text_box, box)
+        contains_center = _box_contains_center(box, text_box)
+        is_full_background = box[2] >= 900 and box[3] >= 480 and box[0] <= 10 and box[1] <= 10
+        if overlap >= 0.45 or contains_center or is_full_background:
+            score = overlap + (0.25 if contains_center else 0) + (0.1 if is_full_background else 0)
+            candidates.append((score, colors))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _box_contains_center(container: tuple[float, float, float, float], inner: tuple[float, float, float, float]) -> bool:
+    cx = inner[0] + inner[2] / 2
+    cy = inner[1] + inner[3] / 2
+    return container[0] <= cx <= container[0] + container[2] and container[1] <= cy <= container[1] + container[3]
+
+
+def _normalize_text_alignment_attrs(node, styles: dict[str, str]) -> None:
+    pptx_type = str(node.attrs.get("data-pptx-type", ""))
+    if pptx_type not in {"textbox", "shape"}:
+        return
+    if str(node.attrs.get("data-pptx-region", "")) in {"background", "header", "footer"}:
+        return
+
+    text = _direct_text(node)
+    if not text:
+        return
+
+    role = _text_role_for_preview(node, styles, text)
+    node.attrs.setdefault("data-pptx-text-role", role)
+
+    if not node.attrs.get("data-pptx-text-align"):
+        if styles.get("text-align") in {"left", "center", "right", "justify"}:
+            node.attrs["data-pptx-text-align"] = styles["text-align"]
+        elif role in {"kpi_value", "kpi_label", "badge"}:
+            node.attrs["data-pptx-text-align"] = "center"
+        else:
+            node.attrs["data-pptx-text-align"] = "left"
+
+    if not node.attrs.get("data-pptx-text-valign"):
+        if styles.get("vertical-align") in {"top", "middle", "bottom"}:
+            node.attrs["data-pptx-text-valign"] = styles["vertical-align"]
+        elif styles.get("align-items") in {"center", "middle"}:
+            node.attrs["data-pptx-text-valign"] = "middle"
+        elif role in {"kpi_value", "kpi_label", "badge", "card_title", "caption"}:
+            node.attrs["data-pptx-text-valign"] = "middle"
+        else:
+            node.attrs["data-pptx-text-valign"] = "top"
+
+    has_css_padding = any(
+        styles.get(name)
+        for name in ("padding", "padding-top", "padding-right", "padding-bottom", "padding-left")
+    )
+    if not node.attrs.get("data-pptx-text-padding") and not has_css_padding:
+        defaults = {
+            "kpi_value": "0px 4px 0px 4px",
+            "kpi_label": "1px 4px 1px 4px",
+            "badge": "1px 8px 1px 8px",
+            "card_title": "2px 4px 2px 4px",
+            "caption": "1px 4px 1px 4px",
+        }
+        if role in defaults:
+            node.attrs["data-pptx-text-padding"] = defaults[role]
+
+
+def _text_role_for_preview(node, styles: dict[str, str], text: str) -> str:
+    raw = str(node.attrs.get("data-pptx-text-role", "") or "").strip().lower().replace("-", "_")
+    if raw:
+        return raw
+    if node.attrs.get("data-pptx-list"):
+        return "list"
+    font_size = _style_px(styles, "font-size", 16)
+    font_weight = str(styles.get("font-weight", "400"))
+    height = _style_px(styles, "height", 0)
+    compact_value = str(text or "").strip()
+    if font_size >= 24 or (
+        len(compact_value) <= 24
+        and re.search(r"(?:[$€₩¥]\s?\d|\d+(?:\.\d+)?\s?%|\d+\s?배|\d+\s?x)", compact_value, re.I)
+    ):
+        return "kpi_value"
+    if height and height <= 30 and font_size <= 12:
+        return "caption"
+    is_bold = font_weight in {"bold", "600", "700", "800", "900"} or (
+        font_weight.isdigit() and int(font_weight) >= 600
+    )
+    if is_bold and height and height <= 48:
+        return "card_title"
+    return "body"
+
+
+def _direct_text(node) -> str:
+    texts = []
+    for child in node.children:
+        if hasattr(child, "attrs") and child.get("data-pptx-type"):
+            continue
+        if hasattr(child, "name") and str(child.name).lower() in {"ul", "ol"}:
+            items = [
+                li.get_text(" ", strip=True)
+                for li in child.find_all("li", recursive=False)
+                if li.get_text(" ", strip=True)
+            ]
+            if items:
+                texts.append("\n".join(items))
+            continue
+        if isinstance(child, str):
+            text = child.strip()
+        elif hasattr(child, "get_text"):
+            text = child.get_text(" ", strip=True)
+        else:
+            text = ""
+        if text:
+            texts.append(text)
+    return "\n".join(texts)
+
+
+def _normalize_textbox_lists(node) -> None:
+    pptx_type = str(node.attrs.get("data-pptx-type", ""))
+    if pptx_type not in {"textbox", "shape"}:
+        return
+    if str(node.attrs.get("data-pptx-region", "")) in {"header", "footer"}:
+        return
+
+    explicit_list = str(node.attrs.get("data-pptx-list", "")).lower() in {
+        "bullet",
+        "bullets",
+        "unordered",
+    }
+    ordered_list = str(node.attrs.get("data-pptx-list", "")).lower() in {
+        "number",
+        "numbered",
+        "ordered",
+    }
+    list_items: list[str] = []
+
+    for list_node in node.find_all(["ul", "ol"], recursive=False):
+        ordered_list = ordered_list or str(list_node.name).lower() == "ol"
+        for li in list_node.find_all("li", recursive=False):
+            text = li.get_text(" ", strip=True)
+            if text:
+                list_items.append(text)
+        list_node.decompose()
+
+    if list_items:
+        node.attrs["data-pptx-list"] = "numbered" if ordered_list else "bullet"
+        node.string = _format_list_lines(list_items, ordered=ordered_list)
+        return
+
+    text = _direct_text(node)
+    if not text:
+        return
+    lines = [line.strip() for line in text.replace("\\n", "\n").split("\n") if line.strip()]
+    if len(lines) < 2:
+        return
+    if explicit_list or ordered_list or _looks_like_list_lines(lines):
+        node.attrs["data-pptx-list"] = "numbered" if ordered_list else "bullet"
+        node.string = _format_list_lines(lines, ordered=ordered_list)
+
+
+def _looks_like_list_lines(lines: list[str]) -> bool:
+    marker_count = sum(1 for line in lines if _list_marker_match(line))
+    if marker_count >= max(2, len(lines) - 1):
+        return True
+    short_lines = sum(1 for line in lines if len(_strip_list_marker(line)) <= 42)
+    return len(lines) >= 3 and short_lines == len(lines)
+
+
+def _format_list_lines(lines: list[str], *, ordered: bool) -> str:
+    formatted = []
+    for index, line in enumerate(lines, start=1):
+        body = _strip_list_marker(line)
+        if not body:
+            continue
+        marker = f"{index}." if ordered else "\u2022"
+        formatted.append(f"{marker} {body}")
+    return "\n".join(formatted)
+
+
+def _strip_list_marker(line: str) -> str:
+    return re.sub(
+        r"^\s*(?:[\u2022\u2023\u25E6\u2043\u2219\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s*",
+        "",
+        str(line),
+    ).strip()
+
+
+def _list_marker_match(line: str):
+    return re.match(
+        r"^\s*(?:[\u2022\u2023\u25E6\u2043\u2219\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s+",
+        str(line),
+    )
+
+
+def _padding_box(styles: dict[str, str]) -> tuple[float, float, float, float]:
+    values = _padding_values(styles.get("padding", ""))
+    top, right, bottom, left = values or (4.0, 8.0, 4.0, 8.0)
+    top = _style_px(styles, "padding-top", top)
+    right = _style_px(styles, "padding-right", right)
+    bottom = _style_px(styles, "padding-bottom", bottom)
+    left = _style_px(styles, "padding-left", left)
+    return top, right, bottom, left
+
+
+def _padding_values(value: str) -> tuple[float, float, float, float] | None:
+    nums = [
+        float(match.group(1))
+        for match in re.finditer(r"(-?\d+(?:\.\d+)?)\s*px?", str(value or ""))
+    ]
+    if not nums:
+        return None
+    if len(nums) == 1:
+        return nums[0], nums[0], nums[0], nums[0]
+    if len(nums) == 2:
+        return nums[0], nums[1], nums[0], nums[1]
+    if len(nums) == 3:
+        return nums[0], nums[1], nums[2], nums[1]
+    return nums[0], nums[1], nums[2], nums[3]
+
+
+def _line_height_ratio(value: str) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 1.35
+    if text.endswith("%"):
+        try:
+            return float(text[:-1]) / 100
+        except ValueError:
+            return 1.35
+    if text.endswith("px"):
+        return 1.35
+    if text.endswith("em"):
+        text = text[:-2]
+    try:
+        return max(1.0, min(float(text), 2.2))
+    except ValueError:
+        return 1.35
+
+
+def _wrap_text(text: str, font_size: float, width: float) -> list[str]:
+    char_ratio = 0.86 if any("\uac00" <= char <= "\ud7a3" for char in text) else 0.58
+    chars_per_line = max(4, int(width / max(1, font_size * char_ratio)))
+    lines: list[str] = []
+    for raw in text.replace("\\n", "\n").split("\n"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        while len(raw) > chars_per_line:
+            break_at = raw.rfind(" ", 0, chars_per_line + 1)
+            if break_at < max(4, chars_per_line // 2):
+                break_at = chars_per_line
+            lines.append(raw[:break_at].strip())
+            raw = raw[break_at:].strip()
+        if raw:
+            lines.append(raw)
+    return lines or [text.strip()]
+
+
+def _resolve_content_overlaps(elements: list) -> None:
+    boxes = []
+    for node in elements:
+        styles = _parse_style(str(node.attrs.get("style", "")))
+        if not _is_overlap_candidate(node, styles):
+            continue
+        boxes.append({"node": node, "styles": styles, "box": _box(styles)})
+
+    boxes.sort(key=lambda item: (item["box"][1], item["box"][0]))
+    placed: list[dict] = []
+    gap = 8
+    for item in boxes:
+        box = item["box"]
+        for prior in placed:
+            overlap = _overlap_ratio(box, prior["box"])
+            if overlap <= 0.08:
+                continue
+            left, top, width, height = box
+            prior_left, prior_top, prior_width, prior_height = prior["box"]
+            moved_top = prior_top + prior_height + gap
+            if moved_top + height <= 526:
+                top = moved_top
+            elif prior_left + prior_width + gap + width <= 920:
+                left = prior_left + prior_width + gap
+            else:
+                height = max(24, min(height, 526 - top))
+            box = (left, top, width, height)
+        item["box"] = box
+        _set_style_px(item["styles"], "left", box[0])
+        _set_style_px(item["styles"], "top", box[1])
+        _set_style_px(item["styles"], "width", box[2])
+        _set_style_px(item["styles"], "height", box[3])
+        item["node"].attrs["style"] = _style_to_string(item["styles"])
+        placed.append(item)
+
+
+def _is_overlap_candidate(node, styles: dict[str, str]) -> bool:
+    pptx_type = str(node.attrs.get("data-pptx-type", ""))
+    if pptx_type not in {"textbox", "table", "chart", "image"}:
+        return False
+    if str(node.attrs.get("data-pptx-region", "")) in {"background", "header", "footer"}:
+        return False
+    width = _style_px(styles, "width")
+    height = _style_px(styles, "height")
+    top = _style_px(styles, "top")
+    return width > 8 and height > 8 and 70 <= top < 510
+
+
+def _box(styles: dict[str, str]) -> tuple[float, float, float, float]:
+    return (
+        _style_px(styles, "left"),
+        _style_px(styles, "top"),
+        _style_px(styles, "width", 100),
+        _style_px(styles, "height", 50),
+    )
+
+
+def _overlap_ratio(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    x_overlap = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    y_overlap = max(0, min(ay + ah, by + bh) - max(ay, by))
+    if x_overlap <= 0 or y_overlap <= 0:
+        return 0.0
+    area = x_overlap * y_overlap
+    return area / max(1, min(aw * ah, bw * bh))
 
 
 def _style_value(style: str, property_name: str, fallback: str = "") -> str:
@@ -342,7 +931,7 @@ def _save_html_preview(slides_html: list[dict], output_dir: Path) -> str:
     preview_path = output_dir / f"preview_{file_id}.html"
 
     slides_content = "\n".join(
-        _embed_cached_icons(slide.get("html", ""))
+        _embed_local_images(_embed_cached_icons(slide.get("html", "")))
         for slide in sorted(slides_html, key=lambda s: s.get("index", 0))
     )
 

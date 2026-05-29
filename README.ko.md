@@ -179,6 +179,7 @@ DocuMind는 다음 오픈소스를 기반으로 구축되었습니다.
 - Agentic 런타임: `LangGraph`, `LangChain`
 - LLM/클라우드 연동: `OpenAI SDK`, `Anthropic SDK`, `Boto3`
 - 문서/렌더링: `python-pptx`, `PyMuPDF`, `Playwright`, `lxml`, `Pillow`
+- 아키텍처 다이어그램: `diagrams==0.25.1` (MIT, mingrammer) - 출처: https://github.com/mingrammer/diagrams, 홈페이지: https://diagrams.mingrammer.com
 - Frontend: `Next.js`, `React`, `Tailwind CSS`, `Zustand`
 
 의존성 라이선스 정책은 `pyproject.toml`의 `tool.licensecheck`에서 관리합니다.

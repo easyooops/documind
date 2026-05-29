@@ -91,6 +91,11 @@ async def vlm_quality_gate(state: DocuMindState) -> dict:
         for result in per_slide
         for issue in result.get("issues", [])
     ]
+    rule_issues = list(rule_feedback.get("issues", []))
+    per_slide_issues = _merge_per_slide_issues(
+        _as_dict(rule_feedback.get("per_slide_issues")),
+        per_slide,
+    )
     status = "complete" if all_slides_evaluated else ("partial" if successful else "failed")
     feedback = {
         "passed": passed,
@@ -98,7 +103,11 @@ async def vlm_quality_gate(state: DocuMindState) -> dict:
         "rule_score": rule_score,
         "visual_score": round(visual_score, 4),
         "visual_judge_status": status,
-        "issues": visual_issues,
+        "issues": rule_issues + visual_issues,
+        "rule_issues": rule_issues,
+        "visual_issues": visual_issues,
+        "per_slide_issues": per_slide_issues,
+        "issues_count": int(rule_feedback.get("issues_count", len(rule_issues))) + len(visual_issues),
         "fix_instructions": list(rule_feedback.get("fix_instructions", [])) + visual_fixes,
         "category_scores": rule_feedback.get("category_scores", {}),
         "per_slide_scores": rule_feedback.get("per_slide_scores", []),
@@ -209,3 +218,24 @@ def _strings(value: object) -> list[str]:
 
 def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _merge_per_slide_issues(rule_issues: dict, visual_results: list[dict]) -> dict[int, list[str]]:
+    merged: dict[int, list[str]] = {}
+    for key, value in rule_issues.items():
+        try:
+            idx = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, list):
+            merged[idx] = [str(item) for item in value if str(item).strip()]
+    for result in visual_results:
+        try:
+            idx = int(result.get("index"))
+        except (TypeError, ValueError):
+            continue
+        for issue in result.get("issues", []):
+            text = str(issue).strip()
+            if text:
+                merged.setdefault(idx, []).append(text)
+    return merged

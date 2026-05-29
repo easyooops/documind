@@ -42,6 +42,7 @@ dependencies = [
     "PyMuPDF>=1.24",
     "svglib>=0.9",
     "reportlab>=4.0",
+    "diagrams==0.25.1",
 
     # Browser automation
     "playwright>=1.44",

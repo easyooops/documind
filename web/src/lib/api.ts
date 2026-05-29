@@ -64,6 +64,7 @@ type StreamProgressEvent = Record<string, unknown>;
 
 interface StreamCompleteEvent {
   job_id?: string;
+  assistant_message?: string;
 }
 
 export interface BootstrapStatus {
@@ -138,6 +139,27 @@ export async function getSession(sessionId: string): Promise<Session> {
     createdAt: data.created_at,
     updatedAt: data.updated_at,
   };
+}
+
+export async function updateSessionTitle(
+  sessionId: string,
+  title: string
+): Promise<SessionSummary> {
+  const data = await request<Record<string, unknown>>(`/api/v1/chat/sessions/${sessionId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+  return mapSessionSummary(data);
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/v1/chat/sessions/${sessionId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || `API Error: ${res.status}`);
+  }
 }
 
 function mapSessionSummary(data: Record<string, unknown>): SessionSummary {

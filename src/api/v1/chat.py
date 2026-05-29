@@ -12,7 +12,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +53,40 @@ def _as_list(value: object) -> list:
     if value in (None, ""):
         return []
     return [value]
+
+
+def _requested_base_version_number(
+    query: str,
+    selected_version_number: object,
+    versions: list[DocumentVersion],
+) -> int | None:
+    """Resolve the parent version, giving explicit natural-language requests priority."""
+    import re
+
+    text = str(query or "").lower()
+    explicit = re.search(
+        r"(?:\bv\s*|version\s*|버전\s*)(\d{1,3})|(\d{1,3})\s*버전",
+        text,
+        re.IGNORECASE,
+    )
+    if explicit:
+        return int(next(group for group in explicit.groups() if group))
+
+    first_signals = (
+        "최초", "처음 생성", "처음 만든", "첫 생성", "원본", "초안", "최초 생성 문서",
+        "original", "initial", "first version", "first generated", "base document",
+    )
+    if any(signal in text for signal in first_signals):
+        return 1
+
+    latest_signals = ("최신", "latest", "last version", "최근 버전")
+    if any(signal in text for signal in latest_signals):
+        return versions[0].version_number if versions else None
+
+    try:
+        return int(selected_version_number) if selected_version_number is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _mime_type_for_format(format_id: str) -> str:
@@ -312,7 +346,7 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
             + (f" (스크린샷 {screenshots}장)" if screenshots else "")
         ]
 
-    if node_name == "vlm_qa":
+    if node_name in {"quality_assessment", "vlm_qa"}:
         scores = _as_list(
             node_output.get("fidelity_scores") or node_output.get("rule_based_scores")
         )
@@ -327,29 +361,46 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
         )
         category_scores = _as_dict(feedback.get("category_scores"))
         status = "passed" if passed else "refinement needed"
-        status_ko = "통과" if passed else "보완 필요"
+        status_ko = "\ud1b5\uacfc" if passed else "\ubcf4\uc644 \ud544\uc694"
         rule_score = feedback.get("rule_score")
         visual_score = feedback.get("visual_score")
         evaluated = feedback.get("evaluated_slide_count")
         total = feedback.get("total_slide_count")
+        per_slide = _as_list(feedback.get("visual_per_slide"))
         items = []
         if is_en:
-            items.append(f"Combined design quality: {status}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
+            items.append(f"Quality assessment: {status}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
         else:
-            items.append(f"통합 디자인 품질 평가: {status_ko}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
+            items.append(f"\ud488\uc9c8 \ud3c9\uac00: {status_ko}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
         if isinstance(rule_score, (int, float)) and isinstance(visual_score, (int, float)):
             if is_en:
                 coverage = (
                     f", {evaluated}/{total} slides"
                     if isinstance(evaluated, int) and isinstance(total, int) else ""
                 )
-                items.append(f"Rule checks: {rule_score:.2f} | Visual Judge: {visual_score:.2f}{coverage}")
+                items.append(f"Parallel slide QA: rule {rule_score:.2f} | VLM {visual_score:.2f}{coverage}")
             else:
                 coverage = (
-                    f" ({evaluated}/{total} 슬라이드)"
+                    f" ({evaluated}/{total} \uc2ac\ub77c\uc774\ub4dc)"
                     if isinstance(evaluated, int) and isinstance(total, int) else ""
                 )
-                items.append(f"규칙 기반: {rule_score:.2f} | VLM 시각 평가: {visual_score:.2f}{coverage}")
+                items.append(f"\uc804\uccb4 \uc2ac\ub77c\uc774\ub4dc \ubcd1\ub82c \ud3c9\uac00: \uaddc\uce59 {rule_score:.2f} | VLM {visual_score:.2f}{coverage}")
+        if per_slide:
+            slide_parts = []
+            for result in per_slide[:6]:
+                result_dict = _as_dict(result)
+                score = result_dict.get("score")
+                if not isinstance(score, (int, float)):
+                    continue
+                label = result_dict.get("index", "?")
+                verdict = "pass" if result_dict.get("passed") else "review"
+                verdict_ko = "\ud1b5\uacfc" if result_dict.get("passed") else "\uac80\ud1a0"
+                slide_parts.append(
+                    f"S{label}: {score:.2f} {verdict if is_en else verdict_ko}"
+                )
+            if slide_parts:
+                prefix = "Slide scores" if is_en else "\uc2ac\ub77c\uc774\ub4dc\ubcc4 \uc810\uc218"
+                items.append(f"{prefix}: " + " | ".join(slide_parts))
         if category_scores:
             cat_parts = []
             cat_labels = {
@@ -428,6 +479,10 @@ async def _analyze_image_intent(query: str, attachments: list[dict], format_id: 
 
 class CreateSessionRequest(BaseModel):
     user_id: str | None = None
+
+
+class UpdateSessionRequest(BaseModel):
+    title: str
 
 
 @router.post("/images/upload", response_model=ImageAttachmentResponse)
@@ -535,6 +590,57 @@ async def get_session_info(
     )
 
 
+@router.patch("/sessions/{session_id}")
+async def update_session(
+    session_id: str,
+    request: UpdateSessionRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """Rename a conversation session."""
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Session title cannot be empty")
+    if len(title) > 120:
+        raise HTTPException(status_code=400, detail="Session title is too long")
+
+    result = await db.execute(select(Session).where(Session.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session.title = title
+    session.updated_at = datetime.utcnow()
+    logger.info("chat.update_session", session_id=session_id)
+    return {
+        "id": session.id,
+        "title": session.title,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+    }
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    """Delete a conversation session and its message history."""
+    result = await db.execute(select(Session).where(Session.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    jobs_result = await db.execute(
+        select(GenerationJob).where(GenerationJob.session_id == session_id)
+    )
+    for job in jobs_result.scalars():
+        job.session_id = None
+
+    await db.delete(session)
+    logger.info("chat.delete_session", session_id=session_id)
+    return Response(status_code=204)
+
+
 @router.post("/sessions/{session_id}/messages/stream")
 async def stream_generation(
     session_id: str,
@@ -617,11 +723,21 @@ async def stream_generation(
     )
     versions = list(versions_result.scalars().all())
     latest_version = versions[0] if versions else None
-    selected_version_number = request_options.get("base_version_number")
+    selected_version_number = _requested_base_version_number(
+        request.query,
+        request_options.get("base_version_number"),
+        versions,
+    )
     base_version = next(
         (version for version in versions if version.version_number == selected_version_number),
         latest_version,
     )
+    if versions and selected_version_number and base_version.version_number != selected_version_number:
+        logger.warning(
+            "chat.base_version_not_found_fallback_latest",
+            requested=selected_version_number,
+            latest=latest_version.version_number if latest_version else None,
+        )
     version_number = (latest_version.version_number + 1) if latest_version else 1
 
     template_bytes = None
@@ -879,6 +995,7 @@ async def stream_generation(
             "plan": "planning",
             "generate_html": "generating",
             "render_convert": "converting",
+            "quality_assessment": "qa",
             "design_evaluate": "qa",
             "export": "exporting",
             "init_document_context": "planning",
@@ -912,6 +1029,7 @@ async def stream_generation(
                 "plan": "슬라이드 구조 및 디자인 계획",
                 "generate_html": "슬라이드 HTML 생성",
                 "render_convert": "PPTX 렌더링 및 변환",
+                "quality_assessment": "\ud488\uc9c8 \ud3c9\uac00",
                 "design_evaluate": "디자인 품질 평가",
                 "export": "최종 내보내기",
                 # v1 pipeline nodes (legacy)
@@ -927,7 +1045,7 @@ async def stream_generation(
                 "validate": "생성 전 구조/품질 검증",
                 "convert": "PPTX 파일 변환",
                 "qa_critic": "품질 평가 (QA)",
-                "vlm_qa": "디자인 품질 평가",
+                "vlm_qa": "시각 품질 검증",
             },
             "en": {
                 # v2 pipeline nodes
@@ -936,6 +1054,7 @@ async def stream_generation(
                 "plan": "Slide Structure and Design Planning",
                 "generate_html": "Slide HTML Generation",
                 "render_convert": "PPTX Rendering and Conversion",
+                "quality_assessment": "Quality Assessment",
                 "design_evaluate": "Design Quality Evaluation",
                 "export": "Final Export",
                 "init_document_context": "Native Document Context Initialization",
@@ -958,7 +1077,7 @@ async def stream_generation(
                 "validate": "Pre-Export Structure and Quality Check",
                 "convert": "PowerPoint File Conversion",
                 "qa_critic": "Quality Assessment (QA)",
-                "vlm_qa": "Design Quality Assessment",
+                "vlm_qa": "Visual Quality Verification",
             },
         }
         NODE_DESCRIPTIONS_BY_LOCALE["ko"].update({
@@ -1214,6 +1333,8 @@ async def stream_generation(
                         "template_id": document.template_id,
                         "image_attachment_ids": attachment_ids,
                         "visual_intent": final_state.get("visual_intent"),
+                        "visual_asset_plan": final_state.get("visual_asset_plan"),
+                        "visual_assets": final_state.get("visual_assets", []),
                         "parent_version_number": base_version.version_number if base_version else None,
                     },
                     file_path=stored_file_path,
@@ -1282,11 +1403,18 @@ async def stream_generation(
                         )
                     )
 
+                output_language = str(final_state.get("output_language") or detect_output_language(request.query))
+                completion_message = (
+                    f"Document v{version_number} was generated successfully."
+                    if output_language == "en"
+                    else f"문서 v{version_number}이(가) 성공적으로 생성되었습니다."
+                )
+
                 assistant_msg = Message(
                     id=str(uuid.uuid4()),
                     session_id=session_id,
                     role="assistant",
-                    content=f"문서 v{version_number}이(가) 성공적으로 생성되었습니다.",
+                    content=completion_message,
                     generation_job_id=document_id,
                     created_at=datetime.utcnow(),
                 )
@@ -1312,6 +1440,7 @@ async def stream_generation(
                     "job_id": document_id,
                     "document_id": document_id,
                     "version_number": version_number,
+                    "assistant_message": completion_message,
                 }),
             }
         except Exception as e:

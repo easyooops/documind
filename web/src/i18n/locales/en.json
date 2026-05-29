@@ -18,7 +18,15 @@
     "newDocument": "New document",
     "newChat": "New chat",
     "noHistory": "No conversation history yet",
-    "loading": "Loading..."
+    "loading": "Loading...",
+    "renameSession": "Rename session",
+    "saveSessionTitle": "Save title",
+    "cancelSessionTitle": "Cancel rename",
+    "deleteSession": "Delete session",
+    "deleteSessionTitle": "Delete session",
+    "deleteSessionDescription": "This removes the conversation from your history.",
+    "cancelDeleteSession": "Cancel",
+    "confirmDeleteSession": "Delete"
   },
   "navigation": {
     "processingTitle": "Document generation is in progress",

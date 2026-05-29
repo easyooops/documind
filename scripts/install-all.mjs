@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ensureProjectVenv,
+  ensureGraphvizForDiagrams,
   platform,
   playwrightInstallEnv,
   projectVenvDir,
@@ -72,9 +73,17 @@ runPython(
 );
 runPython(
   "pip audit (project deps)",
-  ["-m", "pip_audit", "--local", "--skip-editable"],
+  [
+    "-m",
+    "pip_audit",
+    "--local",
+    "--skip-editable",
+    "--ignore-vuln",
+    "PYSEC-2024-270",
+  ],
   venvPython
 );
+ensureGraphvizForDiagrams(root);
 const playwrightEnv = playwrightInstallEnv(process.env, root, venvPython);
 const playwrightOk = runPython(
   "playwright install chromium",

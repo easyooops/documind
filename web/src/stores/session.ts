@@ -29,6 +29,8 @@ interface SessionState {
   setLoadingSession: (v: boolean) => void;
   setSessions: (sessions: SessionSummary[]) => void;
   addSession: (session: SessionSummary) => void;
+  updateSession: (session: SessionSummary) => void;
+  removeSession: (id: string) => void;
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (message: ChatMessage) => void;
   setGenerating: (v: boolean) => void;
@@ -59,9 +61,30 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   setCurrentSession: (id) => set({ currentSessionId: id }),
   setLoadingSession: (v) => set({ isLoadingSession: v }),
-  setSessions: (sessions) => set({ sessions }),
+  setSessions: (sessions) => set({ sessions: sortSessionsByCreated(sessions) }),
   addSession: (session) =>
-    set((state) => ({ sessions: [session, ...state.sessions] })),
+    set((state) => ({ sessions: sortSessionsByCreated([session, ...state.sessions]) })),
+  updateSession: (session) =>
+    set((state) => ({
+      sessions: sortSessionsByCreated(
+        state.sessions.map((item) =>
+          item.id === session.id
+            ? {
+                ...item,
+                ...session,
+                lastMessage: session.lastMessage ?? item.lastMessage,
+                format: session.format ?? item.format,
+              }
+            : item
+        )
+      ),
+    })),
+  removeSession: (id) =>
+    set((state) => ({
+      sessions: state.sessions.filter((item) => item.id !== id),
+      currentSessionId: state.currentSessionId === id ? null : state.currentSessionId,
+      messages: state.currentSessionId === id ? [] : state.messages,
+    })),
   setMessages: (messages) => set({ messages }),
   addMessage: (message) =>
     set((state) => ({ messages: [...state.messages, message] })),
@@ -162,4 +185,12 @@ function upsertNodeProgress(nodes: NodeProgress[], next: NodeProgress): NodeProg
         }
       : item
   );
+}
+
+function sortSessionsByCreated(sessions: SessionSummary[]): SessionSummary[] {
+  return [...sessions].sort((a, b) => {
+    const bTime = Date.parse(b.createdAt || b.updatedAt || "");
+    const aTime = Date.parse(a.createdAt || a.updatedAt || "");
+    return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+  });
 }

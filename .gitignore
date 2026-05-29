@@ -18,6 +18,7 @@ env/
 
 # Install/runtime cache (ASCII paths under repo; used by install scripts on Windows)
 .cache/
+.tools/
 
 # Node.js
 node_modules/

@@ -13,8 +13,13 @@ import {
   Presentation,
   FileSpreadsheet,
   Code2,
+  Pencil,
+  Trash2,
+  Check,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -31,6 +36,8 @@ import { cn, formatDate } from "@/lib/utils";
 import { useTranslation } from "@/hooks/useTranslation";
 import { LanguageSwitcher } from "@/components/layout/LanguageSwitcher";
 import { useSessionSelect } from "@/hooks/useSessions";
+import { deleteSession, updateSessionTitle } from "@/lib/api";
+import type { SessionSummary } from "@/types";
 
 const FORMAT_ICONS: Record<string, React.ElementType> = {
   pptx: Presentation,
@@ -69,6 +76,8 @@ export function Sidebar({
     isLoadingSession,
     isGenerating,
     reset,
+    updateSession,
+    removeSession,
   } = useSessionStore();
   const { user, clearUser } = useUserStore();
   const documentStore = useDocumentStore();
@@ -78,6 +87,10 @@ export function Sidebar({
   const [pendingNavigation, setPendingNavigation] = React.useState<
     (() => void | Promise<void>) | null
   >(null);
+  const [editingSessionId, setEditingSessionId] = React.useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = React.useState("");
+  const [deletingSession, setDeletingSession] = React.useState<SessionSummary | null>(null);
+  const [isSessionMutating, setIsSessionMutating] = React.useState(false);
 
   const requestNavigation = (action: () => void | Promise<void>) => {
     if (isGenerating) {
@@ -99,6 +112,62 @@ export function Sidebar({
       return;
     }
     requestNavigation(() => selectSession(sessionId));
+  };
+
+  const startEditingSession = (
+    event: React.MouseEvent,
+    session: SessionSummary
+  ) => {
+    event.stopPropagation();
+    setEditingSessionId(session.id);
+    setEditingTitle(session.title || t("sidebar.newChat"));
+  };
+
+  const cancelEditingSession = (event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    setEditingSessionId(null);
+    setEditingTitle("");
+  };
+
+  const submitSessionTitle = async (event?: React.FormEvent | React.MouseEvent) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+    if (!editingSessionId) return;
+    const title = editingTitle.trim();
+    if (!title) return;
+
+    setIsSessionMutating(true);
+    try {
+      const updated = await updateSessionTitle(editingSessionId, title);
+      updateSession(updated);
+      cancelEditingSession();
+    } finally {
+      setIsSessionMutating(false);
+    }
+  };
+
+  const requestDeleteSession = (
+    event: React.MouseEvent,
+    session: SessionSummary
+  ) => {
+    event.stopPropagation();
+    setDeletingSession(session);
+  };
+
+  const confirmDeleteSession = async () => {
+    if (!deletingSession) return;
+    const sessionId = deletingSession.id;
+    setIsSessionMutating(true);
+    try {
+      await deleteSession(sessionId);
+      removeSession(sessionId);
+      if (sessionId === currentSessionId) {
+        documentStore.reset();
+      }
+      setDeletingSession(null);
+    } finally {
+      setIsSessionMutating(false);
+    }
   };
 
   const continueNavigation = () => {
@@ -181,55 +250,135 @@ export function Sidebar({
               {t("sidebar.noHistory")}
             </p>
           )}
-          {sessions.map((session) => (
-            <button
-              key={session.id}
-              type="button"
-              onClick={() => handleSessionSelect(session.id)}
-              disabled={isLoadingSession}
-              className={cn(
-                "w-full min-w-0 text-left rounded-lg text-sm transition-colors duration-150",
-                "hover:bg-accent",
-                collapsed && !isMobile
-                  ? "px-2 py-2.5 flex justify-center"
-                  : "px-3 py-2.5",
-                currentSessionId === session.id
-                  ? "bg-primary/10 text-foreground ring-1 ring-primary/20"
-                  : "text-muted-foreground"
-              )}
-            >
-              {collapsed && !isMobile ? (
-                (() => {
-                  const Icon = session.format ? (FORMAT_ICONS[session.format] || MessageSquare) : MessageSquare;
-                  const color = session.format ? (FORMAT_COLORS[session.format] || "") : "";
-                  return <Icon className={cn("w-4 h-4 mx-auto flex-shrink-0", color)} />;
-                })()
-              ) : (
-                <div className="flex items-start gap-2 min-w-0 overflow-hidden">
-                  {(() => {
-                    const Icon = session.format ? (FORMAT_ICONS[session.format] || MessageSquare) : MessageSquare;
-                    const color = session.format ? (FORMAT_COLORS[session.format] || "") : "";
-                    return <Icon className={cn("w-4 h-4 mt-0.5 flex-shrink-0", color)} />;
-                  })()}
-                  <div className="flex flex-col gap-0.5 min-w-0 overflow-hidden flex-1">
-                    <span className="font-medium text-foreground line-clamp-2 leading-snug break-words">
-                      {session.title || t("sidebar.newChat")}
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      {session.format && (
-                        <span className="text-[10px] px-1 py-0.5 rounded bg-secondary font-medium uppercase">
-                          {session.format}
-                        </span>
+          {sessions.map((session) => {
+            const Icon = session.format
+              ? FORMAT_ICONS[session.format] || MessageSquare
+              : MessageSquare;
+            const color = session.format ? FORMAT_COLORS[session.format] || "" : "";
+            const isEditing = editingSessionId === session.id;
+            const isSelected = currentSessionId === session.id;
+
+            return (
+              <div
+                key={session.id}
+                className={cn(
+                  "group w-full min-w-0 rounded-lg text-sm transition-colors duration-150",
+                  "hover:bg-accent",
+                  collapsed && !isMobile ? "flex justify-center" : "flex items-stretch",
+                  isSelected
+                    ? "bg-primary/10 text-foreground ring-1 ring-primary/20"
+                    : "text-muted-foreground"
+                )}
+              >
+                {collapsed && !isMobile ? (
+                  <button
+                    type="button"
+                    onClick={() => handleSessionSelect(session.id)}
+                    disabled={isLoadingSession}
+                    className="w-full px-2 py-2.5"
+                    title={session.title || t("sidebar.newChat")}
+                  >
+                    <Icon className={cn("w-4 h-4 mx-auto flex-shrink-0", color)} />
+                  </button>
+                ) : isEditing ? (
+                  <form
+                    className="flex min-w-0 flex-1 items-center gap-1 px-2 py-2"
+                    onSubmit={submitSessionTitle}
+                  >
+                    <Input
+                      autoFocus
+                      value={editingTitle}
+                      onChange={(event) => setEditingTitle(event.target.value)}
+                      className="h-8 min-w-0 text-xs"
+                      maxLength={120}
+                      disabled={isSessionMutating}
+                      aria-label={t("sidebar.renameSession")}
+                    />
+                    <Button
+                      type="submit"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 flex-shrink-0"
+                      disabled={isSessionMutating || !editingTitle.trim()}
+                      aria-label={t("sidebar.saveSessionTitle")}
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 flex-shrink-0"
+                      onClick={cancelEditingSession}
+                      disabled={isSessionMutating}
+                      aria-label={t("sidebar.cancelSessionTitle")}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </Button>
+                  </form>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleSessionSelect(session.id)}
+                      disabled={isLoadingSession}
+                      className="min-w-0 flex-1 px-3 py-2.5 text-left"
+                    >
+                      <div className="flex items-start gap-2 min-w-0 overflow-hidden">
+                        <Icon className={cn("w-4 h-4 mt-0.5 flex-shrink-0", color)} />
+                        <div className="flex flex-col gap-0.5 min-w-0 overflow-hidden flex-1">
+                          <span className="font-medium text-foreground line-clamp-2 leading-snug break-words">
+                            {session.title || t("sidebar.newChat")}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {session.format && (
+                              <span className="text-[10px] px-1 py-0.5 rounded bg-secondary font-medium uppercase">
+                                {session.format}
+                              </span>
+                            )}
+                            <span className="text-xs text-muted-foreground truncate">
+                              {formatDate(session.createdAt || session.updatedAt, locale)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                    <div
+                      className={cn(
+                        "flex flex-shrink-0 items-center pr-1 transition-opacity",
+                        isMobile
+                          ? "opacity-100"
+                          : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                       )}
-                      <span className="text-xs text-muted-foreground truncate">
-                        {formatDate(session.updatedAt || session.createdAt, locale)}
-                      </span>
+                    >
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={(event) => startEditingSession(event, session)}
+                        disabled={isSessionMutating}
+                        aria-label={t("sidebar.renameSession")}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive"
+                        onClick={(event) => requestDeleteSession(event, session)}
+                        disabled={isSessionMutating}
+                        aria-label={t("sidebar.deleteSession")}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
                     </div>
-                  </div>
-                </div>
-              )}
-            </button>
-          ))}
+                  </>
+                )}
+              </div>
+            );
+          })}
           {isLoadingSession && (!collapsed || isMobile) && (
             <div className="flex items-center justify-center gap-2 py-3 text-xs text-muted-foreground">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -286,6 +435,41 @@ export function Sidebar({
               {t("navigation.stay")}
             </Button>
             <Button onClick={continueNavigation}>{t("navigation.leave")}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={deletingSession !== null}
+        onOpenChange={(open) => {
+          if (!open && !isSessionMutating) setDeletingSession(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t("sidebar.deleteSessionTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("sidebar.deleteSessionDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => setDeletingSession(null)}
+              disabled={isSessionMutating}
+            >
+              {t("sidebar.cancelDeleteSession")}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmDeleteSession}
+              disabled={isSessionMutating}
+            >
+              {isSessionMutating ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                t("sidebar.confirmDeleteSession")
+              )}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

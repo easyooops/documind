@@ -40,6 +40,7 @@ class DocuMindState(TypedDict, total=False):
     image_attachment_ids: list[str]
     revision_instruction: str
     revision_scope: str
+    slide_revision_instructions: dict[int, str]
 
     # ─── Phase 0: Master Context ─────────────────────────────────────────────
     master_context: dict
@@ -52,6 +53,8 @@ class DocuMindState(TypedDict, total=False):
     layout_system: dict
     title: str
     changed_slide_indices: list[int]
+    visual_asset_plan: dict
+    visual_assets: list[dict]
     format_rules: dict
     template_profile: dict
     template_references: list[dict]

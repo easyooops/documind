@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import path from "node:path";
 import {
+  ensureGraphvizForDiagrams,
   isPortAvailable,
   platform,
   pythonInstallEnv,
@@ -21,6 +22,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const isWin = platform.isWin;
 const python = resolvePython(root);
 const defaultEnv = pythonInstallEnv(process.env, root);
+
+ensureGraphvizForDiagrams(root);
 
 const children = [];
 

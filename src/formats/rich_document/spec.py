@@ -396,12 +396,47 @@ def is_content_removal_request(query: str) -> bool:
     )
 
 
+def is_document_replacement_request(query: str) -> bool:
+    """Detect revisions that should replace the previous content, not merge around it."""
+    lowered = str(query or "").lower()
+    replacement_tokens = (
+        "전체", "전체적으로", "전부", "모두", "완전히", "전면",
+        "새로 작성", "다시 작성", "교체", "바꿔", "변경해줘",
+        "내용으로 변경", "일반 내용", "말고", "대신",
+        "rewrite", "replace", "replace all", "entire document", "all content",
+        "change to", "instead of",
+    )
+    return any(token in lowered for token in replacement_tokens)
+
+
+def revision_guidance(query: str) -> str:
+    """Produce deterministic guidance that makes user edits outrank preservation."""
+    if not query:
+        return ""
+    if is_document_replacement_request(query):
+        return (
+            "Revision priority: USER CHANGE OVERRIDES PRESERVATION. The request is a "
+            "replacement/rewrite request. Return the complete revised document specification, "
+            "not only small patches. Existing sections may be replaced even when titles differ."
+        )
+    if is_content_removal_request(query):
+        return (
+            "Revision priority: remove exactly the content the user asked to remove, then "
+            "return the complete remaining document specification."
+        )
+    return (
+        "Revision priority: apply every user-requested edit exactly. Preserve unrelated "
+        "content only after the requested changes are reflected."
+    )
+
+
 def merge_revision_spec(
     base_spec: dict,
     revised_spec: dict,
     *,
     allow_new_sections: bool = True,
     prune_missing_sections: bool = False,
+    replace_all_sections: bool = False,
 ) -> dict:
     """Keep a prior document intact while applying explicitly planned revised sections."""
     if not base_spec:
@@ -414,7 +449,7 @@ def merge_revision_spec(
         result["executive_summary"] = revised_spec["executive_summary"]
     result["metadata"] = _merge_metadata(result.get("metadata", []), revised_spec.get("metadata", []))
     revised_sections = deepcopy(revised_spec.get("sections", []))
-    if prune_missing_sections and revised_sections:
+    if (prune_missing_sections or replace_all_sections) and revised_sections:
         result["sections"] = [
             {**section, "index": index}
             for index, section in enumerate(revised_sections, 1)

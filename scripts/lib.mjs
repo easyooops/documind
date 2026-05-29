@@ -4,6 +4,8 @@ import net from "node:net";
 import path from "node:path";
 
 const isWin = process.platform === "win32";
+const graphvizUrl =
+  "https://gitlab.com/api/v4/projects/4207231/packages/generic/graphviz-releases/15.0.0/windows_10_cmake_Release_Graphviz-15.0.0-win64.zip";
 
 /** Project-local venv (ASCII path under repo root; avoids user-profile encoding issues on Windows). */
 export function projectVenvDir(repoRoot) {
@@ -59,6 +61,91 @@ export function playwrightInstallEnv(base = process.env, repoRoot, venvPython) {
   }
 
   return env;
+}
+
+function findFile(dir, filename) {
+  if (!fs.existsSync(dir)) return null;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isFile() && entry.name.toLowerCase() === filename.toLowerCase()) {
+      return fullPath;
+    }
+    if (entry.isDirectory()) {
+      const found = findFile(fullPath, filename);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function commandWorks(command, args = [], repoRoot = process.cwd()) {
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    stdio: "ignore",
+    shell: isWin,
+    env: process.env,
+  });
+  return result.status === 0;
+}
+
+/**
+ * Ensure Graphviz exists for Python Diagrams architecture rendering.
+ * Windows gets a project-local portable Graphviz; other OSes only warn.
+ */
+export function ensureGraphvizForDiagrams(repoRoot) {
+  if (!isWin) {
+    if (!commandWorks("dot", ["-V"], repoRoot)) {
+      console.warn(
+        "[documind] Warning: Graphviz 'dot' was not found. Install Graphviz so diagrams can render architecture PNGs."
+      );
+    }
+    return;
+  }
+
+  if (commandWorks("dot", ["-V"], repoRoot)) {
+    console.log("[documind] Graphviz found on PATH.");
+    return;
+  }
+
+  const graphvizDir = path.join(repoRoot, ".tools", "graphviz");
+  const existingDot = findFile(graphvizDir, "dot.exe");
+  if (existingDot) {
+    console.log(`[documind] Project Graphviz found: ${existingDot}`);
+    return;
+  }
+
+  console.log("\n> install portable Graphviz for diagrams\n");
+  fs.mkdirSync(graphvizDir, { recursive: true });
+  const zipPath = path.join(graphvizDir, "graphviz-15.0.0-win64.zip");
+  const psScript = [
+    "$ErrorActionPreference='Stop'",
+    `$url=${JSON.stringify(graphvizUrl)}`,
+    `$zip=${JSON.stringify(zipPath)}`,
+    `$dest=${JSON.stringify(graphvizDir)}`,
+    "Invoke-WebRequest -Uri $url -OutFile $zip",
+    "Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force",
+  ].join("; ");
+  const result = spawnSync(
+    "powershell",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript],
+    {
+      cwd: repoRoot,
+      stdio: "inherit",
+      shell: false,
+      env: process.env,
+    }
+  );
+  if (result.status !== 0) {
+    console.warn(
+      "[documind] Warning: portable Graphviz download failed. Diagrams will fall back until Graphviz is installed."
+    );
+    return;
+  }
+
+  const installedDot = findFile(graphvizDir, "dot.exe");
+  if (installedDot) {
+    console.log(`[documind] Portable Graphviz installed: ${installedDot}`);
+  }
 }
 
 /**

@@ -84,6 +84,13 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
     }
     revision_instruction = state.get("revision_instruction", state.get("user_query", ""))
     revision_scope = state.get("revision_scope", "minimal_patch")
+    slide_revision_instructions = _normalize_slide_instruction_map(
+        state.get("slide_revision_instructions", {})
+    )
+    visual_assets = [
+        asset for asset in state.get("visual_assets", [])
+        if isinstance(asset, dict) and asset.get("path")
+    ]
 
     tracker = ElementUsageTracker()
     previous_usage = state.get("element_usage", {})
@@ -111,6 +118,11 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
                 tracker.record(prior.get("elements_used", []))
                 continue
             fix_instructions = _get_slide_fixes(blueprint.get("index", 0), qa_feedback)
+            slide_instruction = _revision_instruction_for_slide(
+                revision_instruction,
+                slide_revision_instructions,
+                index,
+            )
             tasks.append(
                 _generate_single_slide(
                     blueprint=blueprint,
@@ -121,8 +133,12 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
                     fix_instructions=fix_instructions,
                     original_html=base_slides.get(index, {}).get("html"),
                     original_blueprint=parent_blueprints.get(index),
-                    revision_instruction=revision_instruction,
+                    revision_instruction=slide_instruction,
                     revision_scope=revision_scope,
+                    visual_assets=[
+                        asset for asset in visual_assets
+                        if asset.get("slide_index") == index
+                    ],
                 )
             )
 
@@ -141,6 +157,11 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
 
     logger.info("html_generator.complete", slides=len(slides_html))
 
+    if visual_assets:
+        slides_html = _inject_visual_asset_images(slides_html, visual_assets)
+
+    slides_html = _normalize_generated_slide_html(slides_html)
+
     await _prefetch_icons(slides_html, design_system)
     await _generate_slide_images(slides_html)
 
@@ -149,6 +170,18 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
         "element_usage": tracker.to_dict(),
         "current_phase": "generating",
     }
+
+
+def _normalize_generated_slide_html(slides_html: list[dict]) -> list[dict]:
+    """Apply deterministic fit/clamp rules before preview and PPTX conversion."""
+    from src.formats.pptx.agents.nodes.render_convert import _normalize_slide_html
+
+    normalized = []
+    for slide in slides_html:
+        copied = dict(slide)
+        copied["html"] = _normalize_slide_html(str(slide.get("html", "")))
+        normalized.append(copied)
+    return normalized
 
 
 def _reuse_parent_regions(
@@ -195,6 +228,7 @@ async def _generate_single_slide(
     original_blueprint: dict | None = None,
     revision_instruction: str = "",
     revision_scope: str = "minimal_patch",
+    visual_assets: list[dict] | None = None,
 ) -> dict:
     """Generate Constrained HTML for a single slide."""
     from src.formats.pptx.rulesets import get_ruleset
@@ -299,6 +333,16 @@ Available body area: {body_region['w']}px wide × {body_region['h']}px tall (sta
 
     if blueprint.get("data_points"):
         context_parts.append(f"\n### Data Points:\n{json.dumps(blueprint['data_points'], ensure_ascii=False, indent=2)}")
+
+    if visual_assets:
+        context_parts.append(
+            "\n### Required Slide Image Assets\n"
+            "Use these rendered assets as slide elements when they improve the layout. "
+            "If used, insert each as an element with data-pptx-type=\"image\", "
+            "data-pptx-image-id, and data-pptx-image-path exactly as supplied. "
+            "The system will also insert any required asset you omit.\n"
+            f"{json.dumps(_asset_prompt_records(visual_assets), ensure_ascii=False, indent=2)}"
+        )
 
     context_parts.append(f"\n### Design Tokens:\n{json.dumps(design_system, ensure_ascii=False, indent=2)}")
     context_parts.append(f"\n### Diversity Requirement:\n{diversity_hint}")
@@ -891,16 +935,243 @@ def _extract_elements_used(html: str) -> list[str]:
     return elements
 
 
+def _asset_prompt_records(visual_assets: list[dict]) -> list[dict]:
+    records = []
+    for asset in visual_assets:
+        placement = asset.get("placement", {})
+        records.append({
+            "id": asset.get("id"),
+            "method": asset.get("method"),
+            "title": asset.get("title"),
+            "description": asset.get("description"),
+            "path": asset.get("path"),
+            "placement": placement,
+            "html_example": (
+                f'<div data-pptx-type="image" data-pptx-image-id="{asset.get("id")}" '
+                f'data-pptx-image-path="{asset.get("path")}" '
+                f'style="position:absolute;left:{placement.get("x", 360)}px;'
+                f'top:{placement.get("y", 112)}px;width:{placement.get("w", 520)}px;'
+                f'height:{placement.get("h", 330)}px"></div>'
+            ),
+        })
+    return records
+
+
+def _inject_visual_asset_images(slides_html: list[dict], visual_assets: list[dict]) -> list[dict]:
+    """Ensure materialized visual assets are present as image elements."""
+    from bs4 import BeautifulSoup
+
+    assets_by_slide: dict[int, list[dict]] = {}
+    for asset in visual_assets:
+        try:
+            slide_index = int(asset.get("slide_index", 0))
+        except (TypeError, ValueError):
+            continue
+        assets_by_slide.setdefault(slide_index, []).append(asset)
+
+    for slide in slides_html:
+        try:
+            slide_index = int(slide.get("index", 0))
+        except (TypeError, ValueError):
+            continue
+        assets = assets_by_slide.get(slide_index, [])
+        if not assets:
+            continue
+        html = str(slide.get("html", ""))
+        inserted = False
+        for asset in assets:
+            asset_id = str(asset.get("id", ""))
+            image_path = str(asset.get("path", ""))
+            if not asset_id or not image_path or _slide_has_visual_asset(html, asset):
+                continue
+            image_element = _visual_asset_html(asset)
+            soup = BeautifulSoup(html, "html.parser")
+            wrapper = soup.find(attrs={"data-slide": True})
+            if wrapper:
+                _remove_overlapping_body_elements(wrapper, _asset_box(asset))
+                image_node = BeautifulSoup(image_element, "html.parser").find(
+                    attrs={"data-pptx-type": "image"}
+                )
+                if image_node:
+                    wrapper.append(image_node)
+                html = str(soup)
+            elif "</div>" in html:
+                html = html.rsplit("</div>", 1)[0] + f"  {image_element}\n</div>"
+            else:
+                html += image_element
+            inserted = True
+        if inserted:
+            slide["html"] = html
+            elements = set(slide.get("elements_used", []))
+            elements.add("image")
+            slide["elements_used"] = sorted(elements)
+    return slides_html
+
+
+def _visual_asset_html(asset: dict) -> str:
+    placement = asset.get("placement", {})
+    x = placement.get("x", 360)
+    y = placement.get("y", 112)
+    w = placement.get("w", 520)
+    h = placement.get("h", 330)
+    asset_id = str(asset.get("id", "visual_asset")).replace('"', "")
+    image_path = str(asset.get("path", "")).replace('"', "&quot;")
+    return (
+        f'<div data-pptx-type="image" data-pptx-image-id="{asset_id}" '
+        f'data-pptx-image-path="{image_path}" data-pptx-auto-asset="true" data-pptx-z="50" '
+        f'style="position:absolute;left:{x}px;top:{y}px;width:{w}px;height:{h}px;'
+        f'background-color:#FFFFFF;border:1px solid #CBD5E1"></div>'
+    )
+
+
+def _slide_has_visual_asset(html: str, asset: dict) -> bool:
+    from bs4 import BeautifulSoup
+
+    asset_id = str(asset.get("id", ""))
+    image_path = str(asset.get("path", ""))
+    soup = BeautifulSoup(html, "html.parser")
+    for node in soup.find_all(attrs={"data-pptx-type": "image"}):
+        if asset_id and str(node.attrs.get("data-pptx-image-id", "")) == asset_id:
+            return True
+        if image_path and str(node.attrs.get("data-pptx-image-path", "")) == image_path:
+            return True
+    return False
+
+
+def _remove_overlapping_body_elements(wrapper, asset_box: tuple[float, float, float, float]) -> None:
+    for node in list(wrapper.find_all(recursive=False)):
+        attrs = getattr(node, "attrs", {})
+        if not attrs.get("data-pptx-type"):
+            continue
+        if attrs.get("data-pptx-region") in {"background", "header", "footer"}:
+            continue
+        pptx_type = str(attrs.get("data-pptx-type", ""))
+        if pptx_type == "icon":
+            threshold = 0.01
+        elif pptx_type in {"textbox", "shape", "table", "chart", "image"}:
+            threshold = 0.12
+        else:
+            continue
+        box = _node_box(node)
+        if not box:
+            continue
+        if _overlap_ratio(asset_box, box) > threshold:
+            node.decompose()
+
+
+def _asset_box(asset: dict) -> tuple[float, float, float, float]:
+    placement = asset.get("placement", {})
+    return (
+        _num(placement.get("x"), 360),
+        _num(placement.get("y"), 112),
+        _num(placement.get("w"), 520),
+        _num(placement.get("h"), 330),
+    )
+
+
+def _node_box(node) -> tuple[float, float, float, float] | None:
+    style = str(getattr(node, "attrs", {}).get("style", ""))
+    width = _style_number(style, "width")
+    height = _style_number(style, "height")
+    if width <= 0 or height <= 0:
+        return None
+    return (
+        _style_number(style, "left"),
+        _style_number(style, "top"),
+        width,
+        height,
+    )
+
+
+def _style_number(style: str, property_name: str) -> float:
+    match = re.search(rf"(?:^|;)\s*{property_name}\s*:\s*(-?\d+(?:\.\d+)?)px", style)
+    return float(match.group(1)) if match else 0.0
+
+
+def _overlap_ratio(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    x_overlap = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    y_overlap = max(0, min(ay + ah, by + bh) - max(ay, by))
+    if x_overlap <= 0 or y_overlap <= 0:
+        return 0.0
+    area = x_overlap * y_overlap
+    return area / max(1, min(aw * ah, bw * bh))
+
+
+def _num(value: object, fallback: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _get_slide_fixes(slide_index: int, qa_feedback: dict) -> list[str] | None:
     """Extract fix instructions for a specific slide from QA feedback."""
     if not qa_feedback or not isinstance(qa_feedback, dict):
         return None
-    fixes = qa_feedback.get("fix_instructions", [])
+    fixes = [str(fix) for fix in qa_feedback.get("fix_instructions", [])]
+    per_slide_issues = qa_feedback.get("per_slide_issues", {})
+    issues = []
+    if isinstance(per_slide_issues, dict):
+        raw_issues = per_slide_issues.get(slide_index, per_slide_issues.get(str(slide_index), []))
+        if isinstance(raw_issues, list):
+            issues.extend(
+                f"Slide {slide_index}: {issue}"
+                for issue in raw_issues
+                if str(issue).strip()
+            )
+    global_issues = [
+        issue for issue in qa_feedback.get("issues", [])
+        if isinstance(issue, str) and "All slides:" in issue
+    ]
     slide_fixes = [
         f for f in fixes
         if f"Slide {slide_index}" in f or f"slide {slide_index}" in f or "all slides" in f.lower()
     ]
+    slide_fixes.extend(issues[:30])
+    slide_fixes.extend(global_issues[:10])
+    seen = set()
+    slide_fixes = [
+        item for item in slide_fixes
+        if not (item in seen or seen.add(item))
+    ]
     return slide_fixes if slide_fixes else None
+
+
+def _normalize_slide_instruction_map(value: object) -> dict[int, str]:
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key, instruction in value.items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            continue
+        text = str(instruction or "").strip()
+        if text:
+            result[index] = text
+    return result
+
+
+def _revision_instruction_for_slide(
+    fallback: str,
+    slide_instructions: dict[int, str],
+    slide_index: int,
+) -> str:
+    if not slide_instructions:
+        return fallback
+    instruction = slide_instructions.get(slide_index)
+    if instruction:
+        return (
+            f"Only apply the user request for slide {slide_index}. "
+            f"Do not apply requests for other slides.\nSlide {slide_index} request: {instruction}"
+        )
+    return (
+        "This slide has no explicit user change request. Preserve it unless QA fixes "
+        "for this slide are provided.\nOriginal request context:\n"
+        + fallback
+    )
 
 
 def _as_dict(value: object) -> dict:

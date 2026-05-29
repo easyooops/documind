@@ -213,6 +213,18 @@ def _block(page, block: dict, y: float, colors: dict, font: str, fontfile: str |
     import fitz
 
     kind = block.get("type")
+    if kind == "image":
+        image_path = Path(str(block.get("src") or block.get("path") or "")).expanduser()
+        box = fitz.Rect(48, y, 547, y + 210)
+        if image_path.exists() and image_path.is_file():
+            image_rect = _contain_image_rect(image_path, box)
+            page.insert_image(image_rect, filename=str(image_path), keep_proportion=True)
+            if block.get("caption"):
+                _text(page, fitz.Rect(48, image_rect.y1 + 8, 547, image_rect.y1 + 28), str(block.get("caption", "")), 8, colors["muted"], font, fontfile)
+                return image_rect.y1 + 42
+            return image_rect.y1 + 24
+        _text(page, box, str(block.get("alt") or block.get("caption") or "Image"), 10, colors["muted"], font, fontfile)
+        return y + 70
     if kind == "kpi_grid":
         items = block.get("items", [])[:3]
         width = 155
@@ -286,6 +298,33 @@ def _paragraph_panel_height(text: str, *, width: float, fontsize: float, minimum
             units = 0
     estimated = 34 + (lines * fontsize * 1.48)
     return max(minimum, min(maximum, estimated))
+
+
+def _contain_image_rect(path: Path, box):
+    """Preserve original image aspect ratio inside a PDF layout box."""
+    import fitz
+    from PIL import Image
+
+    try:
+        with Image.open(path) as image:
+            image_w, image_h = image.size
+    except Exception:
+        return box
+    if image_w <= 0 or image_h <= 0:
+        return box
+    box_w = box.width
+    box_h = box.height
+    image_ratio = image_w / image_h
+    box_ratio = box_w / box_h
+    if image_ratio > box_ratio:
+        target_w = box_w
+        target_h = box_w / image_ratio
+    else:
+        target_h = box_h
+        target_w = box_h * image_ratio
+    x0 = box.x0 + (box_w - target_w) / 2
+    y0 = box.y0 + (box_h - target_h) / 2
+    return fitz.Rect(x0, y0, x0 + target_w, y0 + target_h)
 
 
 def _text(page, rect, text: str, size: float, color: tuple, fontname: str, fontfile: str | None) -> None:

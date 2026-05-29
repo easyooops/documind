@@ -26,10 +26,12 @@ from .spec import (
     has_planned_content,
     infer_document_intent,
     is_content_removal_request,
+    is_document_replacement_request,
     merge_revision_spec,
     normalize_design_system,
     normalize_document_intent,
     normalize_document_spec,
+    revision_guidance,
 )
 
 logger = get_logger(__name__)
@@ -222,15 +224,22 @@ def build_native_document_pipeline(format_id: str, renderer_class: type, ruleset
         base_spec = state.get("_base_document_spec", {})
         user_query = str(state.get("user_query", ""))
         delete_requested = is_content_removal_request(user_query)
+        replace_requested = is_document_replacement_request(user_query)
         revision = ""
         if base_spec:
             revision = (
                 "\nThis is a revision of an existing document. Preserve its title, layout, unchanged "
                 "sections and populated content unless the user explicitly requests replacement or removal. "
+                "The user's latest instruction is authoritative; preservation rules must never block the "
+                "requested edit. "
                 "If the user asks to remove/delete unnecessary content, return the complete list of "
                 "remaining sections after deletion (do not include removed sections). "
-                "Otherwise, return only changed/new sections and changed metadata or summary; omitted "
-                "existing sections will remain in the document. Never convert it to a generic report. "
+                "If the user asks to rewrite, replace, change all content, change to ordinary content, "
+                "or change the document away from a previous topic/style, return the complete revised "
+                "document specification. Otherwise, return only changed/new sections and changed metadata "
+                "or summary; omitted existing sections will remain in the document. Never convert it to "
+                "a generic report unless the user explicitly asks for that new content direction. "
+                f"{revision_guidance(user_query)}\n"
                 "Existing document specification:\n"
                 + json.dumps(base_spec, ensure_ascii=False)[:6000]
             )
@@ -355,6 +364,7 @@ def build_native_document_pipeline(format_id: str, renderer_class: type, ruleset
                     spec,
                     allow_new_sections=not summary_only_pdf_revision,
                     prune_missing_sections=delete_requested and not summary_only_pdf_revision,
+                    replace_all_sections=replace_requested and not summary_only_pdf_revision,
                 )
         else:
             spec = existing_spec or normalize_document_spec(

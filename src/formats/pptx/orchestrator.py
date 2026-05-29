@@ -15,6 +15,7 @@ from src.formats.pptx.agents.nodes.design_evaluator import design_quality_evalua
 from src.formats.pptx.agents.nodes.html_generator import html_generator_parallel
 from src.formats.pptx.agents.nodes.render_convert import render_and_convert
 from src.formats.pptx.agents.nodes.unified_planner import unified_planner
+from src.formats.pptx.agents.nodes.visual_asset_planner import visual_asset_planner
 from src.formats.pptx.agents.nodes.vlm_qa import vlm_quality_gate
 from src.schemas.agents import DocuMindState
 
@@ -64,6 +65,17 @@ def _route_qa(state: DocuMindState) -> str:
     return "generate_html"
 
 
+async def _quality_assessment(state: DocuMindState) -> dict:
+    """Run rule-based and visual QA as one user-visible quality step."""
+    rule_output = await design_quality_evaluator(state)
+    visual_output = await vlm_quality_gate({**state, **rule_output})
+    return {
+        **rule_output,
+        **visual_output,
+        "current_phase": "qa",
+    }
+
+
 def _export_node(state: DocuMindState) -> dict:
     """Final export node — marks completion."""
     return {"current_phase": "done"}
@@ -79,14 +91,14 @@ def build_pptx_pipeline() -> StateGraph:
     # Phase A: Planning
     graph.add_node("research", research_agent)
     graph.add_node("plan", unified_planner)
+    graph.add_node("visual_asset_plan", visual_asset_planner)
 
     # Phase B: HTML Generation
     graph.add_node("generate_html", html_generator_parallel)
 
     # Phase C: Render + Design Quality Evaluation
     graph.add_node("render_convert", render_and_convert)
-    graph.add_node("design_evaluate", design_quality_evaluator)
-    graph.add_node("vlm_qa", vlm_quality_gate)
+    graph.add_node("quality_assessment", _quality_assessment)
     graph.add_node("export", _export_node)
 
     # Entry
@@ -100,15 +112,15 @@ def build_pptx_pipeline() -> StateGraph:
     graph.add_edge("research", "plan")
 
     # Phase A → B
-    graph.add_edge("plan", "generate_html")
+    graph.add_edge("plan", "visual_asset_plan")
+    graph.add_edge("visual_asset_plan", "generate_html")
 
     # Phase B → C
     graph.add_edge("generate_html", "render_convert")
-    graph.add_edge("render_convert", "design_evaluate")
-    graph.add_edge("design_evaluate", "vlm_qa")
+    graph.add_edge("render_convert", "quality_assessment")
 
     # QA routing (pass → export, fail → retry HTML generation)
-    graph.add_conditional_edges("vlm_qa", _route_qa, {
+    graph.add_conditional_edges("quality_assessment", _route_qa, {
         "export": "export",
         "generate_html": "generate_html",
     })

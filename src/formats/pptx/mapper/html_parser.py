@@ -147,7 +147,7 @@ def _parse_node(node) -> ParsedElement | None:
     }
 
     text_content = _extract_text_content(node, pptx_type)
-    text_runs = _extract_text_runs(node, pptx_type)
+    text_runs = _extract_text_runs(node, pptx_type, styles)
 
     attributes = {}
     for attr_name, attr_value in node.attrs.items():
@@ -214,6 +214,17 @@ def _extract_text_content(node, pptx_type: str) -> str:
     for child in node.children:
         if hasattr(child, "attrs") and child.get("data-pptx-type"):
             continue
+        if hasattr(child, "name") and str(child.name).lower() in {"ul", "ol"}:
+            ordered = str(child.name).lower() == "ol"
+            items = [
+                li.get_text(" ", strip=True)
+                for li in child.find_all("li", recursive=False)
+                if li.get_text(" ", strip=True)
+            ]
+            for index, item in enumerate(items, start=1):
+                marker = f"{index}." if ordered else "•"
+                texts.append(f"{marker} {_strip_list_marker(item)}")
+            continue
         if hasattr(child, "get_text"):
             text = child.get_text(separator="\n", strip=True)
             if text:
@@ -235,17 +246,56 @@ def _normalize_text_lines(text: str) -> str:
     return "\n".join(line.strip() for line in normalized.split("\n") if line.strip())
 
 
-def _extract_text_runs(node, pptx_type: str) -> list[dict]:
-    """Extract text runs with inline formatting (bold, italic, color, size).
+def _strip_list_marker(line: str) -> str:
+    return re.sub(
+        r"^\s*(?:[•▸▶→▪◦◆◇✓\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s*",
+        "",
+        str(line),
+    ).strip()
 
-    Returns a list of dicts: [{"text": str, "bold": bool, "italic": bool, "color": str, "size": str}]
+
+def _extract_text_runs(node, pptx_type: str, styles: dict | None = None) -> list[dict]:
+    """Extract text runs with inherited inline formatting.
+
+    Returns run dictionaries with text plus font weight, style, color, size,
+    family, underline, and strike flags where present.
     """
     if pptx_type in ("table", "chart", "image", "connector", "icon"):
         return []
 
     runs = []
-    _walk_for_runs(node, runs, {})
+    _walk_for_runs(node, runs, _text_style_from_css(styles or {}))
     return runs
+
+
+def _text_style_from_css(style_dict: dict, inherited: dict | None = None) -> dict:
+    child_styles = dict(inherited or {})
+
+    fw = str(style_dict.get("font-weight", ""))
+    if fw in ("bold", "600", "700", "800", "900") or (fw.isdigit() and int(fw) >= 600):
+        child_styles["bold"] = True
+    elif fw in ("normal", "400", "300", "200", "100"):
+        child_styles["bold"] = False
+
+    if style_dict.get("font-style") == "italic":
+        child_styles["italic"] = True
+    elif style_dict.get("font-style") == "normal":
+        child_styles["italic"] = False
+
+    if style_dict.get("color"):
+        child_styles["color"] = style_dict["color"]
+    if style_dict.get("font-size"):
+        child_styles["size"] = style_dict["font-size"]
+    if style_dict.get("font-family"):
+        child_styles["font_family"] = style_dict["font-family"]
+
+    decoration = str(style_dict.get("text-decoration", "")).lower()
+    if "underline" in decoration:
+        child_styles["underline"] = True
+    if "line-through" in decoration:
+        child_styles["strike"] = True
+
+    return child_styles
 
 
 def _walk_for_runs(node, runs: list, inherited_styles: dict) -> None:
@@ -255,14 +305,21 @@ def _walk_for_runs(node, runs: list, inherited_styles: dict) -> None:
             continue
 
         if isinstance(child, str):
-            text = child.strip()
-            if text:
+            text = re.sub(r"\s+", " ", child)
+            if text and child[:1].isspace():
+                text = " " + text.lstrip()
+            if text and child[-1:].isspace():
+                text = text.rstrip() + " "
+            if text.strip():
                 runs.append({
                     "text": text,
                     "bold": inherited_styles.get("bold", False),
                     "italic": inherited_styles.get("italic", False),
                     "color": inherited_styles.get("color", ""),
                     "size": inherited_styles.get("size", ""),
+                    "font_family": inherited_styles.get("font_family", ""),
+                    "underline": inherited_styles.get("underline", False),
+                    "strike": inherited_styles.get("strike", False),
                 })
             continue
 
@@ -276,19 +333,15 @@ def _walk_for_runs(node, runs: list, inherited_styles: dict) -> None:
             child_styles["bold"] = True
         if tag in ("i", "em"):
             child_styles["italic"] = True
+        if tag == "u":
+            child_styles["underline"] = True
+        if tag in ("s", "strike", "del"):
+            child_styles["strike"] = True
 
         inline_style = child.get("style", "")
         if inline_style:
             style_dict = _parse_inline_styles(inline_style)
-            fw = style_dict.get("font-weight", "")
-            if fw in ("bold", "700", "800", "900") or (fw.isdigit() and int(fw) >= 700):
-                child_styles["bold"] = True
-            if style_dict.get("font-style") == "italic":
-                child_styles["italic"] = True
-            if style_dict.get("color"):
-                child_styles["color"] = style_dict["color"]
-            if style_dict.get("font-size"):
-                child_styles["size"] = style_dict["font-size"]
+            child_styles = _text_style_from_css(style_dict, child_styles)
 
         inner_text = child.get_text(separator="\n", strip=True) if hasattr(child, "get_text") else ""
 
@@ -301,5 +354,8 @@ def _walk_for_runs(node, runs: list, inherited_styles: dict) -> None:
                 "italic": child_styles.get("italic", False),
                 "color": child_styles.get("color", ""),
                 "size": child_styles.get("size", ""),
+                "font_family": child_styles.get("font_family", ""),
+                "underline": child_styles.get("underline", False),
+                "strike": child_styles.get("strike", False),
             })
 

@@ -179,6 +179,7 @@ DocuMind is built on top of many open-source projects:
 - Agentic runtime: `LangGraph`, `LangChain`
 - LLM/Provider integrations: `OpenAI SDK`, `Anthropic SDK`, `Boto3`
 - Document/rendering stack: `python-pptx`, `PyMuPDF`, `Playwright`, `lxml`, `Pillow`
+- Architecture diagrams: `diagrams==0.25.1` (MIT, mingrammer) - source: https://github.com/mingrammer/diagrams, homepage: https://diagrams.mingrammer.com
 - Frontend: `Next.js`, `React`, `Tailwind CSS`, `Zustand`
 
 Dependency policy and allowed licenses are managed in `pyproject.toml`.

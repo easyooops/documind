@@ -50,7 +50,7 @@ async def list_user_sessions(
     user_id: str,
     db: AsyncSession = Depends(get_session),
 ):
-    """List all sessions belonging to a user, ordered by most recent."""
+    """List all sessions belonging to a user, ordered by initial creation time."""
     from src.core.config import settings
     from sqlalchemy.orm import selectinload
 
@@ -60,7 +60,7 @@ async def list_user_sessions(
             .where(text("json_extract(metadata, '$.user_id') = :uid"))
             .params(uid=user_id)
             .options(selectinload(Session.jobs))
-            .order_by(Session.updated_at.desc())
+            .order_by(Session.created_at.desc())
             .limit(50)
         )
     else:
@@ -68,7 +68,7 @@ async def list_user_sessions(
             select(Session)
             .where(Session.metadata_["user_id"].as_string() == user_id)
             .options(selectinload(Session.jobs))
-            .order_by(Session.updated_at.desc())
+            .order_by(Session.created_at.desc())
             .limit(50)
         )
 

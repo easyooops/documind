@@ -18,7 +18,15 @@
     "newDocument": "새 문서 생성",
     "newChat": "새 대화",
     "noHistory": "대화 이력이 없습니다",
-    "loading": "불러오는 중..."
+    "loading": "불러오는 중...",
+    "renameSession": "\uc138\uc158 \uc774\ub984 \ubcc0\uacbd",
+    "saveSessionTitle": "\uc81c\ubaa9 \uc800\uc7a5",
+    "cancelSessionTitle": "\uc774\ub984 \ubcc0\uacbd \ucde8\uc18c",
+    "deleteSession": "\uc138\uc158 \uc0ad\uc81c",
+    "deleteSessionTitle": "\uc138\uc158 \uc0ad\uc81c",
+    "deleteSessionDescription": "\uc774 \ub300\ud654\ub97c \uc774\ub825\uc5d0\uc11c \uc0ad\uc81c\ud569\ub2c8\ub2e4.",
+    "cancelDeleteSession": "\ucde8\uc18c",
+    "confirmDeleteSession": "\uc0ad\uc81c"
   },
   "navigation": {
     "processingTitle": "문서 생성이 진행 중입니다",

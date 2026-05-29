@@ -7,6 +7,7 @@ All conversions are pure arithmetic (px → EMU, degrees → 60000ths).
 from __future__ import annotations
 
 import io
+import json
 import uuid
 from pathlib import Path
 
@@ -700,6 +701,17 @@ class CSStoOOXMLEngine:
         """Add an image element. Uses generated image from cache if available, else placeholder."""
         from pptx.util import Emu
 
+        image_path = element.attributes.get("data-pptx-image-path", "")
+        if image_path:
+            try:
+                path = Path(image_path)
+                if path.exists() and path.is_file():
+                    x, y, w, h = self._image_geometry_for_element(path, element)
+                    slide.shapes.add_picture(str(path), Emu(x), Emu(y), Emu(w), Emu(h))
+                    return
+            except Exception:
+                pass
+
         image_prompt = element.attributes.get("data-pptx-image-gen", "")
         if image_prompt:
             try:
@@ -708,17 +720,61 @@ class CSStoOOXMLEngine:
                 cache_key = hashlib.md5(f"{image_prompt}_512_512_professional".encode()).hexdigest()
                 cache_path = IMAGE_CACHE_DIR / f"{cache_key}.png"
                 if cache_path.exists():
-                    pos = element.position
-                    x = self._x(pos["left"])
-                    y = self._y(pos["top"])
-                    w = self._w(pos["width"])
-                    h = self._h(pos["height"])
+                    x, y, w, h = self._image_geometry_for_element(cache_path, element)
                     slide.shapes.add_picture(str(cache_path), Emu(x), Emu(y), Emu(w), Emu(h))
                     return
             except Exception:
                 pass
 
         self._add_shape(slide, element)
+
+    def _image_geometry_for_element(self, path: Path, element: ParsedElement) -> tuple[int, int, int, int]:
+        """Fit image pixels into the HTML image box without distorting aspect ratio."""
+        pos = element.position
+        x = self._x(pos["left"])
+        y = self._y(pos["top"])
+        w = max(1, self._w(pos["width"]))
+        h = max(1, self._h(pos["height"]))
+        fit = str(element.attributes.get("data-pptx-image-fit", "contain")).lower()
+        if fit == "stretch":
+            return x, y, w, h
+
+        source_w, source_h = self._image_pixel_size(path)
+        if source_w <= 0 or source_h <= 0:
+            return x, y, w, h
+
+        box_ratio = w / h
+        source_ratio = source_w / source_h
+        if fit == "cover":
+            if source_ratio > box_ratio:
+                target_h = h
+                target_w = int(h * source_ratio)
+            else:
+                target_w = w
+                target_h = int(w / source_ratio)
+        else:
+            if source_ratio > box_ratio:
+                target_w = w
+                target_h = int(w / source_ratio)
+            else:
+                target_h = h
+                target_w = int(h * source_ratio)
+
+        return (
+            x + int((w - target_w) / 2),
+            y + int((h - target_h) / 2),
+            max(1, target_w),
+            max(1, target_h),
+        )
+
+    def _image_pixel_size(self, path: Path) -> tuple[int, int]:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                return image.size
+        except Exception:
+            return 0, 0
 
     def _apply_fill(self, pptx_shape, styles: dict) -> None:
         """Apply background fill from CSS styles."""
@@ -820,45 +876,24 @@ class CSStoOOXMLEngine:
         else:
             tf.auto_size = MSO_AUTO_SIZE.NONE
 
-        padding_str = element.styles.get("padding", "")
-        pad_px = self._extract_px_value(padding_str) if padding_str else 0
-        pad_left = self._extract_px_value(element.styles.get("padding-left", "")) or pad_px or 8
-        pad_right = self._extract_px_value(element.styles.get("padding-right", "")) or pad_px or 8
-        pad_top = self._extract_px_value(element.styles.get("padding-top", "")) or pad_px or 4
-        pad_bottom = self._extract_px_value(element.styles.get("padding-bottom", "")) or pad_px or 4
+        pad_top, pad_right, pad_bottom, pad_left = self._text_padding_box(element)
         tf.margin_left = Emu(self._w(pad_left))
         tf.margin_right = Emu(self._w(pad_right))
         tf.margin_top = Emu(self._h(pad_top))
         tf.margin_bottom = Emu(self._h(pad_bottom))
 
-        v_align = element.styles.get("vertical-align", "")
-        if not v_align:
-            align_items = element.styles.get("align-items", "")
-            if align_items in ("center", "middle"):
-                v_align = "middle"
-            elif align_items in ("flex-end", "end", "bottom"):
-                v_align = "bottom"
-            else:
-                v_align = "top"
+        v_align = self._text_vertical_align(element, text)
         anchor_map = {"top": MSO_ANCHOR.TOP, "middle": MSO_ANCHOR.MIDDLE, "bottom": MSO_ANCHOR.BOTTOM}
         tf.vertical_anchor = anchor_map.get(v_align, MSO_ANCHOR.TOP)
 
-        align_css = element.styles.get("text-align", "")
-        if not align_css:
-            justify = element.styles.get("justify-content", "")
-            if justify in ("center", "middle"):
-                align_css = "center"
-            elif justify in ("flex-end", "end", "right"):
-                align_css = "right"
-            else:
-                align_css = "left"
+        align_css = self._text_horizontal_align(element, text)
         align_map = {"left": PP_ALIGN.LEFT, "center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT, "justify": PP_ALIGN.JUSTIFY}
 
         font_size_px = self._extract_px_value(element.styles.get("font-size", "16px"))
         font_weight = element.styles.get("font-weight", "400")
         font_family = element.styles.get("font-family", "Pretendard")
         font_color = self._extract_color(element.styles.get("color", ""))
-        line_height_str = element.styles.get("line-height", "1.4")
+        line_height_str = element.attributes.get("data-pptx-line-height") or element.styles.get("line-height", "1.4")
 
         if not font_color:
             bg_color = self._extract_color(
@@ -870,13 +905,28 @@ class CSStoOOXMLEngine:
             else:
                 font_color = "1e293b"
 
-        is_bold = font_weight in ("bold", "700", "800", "900") or (font_weight.isdigit() and int(font_weight) >= 700)
+        is_bold = font_weight in ("bold", "600", "700", "800", "900") or (font_weight.isdigit() and int(font_weight) >= 600)
+        bg_color = self._extract_color(
+            element.styles.get("background-color", "")
+            or element.styles.get("background", "")
+        )
+        if bg_color and font_color:
+            font_color = self._ensure_contrast_color(
+                font_color,
+                bg_color,
+                font_size_px=font_size_px,
+                bold=is_bold,
+            )
 
         line_height = self._parse_line_height(line_height_str)
         letter_spacing_px = self._extract_px_value(element.styles.get("letter-spacing", "0"))
 
         container_h = element.position.get("height", 0)
         container_w = element.position.get("width", 0)
+
+        list_kind = self._list_kind(element, text)
+        if list_kind:
+            text = self._normalize_list_text(text, ordered=list_kind == "numbered")
 
         actual_paras = [p for p in text.split("\n") if p.strip()]
         if container_w > 0 and container_h > 0 and text and not self._is_generated_header(element):
@@ -905,25 +955,38 @@ class CSStoOOXMLEngine:
             if len(actual_paras) > 1:
                 p.space_before = Pt(2)
                 p.space_after = Pt(2)
+            if list_kind:
+                p.level = 0
 
             para_runs = [
                 r for r in element.text_runs
                 if r.get("text", "").strip() and para_text.find(r["text"].strip()) >= 0
             ]
 
-            if para_runs:
+            if para_runs and not list_kind:
                 for run_data in para_runs:
                     run = p.add_run()
                     run.text = run_data["text"]
                     run_bold = run_data.get("bold", False) or is_bold
                     run.font.bold = run_bold
                     run.font.italic = run_data.get("italic", False)
+                    run.font.underline = bool(run_data.get("underline", False))
+                    if hasattr(run.font, "strike"):
+                        run.font.strike = bool(run_data.get("strike", False))
                     run_size = self._extract_px_value(run_data.get("size", "")) or font_size_px
                     run.font.size = Pt(self._pt(run_size))
                     run_color = self._extract_color(run_data.get("color", "")) or font_color
+                    if bg_color and run_color:
+                        run_color = self._ensure_contrast_color(
+                            run_color,
+                            bg_color,
+                            font_size_px=run_size,
+                            bold=run_bold,
+                        )
                     if run_color:
                         run.font.color.rgb = RGBColor.from_string(run_color)
-                    font_name = font_family.split(",")[0].strip().strip("'\"")
+                    run_family = run_data.get("font_family", "") or font_family
+                    font_name = run_family.split(",")[0].strip().strip("'\"")
                     run.font.name = font_name
                     if letter_spacing_px != 0:
                         self._apply_letter_spacing(run, letter_spacing_px)
@@ -932,6 +995,11 @@ class CSStoOOXMLEngine:
                 run.text = para_text.strip()
                 run.font.size = Pt(self._pt(font_size_px))
                 run.font.bold = is_bold
+                run.font.italic = str(element.styles.get("font-style", "")).lower() == "italic"
+                decoration = str(element.styles.get("text-decoration", "")).lower()
+                run.font.underline = "underline" in decoration
+                if hasattr(run.font, "strike"):
+                    run.font.strike = "line-through" in decoration
                 if font_color:
                     run.font.color.rgb = RGBColor.from_string(font_color)
                 font_name = font_family.split(",")[0].strip().strip("'\"")
@@ -1018,6 +1086,224 @@ class CSStoOOXMLEngine:
         if len(text) <= max_chars:
             return text
         return text[: max(1, max_chars - 1)].rstrip() + "…"
+
+    def _text_padding_box(self, element: ParsedElement) -> tuple[float, float, float, float]:
+        raw = element.attributes.get("data-pptx-text-padding")
+        if raw:
+            parsed = self._parse_text_padding_attr(raw)
+            if parsed:
+                return parsed
+
+        has_css_padding = any(
+            element.styles.get(name)
+            for name in ("padding", "padding-top", "padding-right", "padding-bottom", "padding-left")
+        )
+        if has_css_padding:
+            return self._padding_box(element.styles)
+
+        defaults = {
+            "kpi_value": (0.0, 4.0, 0.0, 4.0),
+            "kpi_label": (1.0, 4.0, 1.0, 4.0),
+            "badge": (1.0, 8.0, 1.0, 8.0),
+            "card_title": (2.0, 4.0, 2.0, 4.0),
+            "caption": (1.0, 4.0, 1.0, 4.0),
+        }
+        return defaults.get(self._text_role(element, element.text_content), self._padding_box(element.styles))
+
+    def _parse_text_padding_attr(self, raw: object) -> tuple[float, float, float, float] | None:
+        if isinstance(raw, dict):
+            return self._padding_from_dict(raw)
+
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        if text.startswith("{"):
+            try:
+                data = json.loads(text)
+            except (TypeError, ValueError):
+                data = None
+            if isinstance(data, dict):
+                return self._padding_from_dict(data)
+
+        return self._padding_values(text)
+
+    def _padding_from_dict(self, data: dict) -> tuple[float, float, float, float] | None:
+        if not data:
+            return None
+
+        def number(name: str, fallback: float = 0.0) -> float:
+            try:
+                return float(str(data.get(name, fallback)).replace("px", ""))
+            except (TypeError, ValueError):
+                return fallback
+
+        if "x" in data or "y" in data:
+            x = number("x", 0.0)
+            y = number("y", 0.0)
+            return y, x, y, x
+        return (
+            number("top", 0.0),
+            number("right", 0.0),
+            number("bottom", 0.0),
+            number("left", 0.0),
+        )
+
+    def _text_horizontal_align(self, element: ParsedElement, text: str) -> str:
+        raw = self._normalize_text_align(element.attributes.get("data-pptx-text-align"))
+        if raw:
+            return raw
+
+        align_css = self._normalize_text_align(element.styles.get("text-align", ""))
+        if align_css:
+            return align_css
+
+        justify = element.styles.get("justify-content", "")
+        if justify in ("center", "middle"):
+            return "center"
+        if justify in ("flex-end", "end", "right"):
+            return "right"
+
+        role = self._text_role(element, text)
+        if role in {"kpi_value", "kpi_label", "badge"}:
+            return "center"
+        return "left"
+
+    def _text_vertical_align(self, element: ParsedElement, text: str) -> str:
+        raw = self._normalize_text_valign(element.attributes.get("data-pptx-text-valign"))
+        if raw:
+            return raw
+
+        v_align = self._normalize_text_valign(element.styles.get("vertical-align", ""))
+        if v_align:
+            return v_align
+
+        align_items = element.styles.get("align-items", "")
+        if align_items in ("center", "middle"):
+            return "middle"
+        if align_items in ("flex-end", "end", "bottom"):
+            return "bottom"
+
+        role = self._text_role(element, text)
+        if role in {"kpi_value", "kpi_label", "badge", "card_title", "caption"}:
+            return "middle"
+        return "top"
+
+    def _text_role(self, element: ParsedElement, text: str) -> str:
+        raw = str(element.attributes.get("data-pptx-text-role", "") or "").strip().lower()
+        role = raw.replace("-", "_")
+        known = {
+            "badge", "body", "callout", "caption", "card_body", "card_title",
+            "kpi_label", "kpi_value", "list", "title",
+        }
+        if role in known:
+            return role
+
+        if element.attributes.get("data-pptx-list"):
+            return "list"
+        font_size = self._extract_px_value(element.styles.get("font-size", "16px"))
+        font_weight = str(element.styles.get("font-weight", "400"))
+        height = float(element.position.get("height", 0) or 0)
+        if font_size >= 24 or self._looks_like_kpi_text(text):
+            return "kpi_value"
+        if height and height <= 30 and font_size <= 12:
+            return "caption"
+        is_bold = font_weight in ("bold", "600", "700", "800", "900") or (
+            font_weight.isdigit() and int(font_weight) >= 600
+        )
+        if is_bold and height and height <= 48:
+            return "card_title"
+        return "body"
+
+    def _looks_like_kpi_text(self, text: str) -> bool:
+        import re
+
+        value = str(text or "").strip()
+        if len(value) > 24:
+            return False
+        return bool(re.search(r"(?:[$€₩¥]\s?\d|\d+(?:\.\d+)?\s?%|\d+\s?배|\d+\s?x)", value, re.I))
+
+    def _normalize_text_align(self, value: object) -> str:
+        text = str(value or "").strip().lower()
+        return text if text in {"left", "center", "right", "justify"} else ""
+
+    def _normalize_text_valign(self, value: object) -> str:
+        text = str(value or "").strip().lower()
+        if text in {"center", "middle"}:
+            return "middle"
+        return text if text in {"top", "bottom"} else ""
+
+    def _padding_box(self, styles: dict) -> tuple[float, float, float, float]:
+        values = self._padding_values(styles.get("padding", ""))
+        top, right, bottom, left = values or (4.0, 8.0, 4.0, 8.0)
+        top = self._extract_px_value(styles.get("padding-top", "")) or top
+        right = self._extract_px_value(styles.get("padding-right", "")) or right
+        bottom = self._extract_px_value(styles.get("padding-bottom", "")) or bottom
+        left = self._extract_px_value(styles.get("padding-left", "")) or left
+        return top, right, bottom, left
+
+    def _padding_values(self, value: str) -> tuple[float, float, float, float] | None:
+        import re
+
+        nums = [
+            float(match.group(1))
+            for match in re.finditer(r"(-?\d+(?:\.\d+)?)\s*px?", str(value or ""))
+        ]
+        if not nums:
+            return None
+        if len(nums) == 1:
+            return nums[0], nums[0], nums[0], nums[0]
+        if len(nums) == 2:
+            return nums[0], nums[1], nums[0], nums[1]
+        if len(nums) == 3:
+            return nums[0], nums[1], nums[2], nums[1]
+        return nums[0], nums[1], nums[2], nums[3]
+
+    def _list_kind(self, element: ParsedElement, text: str) -> str:
+        import re
+
+        raw = str(element.attributes.get("data-pptx-list", "")).lower()
+        if raw in {"number", "numbered", "ordered"}:
+            return "numbered"
+        if raw in {"bullet", "bullets", "unordered"}:
+            return "bullet"
+        lines = [line.strip() for line in text.replace("\\n", "\n").split("\n") if line.strip()]
+        if len(lines) < 2:
+            return ""
+        marker_count = sum(1 for line in lines if self._list_marker_match(line))
+        if marker_count >= max(2, len(lines) - 1):
+            if all(re.match(r"^\s*\d+[.)]\s+", line) for line in lines[:marker_count]):
+                return "numbered"
+            return "bullet"
+        short_lines = sum(1 for line in lines if len(self._strip_list_marker(line)) <= 42)
+        return "bullet" if len(lines) >= 3 and short_lines == len(lines) else ""
+
+    def _normalize_list_text(self, text: str, *, ordered: bool) -> str:
+        lines = [line.strip() for line in text.replace("\\n", "\n").split("\n") if line.strip()]
+        normalized = []
+        for index, line in enumerate(lines, start=1):
+            body = self._strip_list_marker(line)
+            if not body:
+                continue
+            marker = f"{index}." if ordered else "•"
+            normalized.append(f"{marker} {body}")
+        return "\n".join(normalized)
+
+    def _strip_list_marker(self, line: str) -> str:
+        import re
+
+        return re.sub(
+            r"^\s*(?:[•▸▶→▪◦◆◇✓\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s*",
+            "",
+            str(line),
+        ).strip()
+
+    def _list_marker_match(self, line: str):
+        import re
+
+        return re.match(
+            r"^\s*(?:[•▸▶→▪◦◆◇✓\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s+",
+            str(line),
+        )
 
     def _apply_thin_table_borders(
         self, table, col_count: int, row_count: int, options: dict | None = None
@@ -1192,11 +1478,56 @@ class CSStoOOXMLEngine:
                 return "".join(c * 2 for c in hex_val).lower()
             if len(hex_val) >= 6:
                 return hex_val[:6].lower()
+        embedded_hex = re.search(r"#([0-9a-fA-F]{3,8})", value)
+        if embedded_hex:
+            hex_val = embedded_hex.group(1)
+            if len(hex_val) == 3:
+                return "".join(c * 2 for c in hex_val).lower()
+            if len(hex_val) >= 6:
+                return hex_val[:6].lower()
         rgba = re.match(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", value)
         if rgba:
             r, g, b = int(rgba.group(1)), int(rgba.group(2)), int(rgba.group(3))
             return f"{r:02x}{g:02x}{b:02x}"
         return None
+
+    def _ensure_contrast_color(
+        self,
+        foreground: str,
+        background: str,
+        *,
+        font_size_px: float,
+        bold: bool,
+    ) -> str:
+        """Return the foreground unless it fails WCAG contrast on its own fill."""
+        threshold = 3.0 if font_size_px >= 24 or (bold and font_size_px >= 18.5) else 4.5
+        if self._contrast_ratio(foreground, background) >= threshold:
+            return foreground
+        white_ratio = self._contrast_ratio("ffffff", background)
+        dark_ratio = self._contrast_ratio("111827", background)
+        return "ffffff" if white_ratio >= dark_ratio else "111827"
+
+    def _contrast_ratio(self, color_a: str, color_b: str) -> float:
+        lighter = max(self._relative_luminance(color_a), self._relative_luminance(color_b))
+        darker = min(self._relative_luminance(color_a), self._relative_luminance(color_b))
+        return (lighter + 0.05) / (darker + 0.05)
+
+    def _relative_luminance(self, hex_color: str) -> float:
+        try:
+            channels = [
+                int(str(hex_color).lstrip("#")[i:i + 2], 16) / 255
+                for i in (0, 2, 4)
+            ]
+        except (ValueError, IndexError):
+            return 1.0
+
+        def linear(channel: float) -> float:
+            if channel <= 0.03928:
+                return channel / 12.92
+            return ((channel + 0.055) / 1.055) ** 2.4
+
+        r, g, b = (linear(channel) for channel in channels)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
     def _is_dark_color(self, hex_color: str) -> bool:
         """Determine if a hex color is dark (for choosing text color contrast)."""
@@ -1381,10 +1712,7 @@ class CSStoOOXMLEngine:
                 return False
 
             pos = element.position
-            x = self._x(pos["left"])
-            y = self._y(pos["top"])
-            w = self._w(max(1, pos.get("width", 32)))
-            h = self._h(max(1, pos.get("height", 32)))
+            x, y, w, h = self._icon_geometry_for_element(icon_path, element)
 
             if str(icon_path).endswith(".png"):
                 slide.shapes.add_picture(str(icon_path), Emu(x), Emu(y), Emu(w), Emu(h))
@@ -1406,6 +1734,31 @@ class CSStoOOXMLEngine:
         except Exception as e:
             logger.warning("icon_element.failed", icon=icon_name, error=str(e)[:100])
             return False
+
+    def _icon_geometry_for_element(self, path: Path, element: ParsedElement) -> tuple[int, int, int, int]:
+        """Center icon artwork inside its declared HTML box."""
+        pos = element.position
+        box_x = self._x(pos["left"])
+        box_y = self._y(pos["top"])
+        box_w = max(1, self._w(max(1, pos.get("width", 32))))
+        box_h = max(1, self._h(max(1, pos.get("height", 32))))
+        source_w, source_h = self._image_pixel_size(path)
+        if source_w <= 0 or source_h <= 0:
+            side = min(box_w, box_h)
+            return box_x + int((box_w - side) / 2), box_y + int((box_h - side) / 2), side, side
+        ratio = source_w / source_h
+        if ratio > box_w / box_h:
+            target_w = box_w
+            target_h = int(box_w / ratio)
+        else:
+            target_h = box_h
+            target_w = int(box_h * ratio)
+        return (
+            box_x + int((box_w - target_w) / 2),
+            box_y + int((box_h - target_h) / 2),
+            max(1, target_w),
+            max(1, target_h),
+        )
 
     def _svg_to_png(self, svg_path) -> bytes | None:
         """Convert SVG file to PNG bytes using svglib+reportlab."""

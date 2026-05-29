@@ -80,6 +80,16 @@ You will receive design_tokens from the design system:
    - Example: if primary=#1E293B, use also #334155, #475569 as darker/lighter variants
    - If accent=#10B981, use also #34D399 (lighter), #059669 (darker)
 
+### Contrast Gate (MANDATORY)
+- Every text box must have at least 4.5:1 contrast against its own fill or the
+  shape directly behind it. Large text (24px+) may use 3:1 minimum.
+- When a textbox sits over a dark card/header/gradient, set `color:#FFFFFF` or
+  the `text_on_dark` token explicitly on the textbox itself.
+- When a textbox sits over a light card/background, set `color:#111827`,
+  `text_primary`, or another dark theme token explicitly.
+- Do not rely on inherited CSS color, opacity, blend modes, or browser-only
+  effects for readability. PPTX conversion reads each textbox style directly.
+
 ### Gradient Usage (ACTIVELY USE for visual richness)
 Apply gradients on:
 - Cover slide background: always use cover_background gradient
@@ -122,6 +132,21 @@ Apply box-shadow on cards that need emphasis:
 8. For lists, use real line breaks between bullet items. Do not write all bullets in one inline sentence.
 9. If a card has 4+ bullets, make the card taller, split into two columns, or reduce item count.
 
+## Text Alignment Contract (CRITICAL for PPTX fidelity)
+
+Every meaningful `data-pptx-type="textbox"` must declare precise text geometry:
+- `data-pptx-text-role`: one of `card_title`, `card_body`, `kpi_value`, `kpi_label`, `caption`, `badge`, `callout`, `list`, `body`
+- `data-pptx-text-align`: `left`, `center`, `right`, or `justify`
+- `data-pptx-text-valign`: `top`, `middle`, or `bottom`
+- `data-pptx-text-padding`: CSS shorthand such as `2px 4px 2px 4px`
+
+Role defaults:
+- Card title beside a separate icon: `data-pptx-text-role="card_title"`, align `left`, valign `middle`, padding `0px 4px 0px 4px`
+- KPI value/short metric: `kpi_value`, align `center`, valign `middle`, padding `0px 4px 0px 4px`
+- KPI label/caption: align `center`, valign `middle`
+- Body paragraphs and bullet lists: align `left`, valign `top`, with enough padding for readability
+- Do not rely on browser flex alignment alone. The PPTX mapper reads these attributes first.
+
 ## Content & Visual Balance Rules (PPT-STYLE — CONCISE)
 
 1. Each slide: 6-12 visual elements (cards, shapes, icons, KPI boxes)
@@ -155,6 +180,9 @@ MANDATORY NEW CONTRACT:
 - Icons will render LARGE (24-36px) at the top-left of cards — leave space for them
 
 ### Bullet Points & List Formatting
+- For any list-like content, add `data-pptx-list="bullet"` to the textbox so
+  HTML preview and PPTX output both preserve bullets. Use
+  `data-pptx-list="numbered"` for ordered steps.
 - Use bullet markers for lists: "• " (bullet), "▸ " (arrow), "→ " (right arrow)
 - Each bullet item: prefix with "• " or "▸ " for clear visual hierarchy
 - Example: "• 데이터 수집\n• 모델 학습\n• 배포 자동화"

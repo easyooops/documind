@@ -191,6 +191,31 @@ DATA_ATTRIBUTES = {
         "values": "integer_px",
         "required": False,
     },
+    "data-pptx-list": {
+        "description": "List formatting for textbox text. Use bullet for unordered lists and numbered for ordered lists.",
+        "values": ["bullet", "numbered"],
+        "required": False,
+    },
+    "data-pptx-text-role": {
+        "description": "Semantic textbox role for deterministic PPTX text alignment and padding.",
+        "values": ["card_title", "card_body", "kpi_value", "kpi_label", "caption", "badge", "callout", "list", "body"],
+        "required": False,
+    },
+    "data-pptx-text-align": {
+        "description": "Explicit horizontal paragraph alignment for PPTX text frames.",
+        "values": ["left", "center", "right", "justify"],
+        "required": False,
+    },
+    "data-pptx-text-valign": {
+        "description": "Explicit vertical text-frame anchor for PPTX text frames.",
+        "values": ["top", "middle", "bottom"],
+        "required": False,
+    },
+    "data-pptx-text-padding": {
+        "description": "Explicit textbox internal margins as CSS shorthand or JSON top/right/bottom/left pixels.",
+        "values": "css_padding_or_json_object",
+        "required": False,
+    },
     "data-pptx-shape-options": {
         "description": "JSON-encoded OOXML shape formatting options",
         "values": "json_object",
@@ -324,5 +349,6 @@ All positioning: position:absolute with px values ONLY
 5. Table/chart data goes in data-pptx-table-data / data-pptx-chart-data as JSON
 6. Stacking order via data-pptx-z attribute (integer), NOT z-index CSS
 7. Icons should be independent data-pptx-type="icon" elements with data-pptx-icon and data-pptx-icon-placement; HTML geometry maps 1:1 to PPTX
-8. OOXML object formatting goes in data-pptx-chart-options, data-pptx-table-options, or data-pptx-shape-options
-9. Use premium fonts: Pretendard, Noto Sans KR, Inter, Aptos, Segoe UI"""
+8. Textboxes should declare data-pptx-text-role, data-pptx-text-align, data-pptx-text-valign, and data-pptx-text-padding for precise PPTX text-frame mapping
+9. OOXML object formatting goes in data-pptx-chart-options, data-pptx-table-options, or data-pptx-shape-options
+10. Use premium fonts: Pretendard, Noto Sans KR, Inter, Aptos, Segoe UI"""

@@ -7,6 +7,7 @@ style_director into ONE agent call that outputs structured Slide Blueprints.
 from __future__ import annotations
 
 import json
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -44,6 +45,7 @@ async def unified_planner(state: DocuMindState) -> dict:
     base_version = state.get("_base_version", {})
     locked_design_system = state.get("_locked_design_system", {})
     visual_intent = state.get("visual_intent", {})
+    explicit_slide_instructions = _extract_slide_revision_instructions(user_query)
 
     design_direction = master_context.get("design_direction") or select_design_direction(user_query)
     template_info = master_context.get("template")
@@ -116,6 +118,15 @@ async def unified_planner(state: DocuMindState) -> dict:
             f"Parent title and slide plan:\n"
             f"{json.dumps(base_version.get('slide_plan', []), ensure_ascii=False, indent=2)[:7000]}"
         )
+        if explicit_slide_instructions:
+            context_parts.append(
+                "\n## Deterministic Slide Targets (OVERRIDE)\n"
+                "The user explicitly named these slide numbers. Return changed_slide_indices "
+                "matching exactly these slide numbers unless the user also explicitly requests "
+                "a global change. Keep each slide's instruction isolated; never apply one "
+                "slide's requested visual/content change to another slide.\n"
+                f"{json.dumps(explicit_slide_instructions, ensure_ascii=False, indent=2)}"
+            )
         context_parts.append(
             "\n## Locked Design Tokens (MUST NOT CHANGE)\n"
             f"{json.dumps(locked_design_system, ensure_ascii=False, indent=2)[:4000]}"
@@ -202,12 +213,15 @@ async def unified_planner(state: DocuMindState) -> dict:
 
     changed_indices = result.get("changed_slide_indices")
     if base_version:
-        if not isinstance(changed_indices, list):
+        if explicit_slide_instructions:
+            changed_indices = sorted(explicit_slide_instructions)
+        elif not isinstance(changed_indices, list):
             changed_indices = []
-        changed_indices = [
-            int(index) for index in changed_indices
-            if isinstance(index, int) or (isinstance(index, str) and index.isdigit())
-        ]
+        else:
+            changed_indices = [
+                int(index) for index in changed_indices
+                if isinstance(index, int) or (isinstance(index, str) and index.isdigit())
+            ]
     else:
         changed_indices = [bp.get("index") for bp in slide_blueprints]
 
@@ -255,6 +269,7 @@ async def unified_planner(state: DocuMindState) -> dict:
         "layout_system": layout_system,
         "title": title,
         "changed_slide_indices": changed_indices,
+        "slide_revision_instructions": explicit_slide_instructions,
         "revision_instruction": (
             user_query
             + (
@@ -275,17 +290,74 @@ def _normalize_revision_scope(value: object, user_query: str) -> str:
         return value
     text = user_query.lower()
     layout_signals = (
-        "레이아웃", "디자인", "구성 변경", "배치", "스타일", "redesign", "layout",
+        "레이아웃", "디자인", "구성 변경", "배치", "스타일", "색상", "정렬",
+        "영역", "구분", "redesign", "layout",
     )
     rewrite_signals = (
         "전체 내용", "내용 전체", "전면", "새로 작성", "다시 작성", "교체",
-        "rewrite", "replace", "entire slide", "all content",
+        "바꿔", "변경해줘", "내용으로 변경", "일반 내용", "말고", "대신",
+        "rewrite", "replace", "entire slide", "all content", "change content",
+        "not architecture", "instead of architecture",
     )
     if any(signal in text for signal in layout_signals):
         return "layout_redesign"
     if any(signal in text for signal in rewrite_signals):
         return "slide_rewrite"
     return "minimal_patch"
+
+
+def _extract_slide_revision_instructions(user_query: str) -> dict[int, str]:
+    """Parse explicit per-slide revision requests from Korean/English chat text."""
+    text = str(user_query or "").strip()
+    if not text:
+        return {}
+    marker_pattern = re.compile(
+        r"(?:^|[\s,;:()\[\]{}。])\s*"
+        r"(?:슬라이드|슬라|slide|slides|page|pages|p)\s*#?\s*"
+        r"(?P<targets>\d{1,2}(?:\s*(?:,|/|&|와|과|및|그리고|and|to|부터|에서|~|-|–|—)\s*\d{1,2})*)"
+        r"\s*(?:장|페이지|쪽|번|p)?\s*(?:[:：.)\]-]|\s+)?",
+        re.IGNORECASE,
+    )
+    matches = list(marker_pattern.finditer(text))
+    if not matches:
+        return {}
+
+    instructions: dict[int, str] = {}
+    for index, match in enumerate(matches):
+        slide_indices = _expand_slide_targets(match.group("targets"))
+        if not slide_indices:
+            continue
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        instruction = text[start:end].strip(" \n\r\t,;:：-–—)]}")
+        if not instruction:
+            instruction = match.group(0).strip()
+        for slide_index in slide_indices:
+            instructions[slide_index] = instruction[:1200]
+    return instructions
+
+
+def _expand_slide_targets(raw_targets: str) -> list[int]:
+    """Expand slide target text like `4, 5` or `4-6` into slide numbers."""
+    text = str(raw_targets or "")
+    numbers = [int(item) for item in re.findall(r"\d{1,2}", text)]
+    if not numbers:
+        return []
+    range_signal = bool(re.search(r"(?:~|-|–|—|\bto\b|부터|에서)", text, re.IGNORECASE))
+    if range_signal and len(numbers) >= 2:
+        start, end = numbers[0], numbers[1]
+        if start <= end and end - start <= 30:
+            return list(range(start, end + 1))
+        if end < start and start - end <= 30:
+            return list(range(start, end - 1, -1))
+    seen = set()
+    result = []
+    for number in numbers:
+        if number in seen:
+            continue
+        seen.add(number)
+        result.append(number)
+    return result
 
 
 def _normalize_indices(value: object) -> list[int]:
