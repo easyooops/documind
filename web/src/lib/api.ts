@@ -66,6 +66,21 @@ interface StreamCompleteEvent {
   job_id?: string;
 }
 
+export interface BootstrapStatus {
+  ready: boolean;
+  phase: "starting" | "icons" | "ready" | "error" | string;
+  message: string;
+  total: number;
+  completed: number;
+  created: number;
+  skipped: number;
+  failed: number;
+  progress: number;
+  error?: string | null;
+  started_at?: string;
+  updated_at?: string;
+}
+
 async function request<T>(
   path: string,
   options?: RequestInit
@@ -91,6 +106,12 @@ export async function identifyUser(
     method: "POST",
     body: JSON.stringify({ name, email }),
   });
+}
+
+// --- System ---
+
+export async function getBootstrapStatus(): Promise<BootstrapStatus> {
+  return request<BootstrapStatus>("/api/v1/system/bootstrap");
 }
 
 // --- Sessions ---

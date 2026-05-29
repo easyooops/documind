@@ -33,6 +33,7 @@ apt_run() {
 
 apt_run update -y
 apt_run install -y docker.io docker-compose-v2 curl ca-certificates unzip awscli
+update-ca-certificates
 
 systemctl enable --now docker
 for _ in $(seq 1 30); do
@@ -113,11 +114,6 @@ DEFAULT_VLM_MODEL=${default_vlm_model}
 DEFAULT_IMAGE_MODEL=${default_image_model}
 
 AWS_REGION=${aws_bedrock_region}
-AWS_PROFILE=
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-AWS_SESSION_TOKEN=
-AWS_ROLE_ARN=
 
 OPENAI_API_KEY=${openai_api_key}
 ANTHROPIC_API_KEY=${anthropic_api_key}

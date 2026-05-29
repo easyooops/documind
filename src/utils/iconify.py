@@ -13,7 +13,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 import httpx
 
@@ -22,6 +22,9 @@ from src.core.logging import get_logger
 logger = get_logger(__name__)
 
 ICONIFY_API_BASE = "https://api.iconify.design"
+ICONIFY_HTTP_FALLBACK_BASE = "http://api.iconify.design"
+_iconify_remote_disabled = False
+_iconify_remote_disabled_logged = False
 ICON_CACHE_DIR = Path("data/cache/icons")
 ICON_DB_PATH = ICON_CACHE_DIR / "icons.db"
 DEFAULT_ICON_SIZE = 32
@@ -336,6 +339,42 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _iconify_request_attempts(url: str) -> list[tuple[str, str, bool | str]]:
+    attempts: list[tuple[str, str, bool | str]] = [("system-ca", url, True)]
+
+    try:
+        import certifi
+
+        ca_path = certifi.where()
+        if ca_path:
+            attempts.append(("certifi-ca", url, ca_path))
+    except Exception:
+        pass
+
+    if url.startswith(ICONIFY_API_BASE):
+        attempts.append(
+            ("plain-http", url.replace(ICONIFY_API_BASE, ICONIFY_HTTP_FALLBACK_BASE, 1), True)
+        )
+
+    # Iconify is public static icon metadata. This last-resort retry prevents
+    # corporate TLS interception from blocking first-run local cache creation.
+    attempts.append(("iconify-insecure", url, False))
+    return attempts
+
+
+def _is_tls_verify_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "CERTIFICATE_VERIFY_FAILED" in text or "certificate verify failed" in text
+
+
+def _disable_iconify_remote(error: Exception) -> None:
+    global _iconify_remote_disabled, _iconify_remote_disabled_logged
+    _iconify_remote_disabled = True
+    if not _iconify_remote_disabled_logged:
+        logger.info("iconify.remote_disabled", error=str(error)[:100])
+        _iconify_remote_disabled_logged = True
+
+
 def _connect_icon_db() -> sqlite3.Connection:
     ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(ICON_DB_PATH, timeout=30)
@@ -524,21 +563,42 @@ async def fetch_icon_svg(icon_name: str, color: str = "1E293B", size: int = 48) 
     if cache_path.exists():
         return cache_path.read_bytes()
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                svg_data = response.content
-                ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                cache_path.write_bytes(svg_data)
-                logger.info("iconify.fetched", icon=icon_id, size=size)
-                return svg_data
-            else:
-                logger.warning("iconify.fetch_failed", icon=icon_id, status=response.status_code)
-                return None
-    except Exception as e:
-        logger.warning("iconify.error", icon=icon_id, error=str(e)[:100])
+    if _iconify_remote_disabled:
         return None
+
+    last_error: Exception | None = None
+    for method, request_url, verify in _iconify_request_attempts(url):
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                verify=verify,
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(request_url)
+                if response.status_code == 200:
+                    svg_data = response.content
+                    ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_bytes(svg_data)
+                    logger.info("iconify.fetched", icon=icon_id, size=size, method=method)
+                    return svg_data
+                logger.warning(
+                    "iconify.fetch_failed",
+                    icon=icon_id,
+                    status=response.status_code,
+                    method=method,
+                )
+                return None
+        except Exception as exc:
+            last_error = exc
+            if _is_tls_verify_error(exc):
+                logger.debug("iconify.ssl_retry", icon=icon_id, method=method)
+            else:
+                logger.debug("iconify.retry", icon=icon_id, method=method, error=str(exc)[:100])
+            continue
+
+    if last_error is not None:
+        _disable_iconify_remote(last_error)
+    return None
 
 
 async def fetch_icon_png(icon_name: str, color: str = "1E293B", size: int = 48) -> Optional[bytes]:
@@ -561,8 +621,9 @@ async def fetch_icon_png(icon_name: str, color: str = "1E293B", size: int = 48) 
 
     # Method 1: svglib + reportlab (pure Python, best cross-platform)
     try:
-        from svglib.svglib import svg2rlg
         from reportlab.graphics import renderPM
+        from svglib.svglib import svg2rlg
+
         svg_path = _icon_cache_path(icon_id, color, size, "svg")
         if not svg_path.exists():
             svg_path.write_bytes(svg_data)
@@ -692,6 +753,7 @@ async def preload_recommended_icons(
     limit: int | None = None,
     force: bool = False,
     concurrency: int = 8,
+    progress_callback: Callable[..., None] | None = None,
 ) -> dict[str, int]:
     """Warm the icon registry on server startup.
 
@@ -699,7 +761,9 @@ async def preload_recommended_icons(
     are skipped, so subsequent server starts avoid repeated network calls.
     """
     ensure_icon_registry()
-    selected_colors = tuple(normalize_icon_color(color) for color in (colors or DEFAULT_ICON_COLORS))
+    selected_colors = tuple(
+        normalize_icon_color(color) for color in (colors or DEFAULT_ICON_COLORS)
+    )
     icon_names = list(RECOMMENDED_ICONS.keys())
     if limit is not None:
         icon_names = icon_names[: max(0, limit)]
@@ -709,11 +773,26 @@ async def preload_recommended_icons(
     skipped = 0
     created = 0
     failed = 0
+    completed = 0
+
+    def _report() -> None:
+        if progress_callback:
+            progress_callback(
+                total=len(pairs),
+                completed=completed,
+                created=created,
+                skipped=skipped,
+                failed=failed,
+            )
+
+    _report()
 
     async def _ensure(icon_name: str, color: str) -> None:
-        nonlocal skipped, created, failed
+        nonlocal completed, skipped, created, failed
         if not force and _get_registered_icon(icon_name, color, size):
             skipped += 1
+            completed += 1
+            _report()
             return
         async with semaphore:
             try:
@@ -724,10 +803,25 @@ async def preload_recommended_icons(
                     failed += 1
             except Exception as exc:
                 failed += 1
-                logger.debug("iconify.preload_failed", icon=icon_name, color=color, error=str(exc)[:100])
+                logger.debug(
+                    "iconify.preload_failed",
+                    icon=icon_name,
+                    color=color,
+                    error=str(exc)[:100],
+                )
+            finally:
+                completed += 1
+                _report()
+                await asyncio.sleep(0)
 
     await asyncio.gather(*(_ensure(icon_name, color) for icon_name, color in pairs))
-    logger.info("iconify.preload_complete", total=len(pairs), created=created, skipped=skipped, failed=failed)
+    logger.info(
+        "iconify.preload_complete",
+        total=len(pairs),
+        created=created,
+        skipped=skipped,
+        failed=failed,
+    )
     return {"total": len(pairs), "created": created, "skipped": skipped, "failed": failed}
 
 
@@ -760,8 +854,16 @@ def get_icon_path(icon_name: str, color: str = "1E293B", size: int = 48) -> Opti
     Searches for the exact rendered color and size, so preview and PPTX output
     cannot silently disagree about icon styling.
     """
-    return get_icon_asset_path(icon_name, color=color, size=size, target="pptx") or get_icon_asset_path(
-        icon_name, color=color, size=size, target="html"
+    return get_icon_asset_path(
+        icon_name,
+        color=color,
+        size=size,
+        target="pptx",
+    ) or get_icon_asset_path(
+        icon_name,
+        color=color,
+        size=size,
+        target="html",
     )
 
 
@@ -798,7 +900,13 @@ def get_fallback_icon_path(icon_name: str, color: str = "1E293B", size: int = 32
     return cache_path
 
 
-def _draw_fallback_symbol(draw, icon_name: str, rgb: tuple[int, int, int], size: int, stroke: int) -> None:
+def _draw_fallback_symbol(
+    draw,
+    icon_name: str,
+    rgb: tuple[int, int, int],
+    size: int,
+    stroke: int,
+) -> None:
     """Draw a transparent, non-boxy semantic fallback symbol."""
     color = rgb + (255,)
     m = max(4, size // 7)
@@ -807,7 +915,11 @@ def _draw_fallback_symbol(draw, icon_name: str, rgb: tuple[int, int, int], size:
 
     if "target" in name:
         draw.ellipse([m, m, size - m, size - m], outline=color, width=stroke)
-        draw.ellipse([size * 0.34, size * 0.34, size * 0.66, size * 0.66], outline=color, width=stroke)
+        draw.ellipse(
+            [size * 0.34, size * 0.34, size * 0.66, size * 0.66],
+            outline=color,
+            width=stroke,
+        )
         draw.line([c, m, c, size - m], fill=color, width=max(1, stroke // 2))
         draw.line([m, c, size - m, c], fill=color, width=max(1, stroke // 2))
         return
@@ -816,7 +928,12 @@ def _draw_fallback_symbol(draw, icon_name: str, rgb: tuple[int, int, int], size:
         draw.line([m, c * 1.05, c, size * 0.82, size - m, c * 1.05], fill=color, width=stroke)
         return
     if "chart" in name or "trend" in name:
-        points = [(m, size - m), (size * 0.38, size * 0.62), (size * 0.58, size * 0.7), (size - m, m)]
+        points = [
+            (m, size - m),
+            (size * 0.38, size * 0.62),
+            (size * 0.58, size * 0.7),
+            (size - m, m),
+        ]
         draw.line(points, fill=color, width=stroke, joint="curve")
         draw.line([size - m, m, size - m, size * 0.34], fill=color, width=stroke)
         draw.line([size - m, m, size * 0.66, m], fill=color, width=stroke)
@@ -828,12 +945,33 @@ def _draw_fallback_symbol(draw, icon_name: str, rgb: tuple[int, int, int], size:
         draw.ellipse([m, size * 0.58, size - m, size - m], outline=color, width=stroke)
         return
     if "shield" in name:
-        draw.polygon([(c, m), (size - m, size * 0.28), (size * 0.76, size * 0.72), (c, size - m), (size * 0.24, size * 0.72), (m, size * 0.28)], outline=color)
-        draw.line([size * 0.34, c, size * 0.46, size * 0.64, size * 0.68, size * 0.38], fill=color, width=stroke)
+        draw.polygon(
+            [
+                (c, m),
+                (size - m, size * 0.28),
+                (size * 0.76, size * 0.72),
+                (c, size - m),
+                (size * 0.24, size * 0.72),
+                (m, size * 0.28),
+            ],
+            outline=color,
+        )
+        draw.line(
+            [size * 0.34, c, size * 0.46, size * 0.64, size * 0.68, size * 0.38],
+            fill=color,
+            width=stroke,
+        )
         return
     if "rocket" in name:
-        draw.polygon([(c, m), (size * 0.72, size * 0.56), (c, size - m), (size * 0.28, size * 0.56)], outline=color)
-        draw.ellipse([size * 0.42, size * 0.32, size * 0.58, size * 0.48], outline=color, width=stroke)
+        draw.polygon(
+            [(c, m), (size * 0.72, size * 0.56), (c, size - m), (size * 0.28, size * 0.56)],
+            outline=color,
+        )
+        draw.ellipse(
+            [size * 0.42, size * 0.32, size * 0.58, size * 0.48],
+            outline=color,
+            width=stroke,
+        )
         return
     if "brain" in name:
         draw.arc([m, m, c + stroke, c + stroke], 90, 300, fill=color, width=stroke)

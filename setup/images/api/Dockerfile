@@ -16,6 +16,7 @@ RUN apt-get update \
         libcairo2-dev \
         libreoffice \
         pkg-config \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml constraints.txt README.md ./

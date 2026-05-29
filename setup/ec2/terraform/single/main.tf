@@ -8,6 +8,12 @@ locals {
 
   source_dir  = abspath("${path.module}/${var.documind_source_dir}")
   product_dir = abspath("${path.module}/../../..")
+  staging_dir = abspath("${path.module}/.terraform-staging")
+
+  archive_script  = replace("${path.module}/scripts/prepare-archive.mjs", "\\", "/")
+  source_dir_cli  = replace(local.source_dir, "\\", "/")
+  product_dir_cli = replace(local.product_dir, "\\", "/")
+  staging_dir_cli = replace(local.staging_dir, "\\", "/")
 
   use_postgresql = var.database_type == "postgresql"
   use_s3_storage = var.storage_type == "s3"
@@ -19,10 +25,27 @@ resource "random_password" "postgres" {
   special = false
 }
 
+resource "terraform_data" "stage_documind_source" {
+  triggers_replace = [timestamp()]
+
+  provisioner "local-exec" {
+    command = "node ${local.archive_script} ${local.source_dir_cli} ${local.staging_dir_cli}/source source"
+  }
+}
+
+resource "terraform_data" "stage_documind_product" {
+  triggers_replace = [timestamp()]
+
+  provisioner "local-exec" {
+    command = "node ${local.archive_script} ${local.product_dir_cli} ${local.staging_dir_cli}/product product"
+  }
+}
+
 data "archive_file" "documind_source" {
   type        = "zip"
-  source_dir  = local.source_dir
-  output_path = "${path.module}/.terraform-staging/documind-source.zip"
+  source_dir  = "${local.staging_dir}/source"
+  output_path = "${local.staging_dir}/documind-source.zip"
+  depends_on  = [terraform_data.stage_documind_source]
 
   excludes = [
     "**/.git",
@@ -50,8 +73,9 @@ data "archive_file" "documind_source" {
 
 data "archive_file" "documind_product" {
   type        = "zip"
-  source_dir  = local.product_dir
-  output_path = "${path.module}/.terraform-staging/documind-product.zip"
+  source_dir  = "${local.staging_dir}/product"
+  output_path = "${local.staging_dir}/documind-product.zip"
+  depends_on  = [terraform_data.stage_documind_product]
 
   excludes = [
     "**/.terraform",
