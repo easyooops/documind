@@ -519,6 +519,20 @@ def test_inline_bullet_text_is_materialized_as_html_list() -> None:
     ]
 
 
+def test_inline_flow_arrow_text_is_not_split_as_list() -> None:
+    html = (
+        '<div data-slide="1">'
+        '<div data-pptx-type="textbox" style="position:absolute;left:40px;top:100px;'
+        'width:320px;height:40px;font-size:14px">'
+        "Input → Engine → Output"
+        "</div></div>"
+    )
+
+    [element] = parse_slide_html(html)
+
+    assert element.text_content.splitlines() == ["Input → Engine → Output"]
+
+
 def test_list_textbox_and_backing_card_expand_to_fit_lines() -> None:
     html = (
         '<div data-slide="1">'
@@ -540,6 +554,55 @@ def test_list_textbox_and_backing_card_expand_to_fit_lines() -> None:
         textbox.position["top"] + textbox.position["height"] - card.position["top"] + 8
     )
     assert card.position["height"] <= 526 - card.position["top"]
+
+
+def test_content_boxes_are_clamped_above_footer_safe_area() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:40px;top:480px;width:880px;height:80px;'
+        'background-color:#ECFDF5"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:60px;top:492px;'
+        'width:820px;height:48px;font-size:13px;color:#064E3B">'
+        "Footer-safe callout text"
+        "</div></div>"
+    )
+
+    elements = parse_slide_html(_normalize_slide_html(html))
+
+    for element in elements:
+        assert element.position["top"] + element.position["height"] <= 510
+
+
+def test_overlapping_card_groups_move_with_their_icons_and_text() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:40px;top:100px;width:220px;height:120px;'
+        'background-color:#ECFDF5"></div>'
+        '<div data-pptx-type="icon" data-pptx-icon="database" '
+        'style="position:absolute;left:52px;top:112px;width:24px;height:24px;'
+        'color:#064E3B"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:88px;top:110px;'
+        'width:160px;height:32px;font-size:14px;font-weight:700;color:#064E3B">Card A</div>'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:60px;top:120px;width:220px;height:120px;'
+        'background-color:#DBEAFE"></div>'
+        '<div data-pptx-type="icon" data-pptx-icon="brain" '
+        'style="position:absolute;left:72px;top:132px;width:24px;height:24px;'
+        'color:#1E3A8A"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:108px;top:130px;'
+        'width:160px;height:32px;font-size:14px;font-weight:700;color:#1E3A8A">Card B</div>'
+        "</div>"
+    )
+
+    elements = parse_slide_html(_normalize_slide_html(html))
+    card_a = elements[0]
+    card_b = elements[3]
+    card_b_text = next(element for element in elements if element.text_content == "Card B")
+
+    assert card_b.position["top"] >= card_a.position["top"] + card_a.position["height"] + 8
+    assert card_b_text.position["top"] > 130
 
 
 def test_parser_inherits_root_and_inline_font_details() -> None:

@@ -27,6 +27,10 @@ logger = get_logger(__name__)
 
 _capture_executor = None
 
+CONTENT_SAFE_RIGHT = 920
+CONTENT_SAFE_BOTTOM = 510
+CONTENT_GAP = 8
+
 PPTX_TEXT_ALIGNMENT_PREVIEW_CSS = """
 [data-pptx-type="textbox"][data-pptx-text-align="left"],
 [data-pptx-type="shape"][data-pptx-text-align="left"]{text-align:left}
@@ -152,12 +156,14 @@ def _normalize_slide_icon_layouts(slides_html: list[dict]) -> list[dict]:
     normalized = []
     for slide in slides_html:
         copied = dict(slide)
-        copied["html"] = _normalize_slide_html(str(slide.get("html", "")))
+        metadata = slide.get("metadata", {}) if isinstance(slide.get("metadata"), dict) else {}
+        slide_type = str(metadata.get("slide_type") or slide.get("slide_type") or "content")
+        copied["html"] = _normalize_slide_html(str(slide.get("html", "")), slide_type=slide_type)
         normalized.append(copied)
     return normalized
 
 
-def _normalize_slide_html(slide_html: str) -> str:
+def _normalize_slide_html(slide_html: str, *, slide_type: str = "content") -> str:
     """Stabilize HTML so preview and PPTX use the same non-overlapping boxes."""
     from bs4 import BeautifulSoup
 
@@ -166,6 +172,8 @@ def _normalize_slide_html(slide_html: str) -> str:
     wrapper = soup.find(attrs={"data-slide": True})
     if not wrapper:
         return str(soup)
+    enforce_body_safe = str(slide_type).lower() not in {"cover", "section"}
+    safe_bottom = CONTENT_SAFE_BOTTOM if enforce_body_safe else 540
 
     elements = [
         node for node in wrapper.find_all(recursive=False)
@@ -173,15 +181,17 @@ def _normalize_slide_html(slide_html: str) -> str:
     ]
     for node in elements:
         styles = _parse_style(str(node.attrs.get("style", "")))
-        _clamp_element_box(node, styles)
+        _clamp_element_box(node, styles, safe_bottom=safe_bottom)
         _normalize_textbox_lists(node)
         _normalize_text_alignment_attrs(node, styles)
-        _fit_text_element(node, styles)
+        _fit_text_element(node, styles, safe_bottom=safe_bottom)
         node.attrs["style"] = _style_to_string(styles)
 
     _enforce_text_contrast(elements)
-    _expand_backing_cards_for_text(elements)
-    _resolve_content_overlaps(elements)
+    _expand_backing_cards_for_text(elements, safe_bottom=safe_bottom)
+    if enforce_body_safe:
+        _resolve_card_container_overlaps(elements, safe_bottom=safe_bottom)
+    _resolve_content_overlaps(elements, safe_bottom=safe_bottom)
     return str(soup)
 
 
@@ -357,7 +367,7 @@ def _relative_luminance(hex_color: str) -> float:
     return relative_luminance(hex_color)
 
 
-def _clamp_element_box(node, styles: dict[str, str]) -> None:
+def _clamp_element_box(node, styles: dict[str, str], *, safe_bottom: float = 540) -> None:
     pptx_type = str(node.attrs.get("data-pptx-type", ""))
     region = str(node.attrs.get("data-pptx-region", ""))
     left = _style_px(styles, "left")
@@ -375,14 +385,15 @@ def _clamp_element_box(node, styles: dict[str, str]) -> None:
     left = max(0, min(left, 956))
     top = max(0, min(top, 536))
     width = max(1, min(width, 960 - left))
-    height = max(1, min(height, 540 - top))
+    bottom_limit = 540 if region in {"header", "footer"} else safe_bottom
+    height = max(1, min(height, bottom_limit - top))
     _set_style_px(styles, "left", left)
     _set_style_px(styles, "top", top)
     _set_style_px(styles, "width", width)
     _set_style_px(styles, "height", height)
 
 
-def _fit_text_element(node, styles: dict[str, str]) -> None:
+def _fit_text_element(node, styles: dict[str, str], *, safe_bottom: float = 540) -> None:
     pptx_type = str(node.attrs.get("data-pptx-type", ""))
     if pptx_type not in {"textbox", "shape"}:
         return
@@ -404,7 +415,7 @@ def _fit_text_element(node, styles: dict[str, str]) -> None:
     pad_top, pad_right, pad_bottom, pad_left = _padding_box(styles)
     min_size = 9 if font_size <= 28 else 18
     top = _style_px(styles, "top")
-    available_height = max(1, 526 - top)
+    available_height = max(1, safe_bottom - top)
     natural_height = _required_text_height(
         text,
         font_size,
@@ -956,17 +967,137 @@ def _wrap_text(text: str, font_size: float, width: float) -> list[str]:
     return lines or [text.strip()]
 
 
-def _resolve_content_overlaps(elements: list) -> None:
+def _resolve_card_container_overlaps(elements: list, *, safe_bottom: float) -> None:
+    """Move visual card groups as a unit so cards do not stack on top of each other."""
+    groups = _card_container_groups(elements)
+    groups.sort(key=lambda item: (item["box"][1], item["box"][0]))
+    placed: list[dict] = []
+
+    for group in groups:
+        box = group["box"]
+        for prior in placed:
+            if _overlap_ratio(box, prior["box"]) <= 0.08:
+                continue
+            left, top, width, height = box
+            prior_left, prior_top, prior_width, prior_height = prior["box"]
+
+            moved_top = prior_top + prior_height + CONTENT_GAP
+            if moved_top + height <= safe_bottom:
+                top = moved_top
+            elif prior_left + prior_width + CONTENT_GAP + width <= CONTENT_SAFE_RIGHT:
+                left = prior_left + prior_width + CONTENT_GAP
+            else:
+                height = max(24, min(height, safe_bottom - top))
+            box = (left, top, width, height)
+
+        dx = box[0] - group["box"][0]
+        dy = box[1] - group["box"][1]
+        dh = box[3] - group["box"][3]
+        if dx or dy or dh:
+            _move_card_group(group, dx=dx, dy=dy, height_delta=dh, safe_bottom=safe_bottom)
+            group["box"] = box
+        placed.append(group)
+
+
+def _card_container_groups(elements: list) -> list[dict]:
+    parsed = [
+        {
+            "index": index,
+            "node": node,
+            "styles": _parse_style(str(node.attrs.get("style", ""))),
+            "box": None,
+        }
+        for index, node in enumerate(elements)
+    ]
+    for item in parsed:
+        item["box"] = _box(item["styles"])
+
+    roots = [
+        item for item in parsed
+        if _is_card_group_root(item, parsed)
+    ]
+    groups = []
+    for root in roots:
+        root_box = root["box"]
+        children = [
+            item for item in parsed
+            if item is not root
+            and not _is_card_group_root(item, parsed)
+            and _box_center_inside(item["box"], root_box)
+        ]
+        groups.append({"root": root, "children": children, "box": root_box})
+    return groups
+
+
+def _is_card_group_root(item: dict, parsed: list[dict]) -> bool:
+    node = item["node"]
+    styles = item["styles"]
+    pptx_type = str(node.attrs.get("data-pptx-type", ""))
+    if str(node.attrs.get("data-pptx-region", "")) in {"background", "header", "footer"}:
+        return False
+    if pptx_type not in {"shape", "textbox", "table", "chart", "image"}:
+        return False
+    left, top, width, height = item["box"]
+    if width < 32 or height < 24 or top < 70:
+        return False
+    if pptx_type in {"shape", "textbox"} and not _node_background_colors(styles):
+        return False
+    area = width * height
+    for other in parsed:
+        if other is item:
+            continue
+        other_node = other["node"]
+        other_styles = other["styles"]
+        if str(other_node.attrs.get("data-pptx-region", "")) in {"background", "header", "footer"}:
+            continue
+        if str(other_node.attrs.get("data-pptx-type", "")) not in {"shape", "textbox"}:
+            continue
+        if not _node_background_colors(other_styles):
+            continue
+        other_box = other["box"]
+        other_area = other_box[2] * other_box[3]
+        if other_area <= area * 1.15:
+            continue
+        if _box_center_inside(item["box"], other_box):
+            return False
+    return True
+
+
+def _move_card_group(group: dict, *, dx: float, dy: float, height_delta: float, safe_bottom: float) -> None:
+    for index, item in enumerate([group["root"], *group["children"]]):
+        styles = item["styles"]
+        left, top, width, height = item["box"]
+        new_left = max(0, min(left + dx, 960 - width))
+        new_top = max(0, min(top + dy, safe_bottom - 1))
+        new_height = height + height_delta if index == 0 else height
+        new_height = max(1, min(new_height, safe_bottom - new_top))
+        _set_style_px(styles, "left", new_left)
+        _set_style_px(styles, "top", new_top)
+        _set_style_px(styles, "height", new_height)
+        item["node"].attrs["style"] = _style_to_string(styles)
+        item["box"] = (new_left, new_top, width, new_height)
+
+
+def _box_center_inside(
+    inner: tuple[float, float, float, float],
+    outer: tuple[float, float, float, float],
+) -> bool:
+    cx = inner[0] + inner[2] / 2
+    cy = inner[1] + inner[3] / 2
+    return outer[0] <= cx <= outer[0] + outer[2] and outer[1] <= cy <= outer[1] + outer[3]
+
+
+def _resolve_content_overlaps(elements: list, *, safe_bottom: float = 540) -> None:
     boxes = []
     for node in elements:
         styles = _parse_style(str(node.attrs.get("style", "")))
-        if not _is_overlap_candidate(node, styles):
+        if not _is_overlap_candidate(node, styles, safe_bottom=safe_bottom):
             continue
         boxes.append({"node": node, "styles": styles, "box": _box(styles)})
 
     boxes.sort(key=lambda item: (item["box"][1], item["box"][0]))
     placed: list[dict] = []
-    gap = 8
+    gap = CONTENT_GAP
     for item in boxes:
         box = item["box"]
         for prior in placed:
@@ -976,12 +1107,12 @@ def _resolve_content_overlaps(elements: list) -> None:
             left, top, width, height = box
             prior_left, prior_top, prior_width, prior_height = prior["box"]
             moved_top = prior_top + prior_height + gap
-            if moved_top + height <= 526:
+            if moved_top + height <= safe_bottom:
                 top = moved_top
-            elif prior_left + prior_width + gap + width <= 920:
+            elif prior_left + prior_width + gap + width <= CONTENT_SAFE_RIGHT:
                 left = prior_left + prior_width + gap
             else:
-                height = max(24, min(height, 526 - top))
+                height = max(24, min(height, safe_bottom - top))
             box = (left, top, width, height)
         item["box"] = box
         _set_style_px(item["styles"], "left", box[0])
@@ -992,7 +1123,7 @@ def _resolve_content_overlaps(elements: list) -> None:
         placed.append(item)
 
 
-def _expand_backing_cards_for_text(elements: list) -> None:
+def _expand_backing_cards_for_text(elements: list, *, safe_bottom: float = 540) -> None:
     parsed = [
         {
             "node": node,
@@ -1033,7 +1164,7 @@ def _expand_backing_cards_for_text(elements: list) -> None:
             backing_bottom = backing_box[1] + backing_box[3]
             if desired_bottom <= backing_bottom:
                 break
-            max_height = max(1, 526 - backing_box[1])
+            max_height = max(1, safe_bottom - backing_box[1])
             new_height = min(max_height, desired_bottom - backing_box[1])
             if new_height > backing_box[3]:
                 _set_style_px(backing_styles, "height", new_height)
@@ -1062,7 +1193,7 @@ def _is_probable_text_backing(
     return bx <= center_x <= bx + bw and by <= center_y <= by + bh + 4
 
 
-def _is_overlap_candidate(node, styles: dict[str, str]) -> bool:
+def _is_overlap_candidate(node, styles: dict[str, str], *, safe_bottom: float = 540) -> bool:
     pptx_type = str(node.attrs.get("data-pptx-type", ""))
     if pptx_type not in {"textbox", "table", "chart", "image"}:
         return False
@@ -1071,7 +1202,7 @@ def _is_overlap_candidate(node, styles: dict[str, str]) -> bool:
     width = _style_px(styles, "width")
     height = _style_px(styles, "height")
     top = _style_px(styles, "top")
-    return width > 8 and height > 8 and 70 <= top < 510
+    return width > 8 and height > 8 and 70 <= top < safe_bottom
 
 
 def _box(styles: dict[str, str]) -> tuple[float, float, float, float]:

@@ -36,6 +36,10 @@ DO NOT include elements outside the selected body_region for content slides.
 - Available: **436px height × 880px width**
 - LEFT margin: 40px, RIGHT margin: 40px → usable width = 880px
 - FILL THIS ENTIRE AREA with diverse, complex content elements
+- HARD SAFE LIMIT: all body cards, textboxes, tables, charts, images, icons,
+  and callouts must end at or above y:510. The fixed footer starts at y:522;
+  leave at least 12px clear space above it. Never place a card or box whose
+  bottom edge reaches the footer.
 
 ### Cover slides: Full-bleed design (generate everything including background)
 
@@ -137,6 +141,10 @@ Apply box-shadow on cards that need emphasis:
     `ceil(wrapped_lines * font_size * line_height + padding_top + padding_bottom + 4)`.
     The card/container height must be at least the header height plus the body textbox height
     plus internal spacing. Text must never visually exceed the card/container.
+11. Keep each card's background, header strip, icon, title, and body text inside
+    the same calculated card rectangle. If the calculated rectangle would cross
+    y:510, shorten the copy, reduce font size, or split the content into another
+    card rather than extending into the footer.
 
 ## Text Alignment Contract (CRITICAL for PPTX fidelity)
 
@@ -172,6 +180,9 @@ MANDATORY NEW CONTRACT:
 - Icons are independent visual elements. Prefer data-pptx-type="icon" with its own absolute rectangle.
 - Do NOT put data-pptx-icon on textboxes for new layouts. Create a separate icon element and a separate textbox.
 - Text and icon areas must be separate boxes with at least 8px clear gap. Do not rely on padding-left to make room.
+- Icons inside a card must sit inside the card bounds and align to the card's
+  title/body grid. Use the same x offset and icon size for equal-role cards,
+  and keep the icon centered vertically with its adjacent title line.
 - Every icon must use data-pptx-icon-placement with a standard role such as card_lead_left, metric_symbol_left, process_step_header, timeline_node, callout_lead, diagram_node_top, chart_annotation_icon, or empty_space_anchor.
 - Use 3-8 meaningful icons per content slide when they clarify the story; avoid text-only slides.
 - Example:
@@ -199,9 +210,13 @@ MANDATORY NEW CONTRACT:
 - For any list-like content, add `data-pptx-list="bullet"` to the textbox so
   HTML preview and PPTX output both preserve bullets. Use
   `data-pptx-list="numbered"` for ordered steps.
-- Use bullet markers for lists: "• " (bullet), "▸ " (arrow), "→ " (right arrow)
-- Each bullet item: prefix with "• " or "▸ " for clear visual hierarchy
-- Example: "• 데이터 수집\n• 모델 학습\n• 배포 자동화"
+- Use bullet markers for lists: "•", "▪", "◦", "▸", or numbered `1.`/`2.`.
+  Use `→` only for process flow text such as `Input → Engine → Output`, not
+  as an inline list separator.
+- Each bullet item must be its own `<li>`; do not write `• A • B • C` or
+  `A → B → C` when the content is meant to be a list.
+- Example:
+  `<ul><li>데이터 수집</li><li>모델 학습</li><li>배포 자동화</li></ul>`
 - The generated HTML text must contain actual newline characters between bullets.
 - Avoid inline prose such as "• A • B • C"; it will fail PPTX conversion QA.
 - For numbered lists: "①", "②", "③" or "1.", "2.", "3."
@@ -303,6 +318,8 @@ Use data-pptx-shape-options for OOXML shape formatting when needed:
 - Meaningless or decorative icon repetition
 - Slides without at least one non-text visual element (table, chart, KPI, or process flow)
 - Overlapping independent tables, charts, or cards; leave at least 12px between them
+- Any body card/box/callout touching or crossing the footer safe area (bottom
+  edge greater than y:510)
 
 ## Icon Usage (Iconify API — 100+ icons available)
 

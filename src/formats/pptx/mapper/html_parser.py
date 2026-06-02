@@ -240,7 +240,7 @@ def _normalize_text_lines(text: str) -> str:
     if not text:
         return ""
     normalized = text.replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
-    normalized = re.sub(r"\s+([•▸▶→▪◦◆◇✓])\s+", r"\n\1 ", normalized)
+    normalized = re.sub(r"\s+([•▸▶▪◦◆◇✓])\s+", r"\n\1 ", normalized)
     normalized = re.sub(r"\s+(\d+[.)])\s+", r"\n\1 ", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     return "\n".join(line.strip() for line in normalized.split("\n") if line.strip())

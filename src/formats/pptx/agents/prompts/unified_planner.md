@@ -107,3 +107,11 @@ unsupported SVG decoration, arbitrary widgets, or unverified logos.
 - Each non-cover slide should plan 4-8 major zones: one proof object, 2-4 support cards/annotations, and one concise synthesis/callout when useful.
 - `element_placements` are binding implementation instructions for downstream HTML generation. Include x/y/w/h for every planned major element.
 - Keep all coordinates inside the 960x540 canvas body area, normally x 40-920 and y 82-510.
+- No planned body element may overlap the fixed footer. For content slides,
+  every placement must satisfy `y + h <= 510`; reduce height, move upward, or
+  split content rather than allowing a card/callout to enter the footer band.
+- Planned cards and boxes must not overlap one another. Use at least 12px gaps
+  between equal-level cards, callouts, tables, charts, images, and icon groups.
+- Icons are planned as independent elements only when they have a clear semantic
+  anchor. Align icon rectangles with the related card/title grid, not as a
+  floating decorative cluster.
