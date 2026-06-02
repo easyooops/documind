@@ -7,6 +7,7 @@ style_director into ONE agent call that outputs structured Slide Blueprints.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -160,14 +161,25 @@ async def unified_planner(state: DocuMindState) -> dict:
     ]
 
     response = await llm.ainvoke(messages)
+    response_text = _message_text(response.content)
+    logger.info(
+        "unified_planner.llm_response",
+        chars=len(response_text),
+        sha=_short_sha(response_text),
+        requested_slides=requested_slide_count,
+        has_json_fence="```" in response_text,
+        brace_delta=response_text.count("{") - response_text.count("}"),
+        bracket_delta=response_text.count("[") - response_text.count("]"),
+    )
 
-    try:
-        result = parse_llm_json(response.content)
-        if not isinstance(result, dict):
-            result = {"slides": result if isinstance(result, list) else []}
-    except (json.JSONDecodeError, TypeError):
-        logger.warning("unified_planner.parse_fallback")
-        result = _fallback_blueprints(user_query, design_direction)
+    result = await _parse_or_repair_planner_result(
+        llm=llm,
+        messages=messages,
+        response_text=response_text,
+        requested_count=requested_slide_count,
+        user_query=user_query,
+        design_direction=design_direction,
+    )
 
     presentation_strategy = _normalize_presentation_strategy(
         result.get("presentation_strategy"), user_query
@@ -181,23 +193,63 @@ async def unified_planner(state: DocuMindState) -> dict:
     requested_count = _extract_requested_slide_count(user_query)
     if requested_count and len(slide_blueprints) < requested_count:
         logger.warning(
-            "unified_planner.slide_count_mismatch",
+            "unified_planner.slide_count_underproduced",
             requested=requested_count,
             planned=len(slide_blueprints),
+            slide_indices=[bp.get("index") for bp in slide_blueprints],
+            slide_titles=[str(bp.get("title", ""))[:60] for bp in slide_blueprints],
         )
-        slide_blueprints = _extend_blueprints_to_requested_count(
-            slide_blueprints,
-            requested_count,
-            user_query,
-            ruleset,
+        repaired_count_result = await _repair_slide_count_result(
+            llm=llm,
+            base_messages=messages,
+            parsed_result=result,
+            requested_count=requested_count,
+            planned_count=len(slide_blueprints),
+            user_query=user_query,
         )
+        if repaired_count_result is not None:
+            result = repaired_count_result
+            slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset)
+        if len(slide_blueprints) < requested_count:
+            logger.error(
+                "unified_planner.slide_count_last_resort_extend",
+                requested=requested_count,
+                planned=len(slide_blueprints),
+                slide_indices=[bp.get("index") for bp in slide_blueprints],
+            )
+            slide_blueprints = _extend_blueprints_to_requested_count(
+                slide_blueprints,
+                requested_count,
+                user_query,
+                ruleset,
+            )
     elif requested_count and not base_version and len(slide_blueprints) > requested_count:
         logger.warning(
-            "unified_planner.slide_count_mismatch",
+            "unified_planner.slide_count_overproduced",
             requested=requested_count,
             planned=len(slide_blueprints),
+            slide_indices=[bp.get("index") for bp in slide_blueprints],
+            slide_titles=[str(bp.get("title", ""))[:60] for bp in slide_blueprints],
         )
-        slide_blueprints = slide_blueprints[:requested_count]
+        repaired_count_result = await _repair_slide_count_result(
+            llm=llm,
+            base_messages=messages,
+            parsed_result=result,
+            requested_count=requested_count,
+            planned_count=len(slide_blueprints),
+            user_query=user_query,
+        )
+        if repaired_count_result is not None:
+            result = repaired_count_result
+            slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset)
+        if len(slide_blueprints) > requested_count:
+            logger.error(
+                "unified_planner.slide_count_last_resort_truncate",
+                requested=requested_count,
+                planned=len(slide_blueprints),
+                slide_indices=[bp.get("index") for bp in slide_blueprints],
+            )
+            slide_blueprints = slide_blueprints[:requested_count]
 
     title = result.get("title", user_query[:60])
     generated_design = result.get("design_tokens", {})
@@ -294,6 +346,231 @@ async def unified_planner(state: DocuMindState) -> dict:
         "revision_scope": revision_scope,
         "current_phase": "planning",
     }
+
+
+async def _parse_or_repair_planner_result(
+    *,
+    llm,
+    messages: list,
+    response_text: str,
+    requested_count: int | None,
+    user_query: str,
+    design_direction: dict,
+) -> dict:
+    try:
+        return _coerce_planner_result(
+            parse_llm_json(response_text),
+            source="initial",
+            requested_count=requested_count,
+        )
+    except (json.JSONDecodeError, TypeError) as exc:
+        _log_planner_parse_failure(
+            "unified_planner.parse_failed",
+            response_text,
+            exc,
+            requested_count=requested_count,
+        )
+
+    repair_prompt = (
+        "The previous response for the PPTX unified planner was not valid JSON. "
+        "Repair it into ONLY one valid JSON object matching the required planner schema. "
+        "Do not summarize, do not use markdown fences, do not omit fields, and do not add commentary. "
+    )
+    if requested_count:
+        repair_prompt += f"The JSON must contain exactly {requested_count} slides. "
+    repair_prompt += (
+        "\n\nPrevious invalid response excerpt:\n"
+        + _response_excerpt(response_text, 12000)
+    )
+
+    try:
+        repair_response = await llm.ainvoke([
+            *messages[:1],
+            HumanMessage(content=repair_prompt),
+        ])
+        repair_text = _message_text(repair_response.content)
+        logger.info(
+            "unified_planner.parse_repair_response",
+            chars=len(repair_text),
+            sha=_short_sha(repair_text),
+            requested_slides=requested_count,
+            brace_delta=repair_text.count("{") - repair_text.count("}"),
+            bracket_delta=repair_text.count("[") - repair_text.count("]"),
+        )
+        return _coerce_planner_result(
+            parse_llm_json(repair_text),
+            source="parse_repair",
+            requested_count=requested_count,
+        )
+    except (json.JSONDecodeError, TypeError) as exc:
+        _log_planner_parse_failure(
+            "unified_planner.parse_repair_failed",
+            _message_text(locals().get("repair_text", "")),
+            exc,
+            requested_count=requested_count,
+        )
+    except Exception as exc:
+        logger.error(
+            "unified_planner.parse_repair_call_failed",
+            error=str(exc)[:300],
+            requested_slides=requested_count,
+        )
+
+    logger.error(
+        "unified_planner.parse_last_resort_fallback",
+        requested_slides=requested_count,
+        user_query_excerpt=user_query[:300],
+    )
+    return _fallback_blueprints(user_query, design_direction)
+
+
+async def _repair_slide_count_result(
+    *,
+    llm,
+    base_messages: list,
+    parsed_result: dict,
+    requested_count: int,
+    planned_count: int,
+    user_query: str,
+) -> dict | None:
+    repair_prompt = (
+        "The previous PPTX planner JSON did not satisfy the requested slide count. "
+        f"The user requested exactly {requested_count} slides, but the JSON contained "
+        f"{planned_count} slides. Return ONLY a corrected valid JSON object with exactly "
+        f"{requested_count} slides. Preserve the same schema, theme, strategy, and intent. "
+        "Do not use markdown fences or commentary.\n\n"
+        "Original user request excerpt:\n"
+        f"{user_query[:1200]}\n\n"
+        "Previous parsed JSON:\n"
+        f"{json.dumps(parsed_result, ensure_ascii=False, indent=2)[:16000]}"
+    )
+    try:
+        response = await llm.ainvoke([
+            *base_messages[:1],
+            HumanMessage(content=repair_prompt),
+        ])
+        text = _message_text(response.content)
+        logger.info(
+            "unified_planner.slide_count_repair_response",
+            chars=len(text),
+            sha=_short_sha(text),
+            requested_slides=requested_count,
+            previous_planned=planned_count,
+        )
+        result = _coerce_planner_result(
+            parse_llm_json(text),
+            source="slide_count_repair",
+            requested_count=requested_count,
+        )
+        repaired_count = len(result.get("slides", []))
+        if repaired_count == requested_count:
+            logger.info(
+                "unified_planner.slide_count_repair_success",
+                requested=requested_count,
+                planned=repaired_count,
+            )
+            return result
+        logger.warning(
+            "unified_planner.slide_count_repair_still_mismatch",
+            requested=requested_count,
+            planned=repaired_count,
+            slide_indices=_raw_slide_indices(result),
+        )
+        return result
+    except (json.JSONDecodeError, TypeError) as exc:
+        _log_planner_parse_failure(
+            "unified_planner.slide_count_repair_parse_failed",
+            _message_text(locals().get("text", "")),
+            exc,
+            requested_count=requested_count,
+        )
+    except Exception as exc:
+        logger.error(
+            "unified_planner.slide_count_repair_call_failed",
+            requested=requested_count,
+            planned=planned_count,
+            error=str(exc)[:300],
+        )
+    return None
+
+
+def _coerce_planner_result(value: object, *, source: str, requested_count: int | None) -> dict:
+    result = {"slides": value} if isinstance(value, list) else value
+    if not isinstance(result, dict):
+        raise TypeError(f"Planner response parsed to {type(value).__name__}, expected object")
+    slides = result.get("slides", [])
+    if not isinstance(slides, list):
+        raise TypeError("Planner response field `slides` is not a list")
+    logger.info(
+        "unified_planner.parse_success",
+        source=source,
+        slides=len(slides),
+        requested_slides=requested_count,
+        slide_indices=_raw_slide_indices(result),
+        title=str(result.get("title", ""))[:80],
+    )
+    return result
+
+
+def _log_planner_parse_failure(
+    event_name: str,
+    response_text: str,
+    exc: Exception,
+    *,
+    requested_count: int | None,
+) -> None:
+    logger.warning(
+        event_name,
+        error_type=type(exc).__name__,
+        error=str(exc)[:300],
+        chars=len(response_text),
+        sha=_short_sha(response_text),
+        requested_slides=requested_count,
+        has_json_fence="```" in response_text,
+        first_non_ws=response_text.lstrip()[:1],
+        last_non_ws=response_text.rstrip()[-1:] if response_text.strip() else "",
+        brace_delta=response_text.count("{") - response_text.count("}"),
+        bracket_delta=response_text.count("[") - response_text.count("]"),
+        excerpt_head=response_text[:500],
+        excerpt_tail=response_text[-500:] if len(response_text) > 500 else "",
+    )
+
+
+def _message_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(str(part.get("text", "")))
+            else:
+                parts.append(str(part))
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _short_sha(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:12]
+
+
+def _response_excerpt(text: str, limit: int) -> str:
+    value = str(text or "")
+    if len(value) <= limit:
+        return value
+    half = max(1, limit // 2)
+    return value[:half] + "\n...[truncated]...\n" + value[-half:]
+
+
+def _raw_slide_indices(result: dict) -> list:
+    slides = result.get("slides", [])
+    if not isinstance(slides, list):
+        return []
+    return [
+        slide.get("index")
+        for slide in slides
+        if isinstance(slide, dict)
+    ]
 
 
 def _normalize_revision_scope(value: object, user_query: str) -> str:

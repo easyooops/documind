@@ -7,6 +7,7 @@ state for the HTML generator to insert.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import importlib
@@ -23,7 +24,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image, ImageDraw, ImageFont
 
-from src.agents.loader import get_llm_for_agent, load_agent_prompt
+from src.agents.loader import get_llm_for_agent, load_agent_config, load_agent_prompt
 from src.core.config import settings
 from src.core.logging import get_logger
 from src.schemas.agents import DocuMindState
@@ -63,7 +64,14 @@ async def visual_asset_planner(state: DocuMindState) -> dict:
             "current_phase": "visual_asset_planning",
         }
 
-    if not _quick_visual_signal(user_query, slide_blueprints):
+    quick_signal = _quick_visual_signal(user_query, slide_blueprints)
+    logger.info(
+        "visual_asset_planner.signal",
+        quick_signal=quick_signal,
+        reserved_slots=_reserved_visual_slot_count(slide_blueprints),
+        slide_count=len(slide_blueprints),
+    )
+    if not quick_signal:
         logger.info("visual_asset_planner.skip_no_signal")
         return {
             "visual_asset_plan": {"enabled": False, "reason": "No visual asset intent."},
@@ -81,25 +89,26 @@ async def visual_asset_planner(state: DocuMindState) -> dict:
     )
 
     if not normalized.get("enabled"):
-        slot_plan = _fallback_visual_slot_plan(
-            user_query,
-            slide_blueprints,
-            state.get("slide_revision_instructions", {}),
+        logger.warning(
+            "visual_asset_planner.llm_plan_required_no_fallback",
+            reason=normalized.get("reason", ""),
         )
-        if slot_plan.get("enabled"):
-            logger.info(
-                "visual_asset_planner.override_llm_skip_for_slots",
-                reason=normalized.get("reason", ""),
-                assets=len(slot_plan.get("assets", [])),
-            )
-            normalized = slot_plan
-        else:
-            logger.info("visual_asset_planner.skip_by_llm", reason=normalized.get("reason", ""))
-            return {
-                "visual_asset_plan": normalized,
-                "visual_assets": [],
-                "current_phase": "visual_asset_planning",
-            }
+        return {
+            "visual_asset_plan": normalized,
+            "visual_assets": [],
+            "current_phase": "visual_asset_planning",
+        }
+
+    missing_reserved_slides = _missing_reserved_visual_asset_slides(
+        normalized,
+        slide_blueprints,
+        state.get("slide_revision_instructions", {}),
+    )
+    if missing_reserved_slides:
+        logger.warning(
+            "visual_asset_planner.llm_missing_reserved_slots_no_fallback",
+            missing_slides=missing_reserved_slides,
+        )
 
     output_dir = Path(settings.storage_local_path) / "visual-assets"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +118,13 @@ async def visual_asset_planner(state: DocuMindState) -> dict:
         rendered = await _render_asset(asset, output_dir)
         if rendered:
             assets.append(rendered)
+        else:
+            logger.warning(
+                "visual_asset_planner.render_missing",
+                slide=asset.get("slide_index"),
+                asset_id=asset.get("id"),
+                method=asset.get("method"),
+            )
 
     logger.info("visual_asset_planner.complete", assets=len(assets))
     return {
@@ -120,6 +136,10 @@ async def visual_asset_planner(state: DocuMindState) -> dict:
 
 async def _llm_plan(user_query: str, slide_blueprints: list[dict], state: DocuMindState) -> dict:
     llm = get_llm_for_agent(AGENT_NAME, format_id=FORMAT_ID)
+    config = load_agent_config(AGENT_NAME, format_id=FORMAT_ID)
+    retry_config = config.get("retry", {})
+    max_attempts = max(1, int(retry_config.get("max_attempts", 2) or 2))
+    backoff_seconds = max(0, float(retry_config.get("backoff_seconds", 0) or 0))
     system_prompt = load_agent_prompt(AGENT_NAME, format_id=FORMAT_ID)
     if not system_prompt:
         system_prompt = "Classify slide visual asset needs. Return only JSON."
@@ -131,8 +151,12 @@ async def _llm_plan(user_query: str, slide_blueprints: list[dict], state: DocuMi
             "title": bp.get("title"),
             "purpose": bp.get("purpose"),
             "key_message": bp.get("key_message"),
+            "content_blocks": bp.get("content_blocks", []),
+            "content_elements": bp.get("content_elements", []),
+            "data_points": bp.get("data_points", []),
             "suggested_elements": bp.get("suggested_elements", []),
             "layout_plan": bp.get("layout_plan", {}),
+            "visual_asset_slots": _visual_asset_slots_for_blueprint(bp),
         }
         for bp in slide_blueprints
         if isinstance(bp, dict)
@@ -140,19 +164,332 @@ async def _llm_plan(user_query: str, slide_blueprints: list[dict], state: DocuMi
     context = {
         "user_query": user_query,
         "slides": compact_blueprints,
+        "required_visual_asset_slots": _reserved_visual_slot_records(slide_blueprints),
+        "fallback_policy": (
+            "disabled: all diagrams_image assets must be planned by this LLM response "
+            "with slide-specific diagrams_nodes and diagrams_edges."
+        ),
         "presentation_strategy": state.get("presentation_strategy", {}),
     }
 
-    try:
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=json.dumps(context, ensure_ascii=False, indent=2)),
-        ])
-        result = parse_llm_json(response.content)
-        return result if isinstance(result, dict) else {}
-    except Exception as exc:
-        logger.warning("visual_asset_planner.llm_failed", error=str(exc)[:200])
-        return {}
+    last_plan: dict | None = None
+    last_issues: list[str] = []
+    for attempt in range(1, max_attempts + 1):
+        request_context = dict(context)
+        if last_issues:
+            request_context["repair_required"] = {
+                "attempt": attempt,
+                "issues": last_issues,
+                "instruction": (
+                    "Return a complete corrected JSON object only. Do not summarize. "
+                    "Every diagrams_image asset must include method, slide_index, "
+                    "description, diagrams_nodes, diagrams_edges, and placement when a "
+                    "reserved slot exists. Do not reuse the same topology across slides."
+                ),
+            }
+        try:
+            response = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=json.dumps(request_context, ensure_ascii=False, indent=2)),
+            ])
+            raw_content = str(response.content or "")
+            result = parse_llm_json(raw_content)
+            if not isinstance(result, dict):
+                last_plan = None
+                last_issues = [f"Parsed JSON was {type(result).__name__}, expected object."]
+            else:
+                last_plan = result
+                last_issues = _llm_plan_validation_issues(
+                    result,
+                    user_query,
+                    slide_blueprints,
+                    state.get("slide_revision_instructions", {}),
+                )
+        except Exception as exc:
+            raw_text = str(locals().get("raw_content", ""))
+            last_plan = None
+            last_issues = [
+                (
+                    f"JSON parse failed: {type(exc).__name__}. "
+                    f"response_chars={len(raw_text)} "
+                    f"likely_truncated={_looks_like_truncated_json(raw_text)}"
+                )
+            ]
+
+        if not last_issues:
+            logger.info("visual_asset_planner.llm_plan_validated", attempt=attempt)
+            return last_plan or {}
+
+        logger.warning(
+            "visual_asset_planner.llm_plan_invalid_retry",
+            attempt=attempt,
+            max_attempts=max_attempts,
+            issues=last_issues[:6],
+        )
+        if attempt < max_attempts and backoff_seconds:
+            await asyncio.sleep(backoff_seconds)
+
+    logger.warning(
+        "visual_asset_planner.llm_plan_failed_validation",
+        attempts=max_attempts,
+        issues=last_issues[:8],
+    )
+    return {
+        "enabled": False,
+        "reason": "LLM visual asset plan failed validation after retries: " + "; ".join(last_issues[:4]),
+        "assets": [],
+    }
+
+
+def _llm_plan_validation_issues(
+    plan: dict,
+    user_query: str,
+    slide_blueprints: list[dict],
+    slide_revision_instructions: dict | None = None,
+) -> list[str]:
+    issues: list[str] = []
+    if not isinstance(plan.get("assets"), list):
+        return ["Missing assets array."]
+
+    raw_assets = [asset for asset in plan.get("assets", []) if isinstance(asset, dict)]
+    if not raw_assets:
+        return ["No asset objects returned despite visual asset signal."]
+
+    for index, asset in enumerate(raw_assets, start=1):
+        method = str(asset.get("method") or "").strip()
+        if method == LEGACY_METHOD_MERMAID:
+            method = METHOD_DIAGRAMS
+        slide_index = asset.get("slide_index", "?")
+        if method not in ALLOWED_METHODS:
+            issues.append(f"Asset {index} slide {slide_index}: invalid or missing method.")
+            continue
+        if method == METHOD_DIAGRAMS:
+            nodes = _normalize_diagrams_nodes(asset.get("diagrams_nodes"))
+            edges = _normalize_diagrams_edges(asset.get("diagrams_edges"))
+            if not nodes:
+                issues.append(f"Asset {index} slide {slide_index}: missing diagrams_nodes.")
+            if not edges:
+                issues.append(f"Asset {index} slide {slide_index}: missing diagrams_edges.")
+
+    normalized = _normalize_plan(plan, user_query, slide_blueprints, slide_revision_instructions)
+    if not normalized.get("enabled"):
+        issues.append("No valid normalized assets remained after strict validation.")
+
+    missing_slides = _missing_reserved_visual_asset_slides(
+        normalized,
+        slide_blueprints,
+        slide_revision_instructions,
+    )
+    if missing_slides:
+        issues.append(
+            "Reserved visual slots missing LLM assets for slides: "
+            + ", ".join(str(slide) for slide in missing_slides)
+        )
+
+    duplicate_slides = _duplicate_diagram_topology_slides(normalized)
+    if duplicate_slides:
+        issues.append(
+            "Duplicate diagrams topology reused across slides: "
+            + ", ".join(str(slide) for slide in duplicate_slides)
+        )
+    return issues
+
+
+def _duplicate_diagram_topology_slides(plan: dict) -> list[int]:
+    seen: dict[str, int] = {}
+    duplicates: list[int] = []
+    for asset in plan.get("assets", []):
+        if not isinstance(asset, dict) or asset.get("method") != METHOD_DIAGRAMS:
+            continue
+        try:
+            slide_index = int(asset.get("slide_index", 0))
+        except (TypeError, ValueError):
+            continue
+        signature = json.dumps(
+            {
+                "nodes": [
+                    {
+                        "label": node.get("label"),
+                        "provider": node.get("provider"),
+                        "service": node.get("service"),
+                    }
+                    for node in asset.get("diagrams_nodes", [])
+                    if isinstance(node, dict)
+                ],
+                "edges": [
+                    {
+                        "from": edge.get("from"),
+                        "to": edge.get("to"),
+                        "label": edge.get("label", ""),
+                    }
+                    for edge in asset.get("diagrams_edges", [])
+                    if isinstance(edge, dict)
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if not signature or signature == '{"edges": [], "nodes": []}':
+            continue
+        if signature in seen and seen[signature] != slide_index:
+            duplicates.extend([seen[signature], slide_index])
+        else:
+            seen[signature] = slide_index
+    return sorted(set(duplicates))
+
+
+def _looks_like_truncated_json(raw: str) -> bool:
+    text = str(raw or "").strip()
+    if not text:
+        return False
+    return (
+        text.count("{") > text.count("}")
+        or text.count("[") > text.count("]")
+        or text.endswith((",", ":", "[", "{"))
+    )
+
+
+def _visual_asset_slots_for_blueprint(blueprint: dict) -> list[dict]:
+    slots = []
+    placements = blueprint.get("layout_plan", {}).get("element_placements", [])
+    if not isinstance(placements, list):
+        return slots
+    for placement in placements:
+        if not isinstance(placement, dict):
+            continue
+        if not _is_visual_asset_placement(placement):
+            continue
+        normalized = _normalize_placement(placement)
+        if not normalized:
+            continue
+        slots.append({
+            "id": str(placement.get("id") or f"visual_asset_slot_{len(slots) + 1}"),
+            "asset_role": str(placement.get("asset_role") or "visual_asset"),
+            "element": str(placement.get("element") or "image"),
+            "placement": normalized,
+            "slot_constraints": _slot_constraints(normalized),
+        })
+    return slots
+
+
+def _reserved_visual_slot_records(slide_blueprints: list[dict]) -> list[dict]:
+    records = []
+    for blueprint in slide_blueprints:
+        if not isinstance(blueprint, dict):
+            continue
+        slots = _visual_asset_slots_for_blueprint(blueprint)
+        if not slots:
+            continue
+        records.append({
+            "slide_index": blueprint.get("index"),
+            "slide_type": blueprint.get("slide_type"),
+            "title": blueprint.get("title"),
+            "purpose": blueprint.get("purpose"),
+            "key_message": blueprint.get("key_message"),
+            "content_blocks": blueprint.get("content_blocks", []),
+            "content_elements": blueprint.get("content_elements", []),
+            "data_points": blueprint.get("data_points", []),
+            "slots": slots,
+        })
+    return records
+
+
+def _slot_constraints(placement: dict | None) -> dict:
+    profile = _slot_render_profile(placement, 0)
+    width = _num((placement or {}).get("w"), 520)
+    height = _num((placement or {}).get("h"), 330)
+    aspect = width / max(height, 1)
+    return {
+        "slot_width_px": round(width, 2),
+        "slot_height_px": round(height, 2),
+        "slot_aspect_ratio": round(aspect, 3),
+        "recommended_direction": profile["recommended_direction"],
+        "max_recommended_nodes": profile["max_recommended_nodes"],
+        "layout_guidance": profile["layout_guidance"],
+    }
+
+
+def _slot_render_profile(placement: Any, node_count: int = 0) -> dict:
+    placement = placement if isinstance(placement, dict) else {}
+    width = max(1.0, _num(placement.get("w"), 520))
+    height = max(1.0, _num(placement.get("h"), 330))
+    aspect = width / height
+    if aspect < 0.85:
+        recommended_direction = "TB"
+        max_nodes = 5
+        ranksep = "0.45"
+        nodesep = "0.25"
+        pad = "0.05"
+        node_fontsize = "10"
+        edge_fontsize = "8"
+        guidance = "Tall/narrow slot: use a compact vertical stack, avoid clusters, keep labels short."
+    elif aspect > 1.45:
+        recommended_direction = "LR"
+        max_nodes = 8
+        ranksep = "0.55"
+        nodesep = "0.35"
+        pad = "0.08"
+        node_fontsize = "11"
+        edge_fontsize = "9"
+        guidance = "Wide slot: use a left-to-right flow with at most two rows and concise labels."
+    else:
+        recommended_direction = "LR" if node_count > 4 else "TB"
+        max_nodes = 6
+        ranksep = "0.5"
+        nodesep = "0.3"
+        pad = "0.08"
+        node_fontsize = "11"
+        edge_fontsize = "9"
+        guidance = "Balanced slot: keep topology compact and avoid deep nesting."
+
+    graph_width = max(1.0, min(10.0, width / 96))
+    graph_height = max(1.0, min(7.5, height / 96))
+    return {
+        "aspect": aspect,
+        "recommended_direction": recommended_direction,
+        "max_recommended_nodes": max_nodes,
+        "layout_guidance": guidance,
+        "graph_size": f"{graph_width:.2f},{graph_height:.2f}!",
+        "ranksep": ranksep,
+        "nodesep": nodesep,
+        "pad": pad,
+        "node_fontsize": node_fontsize,
+        "edge_fontsize": edge_fontsize,
+    }
+
+
+def _slot_aware_diagrams_direction(value: Any, placement: dict | None, node_count: int) -> str:
+    direction = _normalize_diagrams_direction(value)
+    profile = _slot_render_profile(placement, node_count)
+    aspect = profile["aspect"]
+    if aspect < 0.85 and direction in {"LR", "RL"}:
+        return "TB"
+    if aspect > 1.45 and direction in {"TB", "BT"} and node_count > 3:
+        return "LR"
+    return direction
+
+
+def _missing_reserved_visual_asset_slides(
+    normalized: dict,
+    slide_blueprints: list[dict],
+    slide_revision_instructions: dict | None = None,
+) -> list[int]:
+    requested = _normalize_slide_instruction_map(slide_revision_instructions)
+    reserved = set()
+    for record in _reserved_visual_slot_records(slide_blueprints):
+        try:
+            slide_index = int(record.get("slide_index", 0))
+        except (TypeError, ValueError):
+            continue
+        if requested and slide_index not in requested:
+            continue
+        reserved.add(slide_index)
+    planned = {
+        int(asset.get("slide_index", 0))
+        for asset in normalized.get("assets", [])
+        if isinstance(asset, dict) and str(asset.get("slide_index", "")).isdigit()
+    }
+    return sorted(reserved - planned)
 
 
 def _normalize_plan(
@@ -162,7 +499,11 @@ def _normalize_plan(
     slide_revision_instructions: dict | None = None,
 ) -> dict:
     if not isinstance(plan, dict) or not isinstance(plan.get("assets"), list):
-        return _fallback_plan(user_query, slide_blueprints, slide_revision_instructions)
+        return {
+            "enabled": False,
+            "reason": "LLM did not return a valid visual asset plan; fallback is disabled.",
+            "assets": [],
+        }
 
     assets = []
     slide_revision_instructions = _normalize_slide_instruction_map(slide_revision_instructions)
@@ -178,7 +519,12 @@ def _normalize_plan(
         if method == LEGACY_METHOD_MERMAID:
             method = METHOD_DIAGRAMS
         if method not in ALLOWED_METHODS:
-            method = _select_method(user_query, raw)
+            logger.warning(
+                "visual_asset_planner.llm_asset_invalid_method",
+                method=method,
+                slide=raw.get("slide_index"),
+            )
+            continue
         description = str(raw.get("description") or raw.get("title") or user_query).strip()
         slide_index = _infer_visual_asset_slide_index(
             raw,
@@ -195,6 +541,18 @@ def _normalize_plan(
         placement = _asset_slot_placement(slide_index, slide_blueprints) or _normalize_placement(
             raw.get("placement")
         )
+        diagrams_nodes = _normalize_diagrams_nodes(raw.get("diagrams_nodes"))
+        diagrams_edges = _normalize_diagrams_edges(raw.get("diagrams_edges"))
+        if method == METHOD_DIAGRAMS and (not diagrams_nodes or not diagrams_edges):
+            logger.warning(
+                "visual_asset_planner.llm_asset_missing_topology",
+                slide=slide_index,
+                title=str(raw.get("title") or "")[:80],
+                has_nodes=bool(diagrams_nodes),
+                has_edges=bool(diagrams_edges),
+            )
+            continue
+
         assets.append({
             "id": raw.get("id") or f"asset_{slide_index}_{len(assets) + 1}",
             "slide_index": slide_index,
@@ -207,13 +565,18 @@ def _normalize_plan(
                 user_query,
                 raw,
             ),
-            "diagrams_direction": _normalize_diagrams_direction(raw.get("diagrams_direction")),
+            "diagrams_direction": _slot_aware_diagrams_direction(
+                raw.get("diagrams_direction"),
+                placement,
+                len(diagrams_nodes),
+            ),
             "diagrams_clusters": _normalize_diagrams_clusters(raw.get("diagrams_clusters")),
-            "diagrams_nodes": _normalize_diagrams_nodes(raw.get("diagrams_nodes")),
-            "diagrams_edges": _normalize_diagrams_edges(raw.get("diagrams_edges")),
+            "diagrams_nodes": diagrams_nodes,
+            "diagrams_edges": diagrams_edges,
             "mermaid": _clean_mermaid(str(raw.get("mermaid") or "")),
             "image_prompt": str(raw.get("image_prompt") or description)[:1200],
             "placement": placement,
+            "render_profile": _slot_render_profile(placement, len(diagrams_nodes)),
         })
 
     return {
@@ -308,8 +671,78 @@ def _fallback_visual_slot_plan(
     return {
         "enabled": bool(assets),
         "reason": "Slide blueprint reserved rendered diagram/image slots.",
-        "assets": assets[:3],
+        "assets": assets,
     }
+
+
+def _reserved_visual_slot_count(slide_blueprints: list[dict]) -> int:
+    count = 0
+    for blueprint in slide_blueprints:
+        if not isinstance(blueprint, dict):
+            continue
+        placements = blueprint.get("layout_plan", {}).get("element_placements", [])
+        if not isinstance(placements, list):
+            continue
+        for placement in placements:
+            if not isinstance(placement, dict):
+                continue
+            if _is_visual_asset_placement(placement):
+                count += 1
+    return count
+
+
+def _is_visual_asset_placement(placement: dict) -> bool:
+    return (
+        str(placement.get("asset_role") or "") == "visual_asset"
+        or str(placement.get("element") or "").lower() in {"diagram", "image"}
+    )
+
+
+def _merge_missing_reserved_slot_assets(
+    normalized: dict,
+    user_query: str,
+    slide_blueprints: list[dict],
+    slide_revision_instructions: dict | None = None,
+) -> dict:
+    """Ensure every planner-reserved visual slot receives a rendered asset."""
+    if not normalized.get("enabled"):
+        return normalized
+    slot_plan = _fallback_visual_slot_plan(
+        user_query,
+        slide_blueprints,
+        slide_revision_instructions,
+    )
+    if not slot_plan.get("enabled"):
+        return normalized
+
+    assets = [asset for asset in normalized.get("assets", []) if isinstance(asset, dict)]
+    existing_slides = {
+        int(asset.get("slide_index", 0))
+        for asset in assets
+        if str(asset.get("slide_index", "")).isdigit()
+    }
+    missing_assets = [
+        asset
+        for asset in slot_plan.get("assets", [])
+        if int(asset.get("slide_index", 0)) not in existing_slides
+    ]
+    if not missing_assets:
+        return normalized
+
+    logger.info(
+        "visual_asset_planner.add_missing_slot_assets",
+        existing_assets=len(assets),
+        added_assets=len(missing_assets),
+        missing_slides=[asset.get("slide_index") for asset in missing_assets],
+    )
+    merged = dict(normalized)
+    merged["assets"] = assets + missing_assets
+    merged["enabled"] = True
+    merged["reason"] = (
+        str(normalized.get("reason") or "Visual assets requested.")
+        + " Added fallback assets for reserved visual slots."
+    )
+    return merged
 
 
 async def _render_asset(asset: dict, output_dir: Path) -> dict | None:
@@ -320,8 +753,32 @@ async def _render_asset(asset: dict, output_dir: Path) -> dict | None:
     ).hexdigest()[:10]
     output_path = output_dir / f"{asset_id}_{fingerprint}.png"
 
+    if method == METHOD_DIAGRAMS and not _has_explicit_diagrams_topology(asset):
+        logger.warning(
+            "visual_asset_planner.render_skip_missing_llm_topology",
+            asset_id=asset_id,
+            slide=asset.get("slide_index"),
+        )
+        return None
+
     render_metadata: dict[str, Any] = {}
-    if not output_path.exists():
+    if output_path.exists() and _valid_png(output_path):
+        render_metadata = {"renderer": "cache_hit", "cache_hit": True}
+        logger.info(
+            "visual_asset_planner.render_cache_hit",
+            asset_id=asset_id,
+            slide=asset.get("slide_index"),
+            method=method,
+            output=str(output_path),
+        )
+    else:
+        logger.info(
+            "visual_asset_planner.render_start",
+            asset_id=asset_id,
+            slide=asset.get("slide_index"),
+            method=method,
+            output=str(output_path),
+        )
         if method == METHOD_IMAGE:
             generated = await _render_image_model_asset(asset)
             if generated and generated.exists():
@@ -343,21 +800,13 @@ async def _render_asset(asset: dict, output_dir: Path) -> dict | None:
                     "renderer_reason": type(exc).__name__,
                 }
             if render_metadata.get("renderer") != "diagrams" or not _valid_png(output_path):
-                try:
-                    _render_diagrams_fallback_asset(asset, output_path)
-                except BaseException as exc:
-                    logger.warning(
-                        "visual_asset_planner.diagrams_fallback_guarded",
-                        error=str(exc)[:200],
-                    )
-                    _render_concept_placeholder(asset, output_path)
-                render_metadata = {
-                    **render_metadata,
-                    "renderer": "diagrams_fallback",
-                    "renderer_reason": (
-                        render_metadata.get("renderer_reason") or "diagrams_unavailable"
-                    ),
-                }
+                logger.warning(
+                    "visual_asset_planner.diagrams_native_required_no_fallback",
+                    asset_id=asset_id,
+                    slide=asset.get("slide_index"),
+                    reason=render_metadata.get("renderer_reason", ""),
+                )
+                return None
         else:
             _render_concept_placeholder(asset, output_path)
             render_metadata = {"renderer": "concept_placeholder"}
@@ -365,6 +814,8 @@ async def _render_asset(asset: dict, output_dir: Path) -> dict | None:
     if not output_path.exists():
         return None
     _ensure_minimum_png_resolution(output_path)
+    if method == METHOD_DIAGRAMS:
+        _fit_png_canvas_to_placement(output_path, asset.get("placement"))
 
     rendered = dict(asset)
     rendered["path"] = str(output_path)
@@ -378,7 +829,26 @@ async def _render_asset(asset: dict, output_dir: Path) -> dict | None:
             encoding="utf-8",
         )
         rendered["diagrams_topology_path"] = str(topology_path)
+    try:
+        with Image.open(output_path) as image:
+            width, height = image.size
+    except Exception:
+        width, height = 0, 0
+    logger.info(
+        "visual_asset_planner.render_complete",
+        asset_id=asset_id,
+        slide=asset.get("slide_index"),
+        method=method,
+        renderer=rendered.get("renderer", ""),
+        path=str(output_path),
+        width=width,
+        height=height,
+    )
     return rendered
+
+
+def _has_explicit_diagrams_topology(asset: dict) -> bool:
+    return bool(asset.get("diagrams_nodes")) and bool(asset.get("diagrams_edges"))
 
 
 async def _render_image_model_asset(asset: dict) -> Path | None:
@@ -449,6 +919,7 @@ def _render_diagrams_asset(asset: dict, output_path: Path) -> dict:
 
         filename = output_path.with_suffix("")
         font_name = _graphviz_font_name()
+        render_profile = _slot_render_profile(asset.get("placement"), len(node_specs))
         with _temporary_graphviz_path(dot_path):
             with Diagram(
                 topology["title"],
@@ -458,16 +929,19 @@ def _render_diagrams_asset(asset: dict, output_path: Path) -> dict:
                 direction=topology["direction"],
                 graph_attr={
                     "bgcolor": "transparent",
-                    "pad": "0.2",
-                    "ranksep": "0.8",
-                    "nodesep": "0.5",
+                    "pad": render_profile["pad"],
+                    "ranksep": render_profile["ranksep"],
+                    "nodesep": render_profile["nodesep"],
                     "splines": "ortho",
                     "concentrate": "true",
                     "dpi": "192",
                     "fontname": font_name,
+                    "size": render_profile["graph_size"],
+                    "ratio": "compress",
+                    "margin": "0",
                 },
-                node_attr={"fontsize": "12", "fontname": font_name},
-                edge_attr={"fontsize": "10", "fontname": font_name, "color": "#475569"},
+                node_attr={"fontsize": render_profile["node_fontsize"], "fontname": font_name},
+                edge_attr={"fontsize": render_profile["edge_fontsize"], "fontname": font_name, "color": "#475569"},
             ):
                 build_nodes(None)
                 build_clusters(None)
@@ -495,6 +969,7 @@ def _render_diagrams_asset(asset: dict, output_path: Path) -> dict:
                 "renderer": "diagrams",
                 "renderer_package": "diagrams",
                 "graphviz_dot_path": dot_path,
+                "render_profile": render_profile,
             }
         return {"renderer": "diagrams_unavailable", "renderer_reason": "empty_output"}
     except RecursionError as exc:
@@ -655,6 +1130,35 @@ def _ensure_minimum_png_resolution(path: Path) -> None:
             image.convert("RGBA").resize(target, resampling).save(path, format="PNG")
     except Exception as exc:
         logger.warning("visual_asset_planner.diagram_upscale_failed", error=str(exc)[:200])
+
+
+def _fit_png_canvas_to_placement(path: Path, placement: Any) -> None:
+    placement = placement if isinstance(placement, dict) else {}
+    slot_w = _num(placement.get("w"), 0)
+    slot_h = _num(placement.get("h"), 0)
+    if slot_w <= 0 or slot_h <= 0:
+        return
+    target_aspect = slot_w / max(slot_h, 1)
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGBA")
+        width, height = image.size
+        if width <= 0 or height <= 0:
+            return
+        current_aspect = width / height
+        if abs(current_aspect - target_aspect) < 0.03:
+            return
+        if current_aspect > target_aspect:
+            canvas_w = width
+            canvas_h = max(height, int(round(width / target_aspect)))
+        else:
+            canvas_h = height
+            canvas_w = max(width, int(round(height * target_aspect)))
+        canvas = Image.new("RGBA", (canvas_w, canvas_h), (255, 255, 255, 0))
+        canvas.alpha_composite(image, ((canvas_w - width) // 2, (canvas_h - height) // 2))
+        canvas.save(path, format="PNG")
+    except Exception as exc:
+        logger.warning("visual_asset_planner.diagram_canvas_fit_failed", error=str(exc)[:200])
 
 
 def _graphviz_font_name() -> str:
@@ -1077,30 +1581,6 @@ def _diagrams_topology(asset: dict) -> dict:
                 node["provider"] = provider
                 node["service"] = _diagrams_service_for_label(label, provider)
 
-    if not nodes:
-        graph = _parse_mermaid(
-            asset.get("mermaid") or _fallback_mermaid(asset.get("description", ""), method)
-        )
-        nodes = [
-            {
-                "id": node_id,
-                "label": label,
-                "provider": _provider_for_label(label) if provider == "mixed" else provider,
-                "service": _diagrams_service_for_label(label, provider),
-                "cluster": "",
-            }
-            for node_id, label in graph["nodes"].items()
-        ]
-        if not edges:
-            edges = _normalize_diagrams_edges(graph["edges"])
-
-    if not nodes:
-        nodes = _fallback_diagrams_nodes(asset.get("description", ""), method)
-    if not edges:
-        edges = _fallback_diagrams_edges(asset.get("description", ""), method)
-    if not clusters and method == METHOD_DIAGRAMS:
-        clusters = _fallback_diagrams_clusters(asset.get("description", ""), method)
-
     return {
         "title": str(asset.get("title") or "Architecture Diagram")[:80],
         "provider": provider,
@@ -1120,9 +1600,18 @@ def _safe_diagrams_topology(asset: dict) -> dict:
             "visual_asset_planner.diagrams_topology_guarded",
             error=str(exc)[:200],
         )
-        fallback = _fallback_plan(str(asset.get("description") or ""), [{"index": 1}])
-        fallback_asset = fallback.get("assets", [{}])[0]
-        topology = _diagrams_topology(fallback_asset)
+        topology = {
+            "title": str(asset.get("title") or "Architecture Diagram")[:80],
+            "provider": _normalize_diagrams_provider(
+                asset.get("diagrams_provider") or asset.get("provider"),
+                str(asset.get("description") or ""),
+                asset,
+            ),
+            "direction": _normalize_diagrams_direction(asset.get("diagrams_direction")),
+            "clusters": [],
+            "nodes": [],
+            "edges": [],
+        }
     return _sanitize_diagrams_topology(topology, asset)
 
 
@@ -1137,15 +1626,6 @@ def _sanitize_diagrams_topology(topology: dict, asset: dict | None = None) -> di
     clusters = _sanitize_diagrams_clusters(topology.get("clusters", []))
     nodes = _sanitize_diagrams_nodes(topology.get("nodes", []), clusters, asset or {})
     edges = _sanitize_diagrams_edges(topology.get("edges", []), nodes)
-
-    if not nodes:
-        nodes = _fallback_diagrams_nodes(str((asset or {}).get("description") or ""), METHOD_DIAGRAMS)
-        nodes = _sanitize_diagrams_nodes(nodes, clusters, asset or {})
-    if not edges and len(nodes) >= 2:
-        edges = [
-            {"from": nodes[index]["id"], "to": nodes[index + 1]["id"], "label": "", "color": "#475569", "style": "solid"}
-            for index in range(min(len(nodes) - 1, MAX_DIAGRAMS_EDGES))
-        ]
 
     return {
         "title": title,
@@ -1493,6 +1973,9 @@ def _fallback_diagrams_nodes(user_query: str, method: str) -> list[dict]:
             _diagrams_node("db", "RDS Multi-AZ", "aws", "rds", "private_data"),
             _diagrams_node("s3", "S3 Object Storage", "aws", "s3", "private_data"),
         ]
+    content_nodes = _content_diagram_nodes(user_query, provider)
+    if content_nodes:
+        return content_nodes
     return [
         _diagrams_node("client", "Client", "generic", "users"),
         _diagrams_node("edge", "Edge / Gateway", provider, "elb"),
@@ -1530,11 +2013,126 @@ def _fallback_diagrams_edges(user_query: str, method: str) -> list[dict]:
             {"from": "app", "to": "db", "label": "SQL", "color": "#16A34A", "style": "solid"},
             {"from": "app", "to": "s3", "label": "Objects", "color": "#16A34A", "style": "dashed"},
         ]
+    content_nodes = _content_diagram_nodes(user_query, provider)
+    if len(content_nodes) >= 2:
+        edges = []
+        for index, source in enumerate(content_nodes[:-1]):
+            target = content_nodes[index + 1]
+            edges.append({
+                "from": source["id"],
+                "to": target["id"],
+                "label": _fallback_edge_label(source["label"], target["label"], index),
+                "color": "#2563EB" if index == 0 else "#475569",
+                "style": "solid",
+            })
+        return edges
     return [
         {"from": "client", "to": "edge", "label": "HTTPS", "color": "#2563EB", "style": "solid"},
         {"from": "edge", "to": "app", "label": "", "color": "#475569", "style": "solid"},
         {"from": "app", "to": "data", "label": "Data", "color": "#16A34A", "style": "solid"},
     ]
+
+
+def _content_diagram_nodes(text: str, provider: str) -> list[dict]:
+    labels = _content_diagram_labels(text)
+    if len(labels) < 3:
+        return []
+
+    nodes = []
+    used_ids: set[str] = set()
+    for index, label in enumerate(labels[:8], start=1):
+        base_id = _normalize_shape_id(label) or f"concept_{index}"
+        node_id = _safe_id(base_id)[:36] or f"concept_{index}"
+        if node_id in used_ids:
+            node_id = f"{node_id}_{index}"
+        used_ids.add(node_id)
+
+        node_provider = provider if provider in {"azure", "gcp", "kubernetes"} else "generic"
+        if any(token in label.lower() for token in ("user", "request", "client", "customer")):
+            node_provider = "generic"
+        nodes.append(
+            _diagrams_node(
+                node_id,
+                label,
+                node_provider,
+                _diagrams_service_for_label(label, node_provider),
+            )
+        )
+    return nodes
+
+
+def _content_diagram_labels(text: str) -> list[str]:
+    lowered = str(text or "").lower()
+    labels: list[str] = []
+
+    rules = [
+        (("user request", "natural language", "request", "client", "customer", "요청", "자연어"), "User Request"),
+        (("input", "ingest", "intake", "입력"), "Input Intake"),
+        (("planner", "planning", "plan", "계획"), "Planning Agent"),
+        (("langgraph", "langchain"), "LangGraph Engine"),
+        (("agent", "agentic", "에이전트"), "Agent Orchestration"),
+        (("llm", "model", "reasoning", "모델"), "LLM Reasoning"),
+        (("retrieve", "retrieval", "search", "rag", "검색"), "Retrieval Search"),
+        (("template", "schema", "템플릿"), "Template Schema"),
+        (("pptx", "powerpoint", "slide"), "PPTX Pipeline"),
+        (("rich document", "docx", "hwp", "xlsx", "markdown", "문서"), "Native Document Output"),
+        (("rest", "api", "sdk", "cli"), "API / SDK"),
+        (("web ui", "web", "saas", "ui"), "Web UI"),
+        (("qa", "quality", "validation", "검증", "품질"), "Quality Validation"),
+        (("data", "storage", "database", "store", "데이터"), "Data Store"),
+        (("workflow", "pipeline", "flow", "파이프라인"), "Workflow Pipeline"),
+        (("operate", "operation", "cost", "운영", "비용"), "Operations Control"),
+        (("time", "latency", "delay", "시간"), "Cycle Time"),
+        (("approval", "review", "collaboration", "검토", "협업"), "Review Loop"),
+        (("output", "export", "generation", "생성", "결과"), "Generated Output"),
+    ]
+    for tokens, label in rules:
+        if any(token in lowered for token in tokens):
+            _append_unique_label(labels, label)
+
+    for phrase in _fallback_label_phrases(text):
+        _append_unique_label(labels, phrase)
+        if len(labels) >= 6:
+            break
+
+    if len(labels) == 1:
+        labels.append("Processing Core")
+    if len(labels) == 2:
+        labels.append("Generated Output")
+    return labels[:8]
+
+
+def _fallback_label_phrases(text: str) -> list[str]:
+    phrases = []
+    for raw in re.split(r"[\n\r|:;,.>]+", str(text or "")):
+        phrase = _clean_label(raw)
+        phrase = re.sub(r"\s+", " ", phrase).strip(" -_/")
+        if not phrase or len(phrase) < 4 or len(phrase) > 42:
+            continue
+        if phrase.lower().startswith(("user request", "diagrams-package", "user ")):
+            continue
+        if phrase.lower() in {"architecture diagram", "visual diagram"}:
+            continue
+        phrases.append(phrase[:42])
+    return phrases
+
+
+def _append_unique_label(labels: list[str], label: str) -> None:
+    if label and label not in labels:
+        labels.append(label)
+
+
+def _fallback_edge_label(source: str, target: str, index: int) -> str:
+    joined = f"{source} {target}".lower()
+    if any(token in joined for token in ("request", "input", "client", "user")):
+        return "Input"
+    if any(token in joined for token in ("validation", "qa", "review")):
+        return "Check"
+    if any(token in joined for token in ("data", "storage", "database")):
+        return "Data"
+    if any(token in joined for token in ("output", "document", "pptx")):
+        return "Render"
+    return "Flow" if index == 0 else ""
 
 
 def _diagrams_node_map() -> dict[tuple[str, str], tuple[str, str]]:
@@ -1755,6 +2353,8 @@ def _generic_shape_for_label(label: str) -> str:
 def _quick_visual_signal(user_query: str, slide_blueprints: list[dict]) -> bool:
     if _negative_visual_asset_signal(user_query):
         return False
+    if _reserved_visual_slot_count(slide_blueprints) > 0:
+        return True
 
     text = " ".join([
         user_query,

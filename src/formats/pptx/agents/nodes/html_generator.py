@@ -581,11 +581,44 @@ Body Font: {font_body}
 CRITICAL COLOR RULES:
 - Card backgrounds: pick from Card Fills. White is allowed only with a visible
   1px neutral boundary when it sits on a white or near-white background.
-- Text on dark cards: use Text On Dark color ({text_on_dark})
+- Text on dark cards or dark headers: use Text On Dark color ({text_on_dark})
+  or #FFFFFF directly on every textbox/icon; never inherit a dark font there.
+- Text on white, near-white, or pale tinted cards: use a dark font from the same
+  color family as the fill when possible (for example pale green -> deep green,
+  pale amber -> deep amber). Avoid white/pale text on light fills.
+- Every textbox/icon must pass contrast against the exact card/header/background
+  behind it: 4.5:1 for normal text, 3:1 for large/bold title or KPI text.
+- Do not rely on inherited text color inside dark elements. Put `color:#FFFFFF`
+  or `{text_on_dark}` on each textbox/span/icon that sits on a dark card,
+  header strip, dark badge, or dark slide background.
 - Section labels and accent bars: use Accent color
 - Body text: use Text Primary or Text Secondary
 - Cover: use Cover Background gradient
 - Use Heading Font and Body Font exactly; do not substitute a default font
+
+STYLE EXPRESSION RULES:
+- Specify full typography details on every textbox: font-family, font-size,
+  font-weight, line-height, letter-spacing, color, text-align, vertical-align,
+  and data-pptx-text-padding.
+- On content slides with 4+ text elements, use at least 3 font sizes and 2 font
+  weights across title, labels, body, captions, badges, and KPI text.
+- Use font-style:italic or text-decoration:underline/line-through only for
+  short labels, caveats, status changes, or emphasis. Do not apply decoration to
+  long body paragraphs.
+- Express visual hierarchy with varied but controlled styling: dark header
+  strips, pale tint bodies, gradients, accent rules, small rotated labels,
+  shadows, borders, opacity, rounded corners, arrows/connectors, and badges.
+- Use transform:rotate(...) sparingly on labels or accent tags only. Keep main
+  reading text horizontal.
+- Use box-shadow on 2-3 emphasized cards and gradient fills on 1-2 priority
+  elements per slide. Combine these with explicit high-contrast text colors.
+- Prefer diverse slide objects: textboxes, independent icons, native tables,
+  charts, connectors, arrows, rounded rectangles, badges, and rendered images
+  when a visual asset is planned.
+- No empty containers: every visible card, box, panel, or image frame must
+  contain actual text, table/chart data, icons, or a rendered image. Never draw
+  placeholder rectangles. If a planned image slot has no image, convert the
+  region into a populated content card instead of leaving an empty frame.
 """
         if master_context.get("source") == "template":
             design_section += """
@@ -1259,6 +1292,12 @@ def _inject_visual_asset_images(slides_html: list[dict], visual_assets: list[dic
             asset_id = str(asset.get("id", ""))
             image_path = str(asset.get("path", ""))
             if not asset_id or not image_path:
+                logger.warning(
+                    "visual_asset.inject_skip_missing_identity",
+                    slide=slide_index,
+                    asset_id=asset_id,
+                    has_path=bool(image_path),
+                )
                 continue
             soup = BeautifulSoup(html, "html.parser")
             wrapper = soup.find(attrs={"data-slide": True})
@@ -1266,14 +1305,38 @@ def _inject_visual_asset_images(slides_html: list[dict], visual_assets: list[dic
                 _dedupe_visual_asset_nodes(soup, asset)
                 html = str(soup)
                 inserted = True
+                logger.info(
+                    "visual_asset.inject_filled_slot",
+                    slide=slide_index,
+                    asset_id=asset_id,
+                    path=image_path,
+                )
                 continue
             if _slide_has_visual_asset(html, asset):
                 _dedupe_visual_asset_nodes(soup, asset)
                 html = str(soup)
                 inserted = True
+                logger.info(
+                    "visual_asset.inject_already_present",
+                    slide=slide_index,
+                    asset_id=asset_id,
+                    path=image_path,
+                )
                 continue
             if _has_manual_diagram_composition(soup):
-                continue
+                logger.info(
+                    "visual_asset.inject_manual_diagram_detected",
+                    slide=slide_index,
+                    asset_id=asset_id,
+                )
+                if _asset_slot_in_html(soup, asset):
+                    logger.warning(
+                        "visual_asset.inject_manual_diagram_but_slot_empty",
+                        slide=slide_index,
+                        asset_id=asset_id,
+                    )
+                else:
+                    continue
             image_element = _visual_asset_html(asset)
             if wrapper:
                 image_node = BeautifulSoup(image_element, "html.parser").find(
@@ -1281,11 +1344,29 @@ def _inject_visual_asset_images(slides_html: list[dict], visual_assets: list[dic
                 )
                 if image_node:
                     wrapper.append(image_node)
+                    logger.info(
+                        "visual_asset.inject_appended_fallback",
+                        slide=slide_index,
+                        asset_id=asset_id,
+                        path=image_path,
+                    )
                 html = str(soup)
             elif "</div>" in html:
                 html = html.rsplit("</div>", 1)[0] + f"  {image_element}\n</div>"
+                logger.info(
+                    "visual_asset.inject_inserted_fallback",
+                    slide=slide_index,
+                    asset_id=asset_id,
+                    path=image_path,
+                )
             else:
                 html += image_element
+                logger.info(
+                    "visual_asset.inject_appended_raw",
+                    slide=slide_index,
+                    asset_id=asset_id,
+                    path=image_path,
+                )
             inserted = True
         if inserted:
             slide["html"] = html
@@ -1379,6 +1460,18 @@ def _has_manual_diagram_composition(soup) -> bool:
         if "diagram" in marker or "process" in marker:
             diagram_nodes += 1
     return diagram_nodes >= 4
+
+
+def _asset_slot_in_html(soup, asset: dict) -> bool:
+    asset_id = str(asset.get("id", ""))
+    if asset_id and soup.find(attrs={"data-pptx-image-id": asset_id}):
+        return True
+    if asset_id and soup.find(attrs={"data-pptx-asset-id": asset_id}):
+        return True
+    return bool(
+        soup.find(attrs={"data-pptx-asset-role": "visual_asset"})
+        or soup.find(attrs={"data-pptx-visual-asset-id": True})
+    )
 
 
 def _slide_has_visual_asset(html: str, asset: dict) -> bool:

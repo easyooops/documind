@@ -3,8 +3,8 @@
   "provider_type": "llm",
   "llm": {
     "model": "gpt-4o",
-    "temperature": 0.7,
-    "max_tokens": 8192,
+    "temperature": 0.35,
+    "max_tokens": 16384,
     "top_p": 1.0
   },
   "retry": {

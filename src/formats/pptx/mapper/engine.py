@@ -12,6 +12,11 @@ import uuid
 from pathlib import Path
 
 from src.core.logging import get_logger
+from src.formats.pptx.color_utils import (
+    choose_legible_text_color,
+    contrast_ratio,
+    relative_luminance,
+)
 from src.formats.pptx.mapper.effects import (
     apply_border,
     apply_corner_radius,
@@ -1499,35 +1504,19 @@ class CSStoOOXMLEngine:
         font_size_px: float,
         bold: bool,
     ) -> str:
-        """Return the foreground unless it fails WCAG contrast on its own fill."""
-        threshold = 3.0 if font_size_px >= 24 or (bold and font_size_px >= 18.5) else 4.5
-        if self._contrast_ratio(foreground, background) >= threshold:
-            return foreground
-        white_ratio = self._contrast_ratio("ffffff", background)
-        dark_ratio = self._contrast_ratio("111827", background)
-        return "ffffff" if white_ratio >= dark_ratio else "111827"
+        """Return a readable text color against its fill."""
+        return choose_legible_text_color(
+            foreground,
+            background,
+            font_size_px=font_size_px,
+            bold=bold,
+        ).lower()
 
     def _contrast_ratio(self, color_a: str, color_b: str) -> float:
-        lighter = max(self._relative_luminance(color_a), self._relative_luminance(color_b))
-        darker = min(self._relative_luminance(color_a), self._relative_luminance(color_b))
-        return (lighter + 0.05) / (darker + 0.05)
+        return contrast_ratio(color_a, color_b)
 
     def _relative_luminance(self, hex_color: str) -> float:
-        try:
-            channels = [
-                int(str(hex_color).lstrip("#")[i:i + 2], 16) / 255
-                for i in (0, 2, 4)
-            ]
-        except (ValueError, IndexError):
-            return 1.0
-
-        def linear(channel: float) -> float:
-            if channel <= 0.03928:
-                return channel / 12.92
-            return ((channel + 0.055) / 1.055) ** 2.4
-
-        r, g, b = (linear(channel) for channel in channels)
-        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return relative_luminance(hex_color)
 
     def _is_dark_color(self, hex_color: str) -> bool:
         """Determine if a hex color is dark (for choosing text color contrast)."""

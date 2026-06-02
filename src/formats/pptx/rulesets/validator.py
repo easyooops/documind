@@ -9,6 +9,12 @@ from __future__ import annotations
 import re
 
 from src.core.logging import get_logger
+from src.formats.pptx.color_utils import (
+    contrast_ratio,
+    contrast_threshold,
+    extract_colors,
+    relative_luminance,
+)
 from src.formats.pptx.rulesets import RuleSet, get_ruleset
 
 logger = get_logger(__name__)
@@ -241,6 +247,10 @@ class DesignQualityEvaluator:
 
         # Allowed font sizes from font_spec (tolerance ±1px)
         allowed_sizes = {9, 10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 28, 32, 36, 42, 48}
+        used_sizes: set[int] = set()
+        used_weights: set[str] = set()
+        expressive_treatments = 0
+        text_element_count = 0
 
         for el in elements:
             if el.get("pptx_type") not in ("textbox", "shape"):
@@ -249,6 +259,7 @@ class DesignQualityEvaluator:
             text = el.get("text_content", "")
             if not text:
                 continue
+            text_element_count += 1
 
             font_family = styles.get("font-family", "")
             if font_family and fonts_allowed:
@@ -263,6 +274,7 @@ class DesignQualityEvaluator:
             font_size_str = styles.get("font-size", "")
             font_size = self._parse_px(font_size_str)
             if font_size > 0:
+                used_sizes.add(round(font_size))
                 # Check if size is from allowed set (with ±1px tolerance)
                 size_valid = any(abs(font_size - s) <= 1 for s in allowed_sizes)
                 if not size_valid:
@@ -310,6 +322,8 @@ class DesignQualityEvaluator:
                     pass
 
             font_weight = styles.get("font-weight", "")
+            if font_weight:
+                used_weights.add(str(font_weight).lower())
             if font_weight and font_size and font_size <= 14:
                 if font_weight in ("700", "800", "900", "bold"):
                     score -= 0.03
@@ -333,13 +347,50 @@ class DesignQualityEvaluator:
                         "message": f"Font too large ({font_size}px) — maximum 48px recommended"
                     })
 
+            if str(styles.get("font-style", "")).lower() == "italic":
+                expressive_treatments += 1
+            decoration = str(styles.get("text-decoration", "")).lower()
+            if any(token in decoration for token in ("underline", "line-through")):
+                expressive_treatments += 1
+            if styles.get("text-shadow") or styles.get("letter-spacing"):
+                expressive_treatments += 1
+
+        if text_element_count >= 4:
+            normalized_weights = {
+                "700" if weight == "bold" else "400" if weight == "normal" else weight
+                for weight in used_weights
+            }
+            if len(used_sizes) < 3 or len(normalized_weights) < 2:
+                score -= 0.08
+                issues.append({
+                    "slide": idx,
+                    "category": "typography",
+                    "severity": "major",
+                    "message": (
+                        "Typography lacks visual hierarchy: use at least 3 font sizes "
+                        "and 2 font weights across title, labels, body, and emphasis text"
+                    ),
+                })
+            if expressive_treatments == 0:
+                score -= 0.04
+                issues.append({
+                    "slide": idx,
+                    "category": "typography",
+                    "severity": "minor",
+                    "message": (
+                        "Typography is too plain: add one restrained text treatment such as "
+                        "italic label, underline accent, letter spacing, or text shadow"
+                    ),
+                })
+
         return max(0.0, min(1.0, score))
 
     def _check_colors(self, elements: list[dict], design_system: dict, issues: list, idx: int) -> float:
         """Check color compliance: palette usage, contrast."""
         score = 1.0
         if not design_system:
-            return score
+            score -= self._check_text_contrast(elements, issues, idx)
+            return max(0.0, min(1.0, score))
 
         palette_colors = set()
         for key in ("primary", "secondary", "accent", "background", "surface", "text_primary", "text_secondary", "tint"):
@@ -394,7 +445,95 @@ class DesignQualityEvaluator:
                     "message": f"Excessive white backgrounds: {white_count}/{total_bg} ({white_ratio:.0%}) — use colored tints"
                 })
 
+        score -= self._check_text_contrast(elements, issues, idx)
+
         return max(0.0, min(1.0, score))
+
+    def _check_text_contrast(self, elements: list[dict], issues: list, idx: int) -> float:
+        """Check each text element against its own or directly backing fill."""
+        penalty = 0.0
+        for element_index, el in enumerate(elements):
+            if el.get("pptx_type") not in ("textbox", "shape"):
+                continue
+            if not el.get("text_content", "").strip():
+                continue
+            styles = el.get("styles", {})
+            bg_colors = self._element_background_colors(styles)
+            if not bg_colors:
+                bg_colors = self._backing_fill_colors(el, elements[:element_index])
+            if not bg_colors:
+                continue
+            fg = self._extract_hex(styles.get("color", "")) or "111827"
+            font_size = self._parse_px(styles.get("font-size", "16"))
+            font_weight = str(styles.get("font-weight", "400"))
+            bold = font_weight in {"bold", "600", "700", "800", "900"} or (
+                font_weight.isdigit() and int(font_weight) >= 600
+            )
+            threshold = contrast_threshold(font_size, bold)
+            min_ratio = min(contrast_ratio(fg, bg) for bg in bg_colors)
+            if min_ratio >= threshold:
+                continue
+            penalty += 0.08
+            bg_label = ", ".join(f"#{bg.upper()}" for bg in bg_colors[:2])
+            issues.append({
+                "slide": idx,
+                "category": "color",
+                "severity": "major",
+                "message": (
+                    f"Text contrast failed ({min_ratio:.1f}:1 < {threshold:.1f}:1) "
+                    f"against background {bg_label}; use dark same-family text on light "
+                    "fills and white/near-white text on dark fills"
+                ),
+            })
+        return min(0.24, penalty)
+
+    def _element_background_colors(self, styles: dict) -> list[str]:
+        colors: list[str] = []
+        for prop in ("background-color", "background"):
+            colors.extend(extract_colors(styles.get(prop, "")))
+        return colors
+
+    def _backing_fill_colors(self, text_element: dict, prior_elements: list[dict]) -> list[str]:
+        text_box = text_element.get("position", {})
+        candidates: list[tuple[float, list[str]]] = []
+        for prior in prior_elements:
+            if prior.get("pptx_type") not in ("shape", "textbox"):
+                continue
+            colors = self._element_background_colors(prior.get("styles", {}))
+            if not colors:
+                continue
+            box = prior.get("position", {})
+            overlap = self._calculate_overlap(text_element, prior)
+            contains_center = self._box_contains_center(box, text_box)
+            is_full_background = (
+                box.get("width", 0) >= 900
+                and box.get("height", 0) >= 480
+                and box.get("left", 0) <= 10
+                and box.get("top", 0) <= 10
+            )
+            dark_partial_backing = overlap >= 0.15 and any(
+                relative_luminance(color) < 0.25 for color in colors
+            )
+            if overlap >= 0.45 or contains_center or is_full_background or dark_partial_backing:
+                score = (
+                    overlap
+                    + (0.25 if contains_center else 0)
+                    + (0.1 if is_full_background else 0)
+                    + (0.15 if dark_partial_backing else 0)
+                )
+                candidates.append((score, colors))
+        if not candidates:
+            return []
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _box_contains_center(self, container: dict, inner: dict) -> bool:
+        cx = inner.get("left", 0) + inner.get("width", 0) / 2
+        cy = inner.get("top", 0) + inner.get("height", 0) / 2
+        return (
+            container.get("left", 0) <= cx <= container.get("left", 0) + container.get("width", 0)
+            and container.get("top", 0) <= cy <= container.get("top", 0) + container.get("height", 0)
+        )
 
     def _check_elements(self, elements: list[dict], slide_type: str, issues: list, idx: int) -> float:
         """Check element completeness and diversity."""
@@ -431,7 +570,75 @@ class DesignQualityEvaluator:
                 "message": "Required element missing: title (no text >= 24px found)"
             })
 
+        empty_containers = [
+            el for el in elements
+            if self._is_empty_large_container(el, elements)
+        ]
+        if empty_containers:
+            score -= min(0.24, 0.12 * len(empty_containers))
+            for el in empty_containers[:3]:
+                pos = el.get("position", {})
+                issues.append({
+                    "slide": idx,
+                    "category": "elements",
+                    "severity": "major",
+                    "message": (
+                        "Empty visible container detected: fill this card/box/image slot "
+                        "with text, table/chart, icon, or rendered image, or remove it "
+                        f"(x:{pos.get('left', 0):.0f}, y:{pos.get('top', 0):.0f}, "
+                        f"w:{pos.get('width', 0):.0f}, h:{pos.get('height', 0):.0f})"
+                    ),
+                })
+
         return max(0.0, min(1.0, score))
+
+    def _is_empty_large_container(self, element: dict, elements: list[dict]) -> bool:
+        pptx_type = element.get("pptx_type", "")
+        if pptx_type not in {"shape", "textbox", "image"}:
+            return False
+        attrs = element.get("attributes", {})
+        if attrs.get("data-pptx-region") in {"background", "header", "footer"}:
+            return False
+        pos = element.get("position", {})
+        width = pos.get("width", 0)
+        height = pos.get("height", 0)
+        if width < 150 or height < 80 or width * height < 18000:
+            return False
+        if width >= 900 and height >= 480 and pos.get("left", 0) <= 10 and pos.get("top", 0) <= 10:
+            return False
+        if self._element_has_payload(element):
+            return False
+
+        styles = element.get("styles", {})
+        has_visible_box = (
+            bool(self._element_background_colors(styles))
+            or any(prop.startswith("border") and str(value).strip() for prop, value in styles.items())
+            or bool(styles.get("box-shadow"))
+            or pptx_type == "image"
+        )
+        if not has_visible_box:
+            return False
+
+        for other in elements:
+            if other is element:
+                continue
+            if not self._element_has_payload(other):
+                continue
+            overlap = self._calculate_overlap(other, element)
+            if overlap >= 0.55 or self._box_contains_center(pos, other.get("position", {})):
+                return False
+        return True
+
+    def _element_has_payload(self, element: dict) -> bool:
+        if element.get("text_content", "").strip():
+            return True
+        pptx_type = element.get("pptx_type", "")
+        attrs = element.get("attributes", {})
+        if pptx_type in {"table", "chart", "icon", "connector"}:
+            return True
+        if pptx_type == "image":
+            return bool(attrs.get("data-pptx-image-path") or attrs.get("data-pptx-image-src"))
+        return False
 
     def _check_balance(self, elements: list[dict], issues: list, idx: int) -> float:
         """Check visual balance: whitespace, distribution."""
@@ -669,6 +876,11 @@ class DesignQualityEvaluator:
                 "position": position,
                 "styles": styles,
                 "text_content": "\n".join(text_parts),
+                "attributes": {
+                    name: (" ".join(value) if isinstance(value, list) else value)
+                    for name, value in node.attrs.items()
+                    if str(name).startswith("data-pptx-")
+                },
             })
 
         return elements

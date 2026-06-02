@@ -12,6 +12,12 @@ from pathlib import Path
 
 from src.core.config import settings
 from src.core.logging import get_logger
+from src.formats.pptx.color_utils import (
+    choose_legible_text_color,
+    contrast_ratio,
+    extract_colors,
+    relative_luminance,
+)
 from src.formats.pptx.mapper.engine import CSStoOOXMLEngine
 from src.formats.pptx.visual_renderer import render_pptx_images
 from src.schemas.agents import DocuMindState
@@ -324,43 +330,15 @@ def _extract_color(value: str) -> str | None:
 
 
 def _extract_colors(value: str) -> list[str]:
-    text = str(value or "").strip()
-    if not text or text.lower() in {"transparent", "none", "inherit", "initial"}:
-        return []
-    colors: list[str] = []
-    for hex_value in re.findall(r"#([0-9a-fA-F]{3,8})", text):
-        if len(hex_value) == 3:
-            colors.append("".join(char * 2 for char in hex_value).lower())
-        elif len(hex_value) >= 6:
-            colors.append(hex_value[:6].lower())
-    for rgba in re.findall(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", text):
-        r, g, b = (max(0, min(255, int(channel))) for channel in rgba)
-        colors.append(f"{r:02x}{g:02x}{b:02x}")
-    return colors
+    return extract_colors(value)
 
 
 def _contrast_ratio(color_a: str, color_b: str) -> float:
-    lighter = max(_relative_luminance(color_a), _relative_luminance(color_b))
-    darker = min(_relative_luminance(color_a), _relative_luminance(color_b))
-    return (lighter + 0.05) / (darker + 0.05)
+    return contrast_ratio(color_a, color_b)
 
 
 def _relative_luminance(hex_color: str) -> float:
-    try:
-        channels = [
-            int(str(hex_color).lstrip("#")[i:i + 2], 16) / 255
-            for i in (0, 2, 4)
-        ]
-    except (ValueError, IndexError):
-        return 1.0
-
-    def linear(channel: float) -> float:
-        if channel <= 0.03928:
-            return channel / 12.92
-        return ((channel + 0.055) / 1.055) ** 2.4
-
-    r, g, b = (linear(channel) for channel in channels)
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return relative_luminance(hex_color)
 
 
 def _clamp_element_box(node, styles: dict[str, str]) -> None:
@@ -456,15 +434,60 @@ def _enforce_text_contrast(elements: list) -> None:
         )
         threshold = 3.0 if font_size >= 24 or (is_bold and font_size >= 18.5) else 4.5
         if all(_contrast_ratio(current, bg) >= threshold for bg in bg_colors):
+            _enforce_inline_text_contrast(
+                node,
+                bg_colors,
+                font_size_px=font_size,
+                bold=is_bold,
+            )
             continue
 
-        candidates = ["ffffff", "111827"]
-        best = max(
-            candidates,
-            key=lambda color: min(_contrast_ratio(color, bg) for bg in bg_colors),
+        best = choose_legible_text_color(
+            current,
+            bg_colors,
+            font_size_px=font_size,
+            bold=is_bold,
         )
-        styles["color"] = f"#{best.upper()}"
+        styles["color"] = f"#{best}"
+        _enforce_inline_text_contrast(
+            node,
+            bg_colors,
+            font_size_px=font_size,
+            bold=is_bold,
+        )
         node.attrs["style"] = _style_to_string(styles)
+
+
+def _enforce_inline_text_contrast(
+    node,
+    bg_colors: list[str],
+    *,
+    font_size_px: float,
+    bold: bool,
+) -> None:
+    for child in node.descendants:
+        attrs = getattr(child, "attrs", None)
+        if not attrs or attrs.get("data-pptx-type"):
+            continue
+        child_styles = _parse_style(str(attrs.get("style", "")))
+        child_color = _extract_color(child_styles.get("color", ""))
+        if not child_color:
+            continue
+        child_font_size = _style_px(child_styles, "font-size", font_size_px)
+        font_weight = str(child_styles.get("font-weight", ""))
+        child_bold = bold or font_weight in {"bold", "600", "700", "800", "900"} or (
+            font_weight.isdigit() and int(font_weight) >= 600
+        )
+        threshold = 3.0 if child_font_size >= 24 or (child_bold and child_font_size >= 18.5) else 4.5
+        if all(_contrast_ratio(child_color, bg) >= threshold for bg in bg_colors):
+            continue
+        child_styles["color"] = "#" + choose_legible_text_color(
+            child_color,
+            bg_colors,
+            font_size_px=child_font_size,
+            bold=child_bold,
+        )
+        attrs["style"] = _style_to_string(child_styles)
 
 
 def _node_background_colors(styles: dict[str, str]) -> list[str]:
@@ -498,8 +521,16 @@ def _backing_fill_colors(item: dict, prior_items: list[dict]) -> list[str]:
         overlap = _overlap_ratio(text_box, box)
         contains_center = _box_contains_center(box, text_box)
         is_full_background = box[2] >= 900 and box[3] >= 480 and box[0] <= 10 and box[1] <= 10
-        if overlap >= 0.45 or contains_center or is_full_background:
-            score = overlap + (0.25 if contains_center else 0) + (0.1 if is_full_background else 0)
+        dark_partial_backing = overlap >= 0.15 and any(
+            _relative_luminance(color) < 0.25 for color in colors
+        )
+        if overlap >= 0.45 or contains_center or is_full_background or dark_partial_backing:
+            score = (
+                overlap
+                + (0.25 if contains_center else 0)
+                + (0.1 if is_full_background else 0)
+                + (0.15 if dark_partial_backing else 0)
+            )
             candidates.append((score, colors))
     if not candidates:
         return []

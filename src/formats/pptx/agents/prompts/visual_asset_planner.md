@@ -66,6 +66,24 @@ Diagrams planning rules:
 - Do not emit Python code. Return structured JSON only.
 - Infer the user's intended topology first, then express it as provider,
   clusters, nodes, and edges.
+- Fallback generation is disabled. For every `diagrams_image` asset, you must
+  provide slide-specific `diagrams_nodes` and `diagrams_edges`; do not rely on
+  Mermaid, generic defaults, or a downstream fallback renderer to invent them.
+- If `required_visual_asset_slots` is present in the user context, return one
+  asset for every listed slot unless the user explicitly asked to remove
+  diagrams. Each asset must be based on that slide's title, key message,
+  content blocks, content elements, and data points.
+- Each listed slot includes `slot_width_px`, `slot_height_px`,
+  `slot_aspect_ratio`, `recommended_direction`, `max_recommended_nodes`, and
+  `layout_guidance`. These constraints are binding. Choose
+  `diagrams_direction`, node count, cluster depth, and label length so the
+  diagram remains legible inside that exact rendered image box.
+- For tall/narrow slots, prefer `TB`, avoid clusters, use 3-5 nodes, and use
+  very short labels. For wide slots, prefer `LR`, use 4-8 nodes, and avoid
+  multi-row or deeply nested topology unless the slot is large enough.
+- Do not reuse the same topology across slides. Shared deck concepts may keep a
+  consistent style, but node labels, node IDs, edges, and descriptions must
+  reflect the specific slide content.
 - Choose `diagrams_provider` from the request intent: AWS, Azure, GCP,
   Kubernetes, generic, or mixed.
 - Use stable ASCII IDs for every cluster and node.
@@ -80,7 +98,9 @@ Diagrams planning rules:
 - For AWS 3-tier diagrams, usually model:
   users -> Route 53/CloudFront -> ALB -> web/app compute -> RDS/S3, with
   Region/VPC/Public Subnet/Private App Subnet/Private Data Subnet clusters.
-- Keep the diagram to 6-12 meaningful nodes unless the user asks for more.
+- Keep the diagram within the slot's `max_recommended_nodes`; never exceed it
+  unless the user explicitly asks for a dense architecture map and the slot is
+  wide enough.
 - Every node must be connected by at least one edge.
 - Prefer `LR` for architecture flow and `TB` only when the slide needs vertical
   layering.
@@ -97,4 +117,5 @@ General planning rules:
 - If using `image_model`, write a precise visual prompt and leave Diagrams
   fields empty.
 - Do not choose or emit `mermaid_image`; Mermaid text may be supplied only as a
-  legacy topology hint when helpful.
+  legacy topology hint when helpful, but it is never a substitute for
+  `diagrams_nodes` and `diagrams_edges`.

@@ -32,19 +32,27 @@ from src.formats.pptx.agents.nodes.visual_asset_planner import (
     METHOD_DIAGRAMS,
     _diagrams_node_candidates,
     _diagrams_topology,
+    _fallback_diagrams_edges,
+    _fallback_diagrams_nodes,
     _fallback_visual_slot_plan,
     _fallback_plan,
     _layout_nodes,
+    _llm_plan_validation_issues,
+    _looks_like_truncated_json,
+    _merge_missing_reserved_slot_assets,
     _negative_visual_asset_signal,
     _normalize_plan,
     _parse_mermaid,
     _quick_visual_signal,
+    _fit_png_canvas_to_placement,
+    _slot_constraints,
     _render_asset,
     _safe_diagrams_topology,
 )
 from src.formats.pptx.mapper.engine import CSStoOOXMLEngine
 from src.formats.pptx.mapper.html_parser import ParsedElement, parse_slide_html
 from src.formats.pptx.rulesets import get_ruleset
+from src.formats.pptx.rulesets.validator import DesignQualityEvaluator
 from src.utils.iconify import get_fallback_icon_path
 
 
@@ -527,6 +535,36 @@ def test_normalized_html_forces_text_contrast_on_backing_shape() -> None:
     assert "color:#FFFFFF" in normalized
 
 
+def test_normalized_html_uses_same_family_dark_text_on_light_fill() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="textbox" style="position:absolute;left:40px;top:100px;'
+        'width:280px;height:80px;background-color:#ECFDF5;font-size:14px;'
+        'font-weight:400;color:#FFFFFF">Light green card</div></div>'
+    )
+
+    normalized = _normalize_slide_html(html)
+
+    assert "color:#FFFFFF" not in normalized
+    assert "color:#073620" in normalized
+
+
+def test_normalized_html_forces_inline_span_contrast_on_dark_fill() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:40px;top:100px;width:320px;height:120px;'
+        'background-color:#111827"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:60px;top:120px;'
+        'width:280px;height:40px;font-size:14px;color:#FFFFFF">'
+        '<span style="color:#111827">Inline dark text</span></div></div>'
+    )
+
+    normalized = _normalize_slide_html(html)
+
+    assert 'span style="color:#FFFFFF"' in normalized
+
+
 def test_pptx_text_color_is_corrected_against_own_dark_fill() -> None:
     element = ParsedElement(
         pptx_type="textbox",
@@ -548,6 +586,86 @@ def test_pptx_text_color_is_corrected_against_own_dark_fill() -> None:
     run = slide.shapes[0].text_frame.paragraphs[0].runs[0]
 
     assert str(run.font.color.rgb) == "FFFFFF"
+
+
+def test_pptx_text_color_is_corrected_to_same_family_dark_on_light_fill() -> None:
+    element = ParsedElement(
+        pptx_type="textbox",
+        pptx_shape=None,
+        position={"left": 40, "top": 100, "width": 220, "height": 80},
+        styles={
+            "background-color": "#ECFDF5",
+            "font-size": "14px",
+            "color": "#FFFFFF",
+        },
+        text_content="Readable",
+        children=[],
+        attributes={},
+    )
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+
+    CSStoOOXMLEngine()._add_element(slide, element)
+    run = slide.shapes[0].text_frame.paragraphs[0].runs[0]
+
+    assert str(run.font.color.rgb) == "073620"
+
+
+def test_design_evaluator_flags_text_contrast_against_backing_fill() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:40px;top:100px;width:320px;height:120px;'
+        'background-color:#111827"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:60px;top:120px;'
+        'width:280px;height:40px;font-size:14px;color:#111827">Unreadable</div></div>'
+    )
+
+    result = DesignQualityEvaluator(get_ruleset()).evaluate([{"index": 1, "html": html}], {})
+
+    assert any(
+        "Text contrast failed" in issue["message"]
+        for issue in result.per_slide[0]["issues"]
+    )
+
+
+def test_design_evaluator_flags_empty_large_container() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:60px;top:120px;width:520px;height:280px;'
+        'background-color:#FFFFFF;border:1px solid #CBD5E1;box-shadow:0 2px 6px #CBD5E1">'
+        '</div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:640px;top:130px;'
+        'width:220px;height:40px;font-size:18px;font-weight:700;color:#111827">Side content</div>'
+        '</div>'
+    )
+
+    result = DesignQualityEvaluator(get_ruleset()).evaluate([{"index": 1, "html": html}], {})
+
+    assert any(
+        "Empty visible container detected" in issue["message"]
+        for issue in result.per_slide[0]["issues"]
+    )
+
+
+def test_design_evaluator_flags_plain_typography() -> None:
+    textboxes = "".join(
+        f'<div data-pptx-type="textbox" style="position:absolute;left:60px;top:{80 + i * 52}px;'
+        'width:520px;height:34px;font-family:Pretendard;font-size:16px;'
+        'font-weight:400;line-height:1.35;color:#111827">Item {i}</div>'
+        for i in range(4)
+    )
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        f"{textboxes}</div>"
+    )
+
+    result = DesignQualityEvaluator(get_ruleset()).evaluate([{"index": 1, "html": html}], {})
+
+    messages = [issue["message"] for issue in result.per_slide[0]["issues"]]
+    assert any("Typography lacks visual hierarchy" in message for message in messages)
+    assert any("Typography is too plain" in message for message in messages)
 
 
 def test_pptx_textbox_uses_precise_padding_shorthand() -> None:
@@ -688,7 +806,7 @@ def test_architecture_request_routes_to_diagrams_visual_asset() -> None:
     assert "CloudFront" in plan["assets"][0]["mermaid"]
 
 
-def test_legacy_mermaid_method_is_normalized_to_diagrams() -> None:
+def test_legacy_mermaid_without_structured_topology_is_rejected() -> None:
     plan = _normalize_plan(
         {
             "enabled": True,
@@ -705,7 +823,8 @@ def test_legacy_mermaid_method_is_normalized_to_diagrams() -> None:
         [{"index": 2, "slide_type": "content"}],
     )
 
-    assert plan["assets"][0]["method"] == METHOD_DIAGRAMS
+    assert plan["enabled"] is False
+    assert plan["assets"] == []
 
 
 def test_visual_asset_placement_uses_planned_image_slot() -> None:
@@ -717,6 +836,11 @@ def test_visual_asset_placement_uses_planned_image_slot() -> None:
                     "slide_index": 2,
                     "method": METHOD_DIAGRAMS,
                     "description": "LangGraph architecture",
+                    "diagrams_nodes": [
+                        {"id": "user", "label": "User", "provider": "generic", "service": "users"},
+                        {"id": "app", "label": "LangGraph App", "provider": "generic", "service": "agent"},
+                    ],
+                    "diagrams_edges": [{"from": "user", "to": "app", "label": "Request"}],
                     "placement": {"x": 360, "y": 112, "w": 300, "h": 180},
                 }
             ],
@@ -746,6 +870,133 @@ def test_visual_asset_placement_uses_planned_image_slot() -> None:
     assert plan["assets"][0]["placement"] == {"x": 48, "y": 92, "w": 604, "h": 318}
 
 
+def test_visual_asset_slot_constraints_expose_aspect_guidance() -> None:
+    tall = _slot_constraints({"x": 120, "y": 90, "w": 180, "h": 420})
+    wide = _slot_constraints({"x": 48, "y": 92, "w": 604, "h": 318})
+
+    assert tall["recommended_direction"] == "TB"
+    assert tall["max_recommended_nodes"] <= 5
+    assert wide["recommended_direction"] == "LR"
+    assert wide["slot_aspect_ratio"] > 1.4
+
+
+def test_visual_asset_direction_is_adjusted_to_tall_slot() -> None:
+    plan = _normalize_plan(
+        {
+            "enabled": True,
+            "assets": [
+                {
+                    "slide_index": 2,
+                    "method": METHOD_DIAGRAMS,
+                    "description": "Tall architecture",
+                    "diagrams_direction": "LR",
+                    "diagrams_nodes": [
+                        {"id": "a", "label": "A", "provider": "generic", "service": "process"},
+                        {"id": "b", "label": "B", "provider": "generic", "service": "process"},
+                        {"id": "c", "label": "C", "provider": "generic", "service": "process"},
+                    ],
+                    "diagrams_edges": [
+                        {"from": "a", "to": "b"},
+                        {"from": "b", "to": "c"},
+                    ],
+                    "placement": {"x": 120, "y": 90, "w": 180, "h": 420},
+                }
+            ],
+        },
+        "tall diagram",
+        [{"index": 2, "slide_type": "content"}],
+    )
+
+    assert plan["assets"][0]["diagrams_direction"] == "TB"
+    assert plan["assets"][0]["render_profile"]["recommended_direction"] == "TB"
+
+
+def test_diagram_png_canvas_matches_slot_aspect(tmp_path: Path) -> None:
+    path = tmp_path / "diagram.png"
+    Image.new("RGBA", (400, 120), (12, 34, 56, 255)).save(path)
+
+    _fit_png_canvas_to_placement(path, {"x": 0, "y": 0, "w": 180, "h": 420})
+
+    with Image.open(path) as image:
+        width, height = image.size
+    assert abs((width / height) - (180 / 420)) < 0.03
+
+
+def test_llm_plan_validation_detects_missing_reserved_slot_asset() -> None:
+    issues = _llm_plan_validation_issues(
+        {
+            "enabled": True,
+            "assets": [
+                {
+                    "slide_index": 2,
+                    "method": METHOD_DIAGRAMS,
+                    "description": "Architecture",
+                    "diagrams_nodes": [
+                        {"id": "app", "label": "App", "provider": "generic", "service": "agent"},
+                        {"id": "db", "label": "DB", "provider": "generic", "service": "database"},
+                    ],
+                    "diagrams_edges": [{"from": "app", "to": "db", "label": "SQL"}],
+                }
+            ],
+        },
+        "Create diagrams for reserved slots",
+        [
+            {
+                "index": 2,
+                "layout_plan": {
+                    "element_placements": [
+                        {"element": "image", "asset_role": "visual_asset", "x": 40, "y": 90, "w": 400, "h": 240}
+                    ]
+                },
+            },
+            {
+                "index": 4,
+                "layout_plan": {
+                    "element_placements": [
+                        {"element": "image", "asset_role": "visual_asset", "x": 40, "y": 90, "w": 400, "h": 240}
+                    ]
+                },
+            },
+        ],
+    )
+
+    assert any("slides: 4" in issue for issue in issues)
+
+
+def test_llm_plan_validation_detects_duplicate_diagram_topologies() -> None:
+    asset = {
+        "method": METHOD_DIAGRAMS,
+        "description": "Repeated topology",
+        "diagrams_nodes": [
+            {"id": "client", "label": "Client", "provider": "generic", "service": "users"},
+            {"id": "app", "label": "Application Service", "provider": "generic", "service": "agent"},
+            {"id": "data", "label": "Data Store", "provider": "generic", "service": "database"},
+        ],
+        "diagrams_edges": [
+            {"from": "client", "to": "app", "label": "Request"},
+            {"from": "app", "to": "data", "label": "Data"},
+        ],
+    }
+    issues = _llm_plan_validation_issues(
+        {
+            "enabled": True,
+            "assets": [
+                {"slide_index": 3, **asset},
+                {"slide_index": 5, **asset},
+            ],
+        },
+        "Create slide-specific diagrams",
+        [{"index": 3}, {"index": 5}],
+    )
+
+    assert any("Duplicate diagrams topology" in issue for issue in issues)
+
+
+def test_truncated_json_detector_flags_unbalanced_output() -> None:
+    assert _looks_like_truncated_json('{"enabled": true, "assets": [{"slide_index": 2}')
+    assert not _looks_like_truncated_json('{"enabled": true, "assets": []}')
+
+
 def test_visual_asset_slot_fallback_overrides_llm_skip() -> None:
     plan = _fallback_visual_slot_plan(
         "Create a product brief",
@@ -773,6 +1024,155 @@ def test_visual_asset_slot_fallback_overrides_llm_skip() -> None:
     assert plan["enabled"] is True
     assert plan["assets"][0]["method"] == METHOD_DIAGRAMS
     assert plan["assets"][0]["placement"]["w"] == 604
+
+
+def test_fallback_visual_slots_create_slide_specific_diagrams() -> None:
+    blueprints = [
+        {
+            "index": 3,
+            "title": "Native document auto generation",
+            "key_message": "Natural language request becomes PPTX, DOCX, HWP, and XLSX output.",
+            "layout_plan": {
+                "element_placements": [
+                    {
+                        "id": "visual_asset_main",
+                        "element": "image",
+                        "asset_role": "visual_asset",
+                        "x": 80,
+                        "y": 120,
+                        "w": 520,
+                        "h": 280,
+                    }
+                ]
+            },
+        },
+        {
+            "index": 5,
+            "title": "PPTX vs Rich Document agentic pipelines",
+            "key_message": "PPTX uses layout QA while rich documents preserve native formats.",
+            "layout_plan": {
+                "element_placements": [
+                    {
+                        "id": "visual_asset_main",
+                        "element": "image",
+                        "asset_role": "visual_asset",
+                        "x": 80,
+                        "y": 120,
+                        "w": 520,
+                        "h": 280,
+                    }
+                ]
+            },
+        },
+    ]
+
+    plan = _fallback_visual_slot_plan("DocuMind product brief", blueprints)
+    labels_by_slide = {
+        asset["slide_index"]: [node["label"] for node in asset["diagrams_nodes"]]
+        for asset in plan["assets"]
+    }
+
+    assert labels_by_slide[3] != labels_by_slide[5]
+    assert "User Request" in labels_by_slide[3]
+    assert "PPTX Pipeline" in labels_by_slide[5]
+    assert "Native Document Output" in labels_by_slide[5]
+
+
+def test_generic_fallback_diagram_edges_follow_content_nodes() -> None:
+    text = "Web UI and REST API feed a LangGraph agent, QA validation, and document output"
+
+    nodes = _fallback_diagrams_nodes(text, METHOD_DIAGRAMS)
+    edges = _fallback_diagrams_edges(text, METHOD_DIAGRAMS)
+
+    assert [node["label"] for node in nodes] != [
+        "Client",
+        "Edge / Gateway",
+        "Application Service",
+        "Data Store",
+    ]
+    assert len(edges) == len(nodes) - 1
+    assert edges[0]["from"] == nodes[0]["id"]
+    assert edges[-1]["to"] == nodes[-1]["id"]
+
+
+def test_visual_asset_signal_is_true_when_blueprint_reserves_image_slot() -> None:
+    assert _quick_visual_signal(
+        "Create a product brief",
+        [
+            {
+                "index": 2,
+                "layout_plan": {
+                    "element_placements": [
+                        {
+                            "id": "visual_asset_main",
+                            "element": "image",
+                            "asset_role": "visual_asset",
+                            "x": 48,
+                            "y": 92,
+                            "w": 604,
+                            "h": 318,
+                        }
+                    ]
+                },
+            }
+        ],
+    ) is True
+
+
+def test_visual_asset_plan_adds_missing_reserved_slot_asset() -> None:
+    blueprints = [
+        {
+            "index": 2,
+            "title": "Architecture",
+            "layout_plan": {
+                "element_placements": [
+                    {
+                        "id": "visual_asset_main",
+                        "element": "image",
+                        "asset_role": "visual_asset",
+                        "x": 48,
+                        "y": 92,
+                        "w": 400,
+                        "h": 260,
+                    }
+                ]
+            },
+        },
+        {
+            "index": 4,
+            "title": "Operations flow",
+            "layout_plan": {
+                "element_placements": [
+                    {
+                        "id": "visual_asset_main",
+                        "element": "image",
+                        "asset_role": "visual_asset",
+                        "x": 64,
+                        "y": 130,
+                        "w": 560,
+                        "h": 300,
+                    }
+                ]
+            },
+        },
+    ]
+    normalized = {
+        "enabled": True,
+        "reason": "LLM selected one asset",
+        "assets": [
+            {
+                "id": "asset_2_1",
+                "slide_index": 2,
+                "method": METHOD_DIAGRAMS,
+                "description": "Architecture diagram",
+            }
+        ],
+    }
+
+    merged = _merge_missing_reserved_slot_assets(normalized, "Create a product brief", blueprints)
+
+    assert [asset["slide_index"] for asset in merged["assets"]] == [2, 4]
+    assert merged["assets"][1]["placement"] == {"x": 64, "y": 130, "w": 560, "h": 300}
 
 
 def test_diagrams_topology_fields_are_preserved() -> None:
@@ -873,6 +1273,11 @@ def test_visual_asset_plan_honors_targeted_slide_instruction() -> None:
                     "method": METHOD_DIAGRAMS,
                     "title": "LangChain RAG Pipeline Architecture",
                     "description": "LangChain RAG Pipeline architecture diagram",
+                    "diagrams_nodes": [
+                        {"id": "query", "label": "Query", "provider": "generic", "service": "input"},
+                        {"id": "rag", "label": "RAG Pipeline", "provider": "generic", "service": "agent"},
+                    ],
+                    "diagrams_edges": [{"from": "query", "to": "rag", "label": "Search"}],
                 }
             ],
         },
@@ -923,7 +1328,7 @@ def test_safe_diagrams_topology_breaks_cluster_cycles_and_bad_refs() -> None:
     assert next(node for node in topology["nodes"] if node["id"] == "db")["cluster"] == ""
 
 
-async def test_diagrams_asset_falls_back_when_native_renderer_recurses(
+async def test_diagrams_asset_does_not_fallback_when_native_renderer_recurses(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -949,11 +1354,8 @@ async def test_diagrams_asset_falls_back_when_native_renderer_recurses(
 
     rendered = await _render_asset(asset, tmp_path)
 
-    assert rendered is not None
-    assert rendered["renderer"] == "diagrams_fallback"
-    assert Path(rendered["path"]).exists()
-    with Image.open(rendered["path"]) as image:
-        assert image.size[0] > 0 and image.size[1] > 0
+    assert rendered is None
+    assert not any(tmp_path.glob("recursing_*.png"))
 
 
 def test_db_backed_pptx_preview_embeds_local_visual_asset(tmp_path: Path) -> None:
@@ -1074,6 +1476,62 @@ def test_visual_asset_injection_does_not_overlay_manual_diagram(tmp_path: Path) 
     assert 'data-pptx-image-id="arch"' not in slide["html"]
 
 
+def test_visual_asset_injection_fills_slot_even_with_manual_diagram(tmp_path: Path) -> None:
+    image_path = tmp_path / "diagram.png"
+    Image.new("RGB", (64, 48), (12, 34, 56)).save(image_path)
+    html = (
+        '<div data-slide="2">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'data-pptx-asset-role="visual_asset" '
+        'style="position:absolute;left:120px;top:130px;width:320px;height:180px"></div>'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:40px;top:100px;width:120px;height:60px"></div>'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:240px;top:100px;width:120px;height:60px"></div>'
+        '<div data-pptx-type="connector" style="position:absolute;left:160px;top:128px;width:80px;height:2px"></div>'
+        '<div data-pptx-type="connector" style="position:absolute;left:360px;top:128px;width:80px;height:2px"></div>'
+        "</div>"
+    )
+    slides = [{"index": 2, "html": html, "elements_used": []}]
+    assets = [{"id": "arch", "slide_index": 2, "path": str(image_path)}]
+
+    [slide] = _inject_visual_asset_images(slides, assets)
+
+    assert 'data-pptx-type="image"' in slide["html"]
+    assert 'data-pptx-image-id="arch"' in slide["html"]
+
+
+async def test_render_asset_reports_cache_hit_renderer(tmp_path: Path) -> None:
+    asset = {
+        "id": "asset_cache",
+        "slide_index": 2,
+        "asset_type": "architecture",
+        "method": METHOD_DIAGRAMS,
+        "title": "Cached architecture",
+        "description": "Cached architecture diagram",
+        "diagrams_nodes": [
+            {"id": "app", "label": "App", "provider": "generic", "service": "agent"},
+            {"id": "db", "label": "DB", "provider": "generic", "service": "database"},
+        ],
+        "diagrams_edges": [{"from": "app", "to": "db", "label": "SQL"}],
+        "placement": {"x": 48, "y": 92, "w": 604, "h": 318},
+    }
+    import hashlib
+    import json
+
+    fingerprint = hashlib.md5(
+        json.dumps(asset, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:10]
+    cached_path = tmp_path / f"asset_cache_{fingerprint}.png"
+    Image.new("RGB", (1800, 1100), (255, 255, 255)).save(cached_path)
+
+    rendered = await _render_asset(asset, tmp_path)
+
+    assert rendered is not None
+    assert rendered["renderer"] == "cache_hit"
+    assert rendered["cache_hit"] is True
+
+
 def test_pptx_image_preserves_source_aspect_inside_html_box(tmp_path: Path) -> None:
     image_path = tmp_path / "wide_diagram.png"
     Image.new("RGB", (400, 100), (12, 34, 56)).save(image_path)
@@ -1140,7 +1598,10 @@ def test_mermaid_chain_edges_are_preserved_for_fallback_layout() -> None:
     assert [edge["to"] for edge in graph["edges"]] == ["CDN", "ALB", "APP", "DB"]
 
 
-async def test_diagrams_visual_asset_renders_and_maps_to_pptx(tmp_path: Path) -> None:
+async def test_diagrams_visual_asset_renders_and_maps_to_pptx(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     asset = {
         "id": "aws_arch",
         "slide_index": 2,
@@ -1185,6 +1646,15 @@ async def test_diagrams_visual_asset_renders_and_maps_to_pptx(tmp_path: Path) ->
         ),
         "placement": {"x": 80, "y": 100, "w": 520, "h": 320},
     }
+
+    def fake_native_renderer(asset: dict, output_path: Path) -> dict:
+        Image.new("RGB", (1800, 1100), (255, 255, 255)).save(output_path)
+        return {"renderer": "diagrams", "renderer_package": "diagrams"}
+
+    monkeypatch.setattr(
+        "src.formats.pptx.agents.nodes.visual_asset_planner._render_diagrams_asset",
+        fake_native_renderer,
+    )
 
     rendered = await _render_asset(asset, tmp_path)
     assert rendered is not None
