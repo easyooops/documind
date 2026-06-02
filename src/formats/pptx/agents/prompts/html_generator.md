@@ -129,8 +129,14 @@ Apply box-shadow on cards that need emphasis:
 5. NEVER let text extend beyond its container's bounds
 6. For multi-line text: ensure container_height accommodates ALL lines
 7. Safe margin: add 4px extra height as safety buffer
-8. For lists, use real line breaks between bullet items. Do not write all bullets in one inline sentence.
+8. For lists, use semantic HTML tags: `<ul><li>...</li></ul>` for bullets and
+   `<ol><li>...</li></ol>` for ordered steps. Each `<li>` is one line/item.
+   Do not write list items as one inline sentence separated by bullets or middle dots.
 9. If a card has 4+ bullets, make the card taller, split into two columns, or reduce item count.
+10. Before writing a card or textbox, calculate its height from the rendered lines:
+    `ceil(wrapped_lines * font_size * line_height + padding_top + padding_bottom + 4)`.
+    The card/container height must be at least the header height plus the body textbox height
+    plus internal spacing. Text must never visually exceed the card/container.
 
 ## Text Alignment Contract (CRITICAL for PPTX fidelity)
 
@@ -146,6 +152,9 @@ Role defaults:
 - KPI label/caption: align `center`, valign `middle`
 - Body paragraphs and bullet lists: align `left`, valign `top`, with enough padding for readability
 - Do not rely on browser flex alignment alone. The PPTX mapper reads these attributes first.
+- Mirror the same intent in visible HTML: set CSS `text-align` to match `data-pptx-text-align`, set CSS `vertical-align` to match `data-pptx-text-valign`, and include explicit padding.
+- For centered KPI/metric cards, make the value and label textboxes span the intended card width and position their top/height so the text is visually centered inside the card in raw HTML.
+- For card headers with icons, align title text vertically by using a title textbox whose `top` and `height` are centered within the header strip; do not leave title text at the strip's top edge.
 
 ## Content & Visual Balance Rules (PPT-STYLE — CONCISE)
 
@@ -180,6 +189,13 @@ MANDATORY NEW CONTRACT:
 - Icons will render LARGE (24-36px) at the top-left of cards — leave space for them
 
 ### Bullet Points & List Formatting
+- MANDATORY: represent list-like content with semantic HTML list tags.
+  Use `<ul><li>...</li></ul>` for unordered lists and `<ol><li>...</li></ol>`
+  for ordered steps. The textbox should still include `data-pptx-list`.
+- Each `<li>` must be a separate item; never flatten list content into one
+  sentence separated by bullets, middle dots, commas, or spaces.
+- Size the textbox and its backing card from the final wrapped `<li>` line count
+  before outputting HTML, so list text cannot exceed the card bounds.
 - For any list-like content, add `data-pptx-list="bullet"` to the textbox so
   HTML preview and PPTX output both preserve bullets. Use
   `data-pptx-list="numbered"` for ordered steps.

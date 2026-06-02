@@ -347,6 +347,8 @@ async def preview_document(
         slide_html = [slide.html_content or "" for slide in sorted_slides]
 
     if sorted_slides:
+        from src.formats.pptx.agents.nodes.render_convert import PPTX_TEXT_ALIGNMENT_PREVIEW_CSS
+
         slide_html = [_embed_pptx_preview_assets(html) for html in slide_html]
         html_parts = [
             '<html><head><meta charset="utf-8"><style>',
@@ -358,6 +360,7 @@ async def preview_document(
             "padding-bottom:56.25%;border-radius:4px;box-shadow:0 4px 24px rgba(0,0,0,.3);overflow:hidden;background:#fff}",
             ".slide-inner{position:absolute;top:0;left:0;width:960px;height:540px;",
             "transform-origin:top left}",
+            PPTX_TEXT_ALIGNMENT_PREVIEW_CSS,
             "</style>",
             "<script>",
             "function resizeSlides(){",

@@ -17,6 +17,7 @@ from src.formats.pptx.agents.nodes.html_generator import (
     _user_reference_images_for_slide,
 )
 from src.formats.pptx.agents.nodes.render_convert import (
+    PPTX_TEXT_ALIGNMENT_PREVIEW_CSS,
     _embed_cached_icons,
     _embed_local_images,
     _normalize_legacy_icon_nodes,
@@ -496,6 +497,51 @@ def test_html_lists_are_preserved_as_bullet_lines() -> None:
     ]
 
 
+def test_inline_bullet_text_is_materialized_as_html_list() -> None:
+    html = (
+        '<div data-slide="1">'
+        '<div data-pptx-type="textbox" style="position:absolute;left:40px;top:100px;'
+        'width:260px;height:72px;font-size:14px">'
+        "• Data collection • Model training • Deployment"
+        "</div></div>"
+    )
+
+    normalized = _normalize_slide_html(html)
+    [element] = parse_slide_html(normalized)
+
+    assert "<ul>" in normalized
+    assert normalized.count("<li>") == 3
+    assert 'data-pptx-list="bullet"' in normalized
+    assert element.text_content.splitlines() == [
+        "• Data collection",
+        "• Model training",
+        "• Deployment",
+    ]
+
+
+def test_list_textbox_and_backing_card_expand_to_fit_lines() -> None:
+    html = (
+        '<div data-slide="1">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:40px;top:100px;width:260px;height:56px;'
+        'background-color:#FFFFFF;border:1px solid #CBD5E1"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:52px;top:112px;'
+        'width:236px;height:28px;font-size:14px;line-height:1.5;color:#111827">'
+        "<ul><li>Data collection</li><li>Model training</li><li>Deployment</li></ul>"
+        "</div></div>"
+    )
+
+    normalized = _normalize_slide_html(html)
+    elements = parse_slide_html(normalized)
+    card, textbox = elements[0], elements[1]
+
+    assert textbox.position["height"] > 28
+    assert card.position["height"] >= (
+        textbox.position["top"] + textbox.position["height"] - card.position["top"] + 8
+    )
+    assert card.position["height"] <= 526 - card.position["top"]
+
+
 def test_parser_inherits_root_and_inline_font_details() -> None:
     html = (
         '<div data-slide="1">'
@@ -737,6 +783,33 @@ def test_normalized_html_adds_precise_text_attrs_for_metric() -> None:
     assert 'data-pptx-text-align="center"' in normalized
     assert 'data-pptx-text-valign="middle"' in normalized
     assert 'data-pptx-text-padding="0px 4px 0px 4px"' in normalized
+    assert "text-align:center" in normalized
+    assert "vertical-align:middle" in normalized
+    assert "padding:0px 4px 0px 4px" in normalized
+
+
+def test_normalized_html_mirrors_explicit_alignment_attrs_to_preview_css() -> None:
+    html = """<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">
+    <div data-pptx-type="textbox"
+      data-pptx-text-role="kpi_value"
+      data-pptx-text-align="center"
+      data-pptx-text-valign="middle"
+      data-pptx-text-padding='{"top":0,"right":6,"bottom":0,"left":6}'
+      style="position:absolute;left:80px;top:120px;width:180px;height:56px;font-size:32px;font-weight:700;color:#6366F1;text-align:left">6종</div>
+    </div>"""
+
+    normalized = _normalize_slide_html(html)
+
+    assert "text-align:center" in normalized
+    assert "vertical-align:middle" in normalized
+    assert "padding:0px 6px 0px 6px" in normalized
+    assert 'data-pptx-text-align="center"' in normalized
+    assert 'data-pptx-text-valign="middle"' in normalized
+
+
+def test_preview_css_vertically_centers_textboxes_with_alignment_attrs() -> None:
+    assert '[data-pptx-type="textbox"][data-pptx-text-valign="middle"]' in PPTX_TEXT_ALIGNMENT_PREVIEW_CSS
+    assert "justify-content:center" in PPTX_TEXT_ALIGNMENT_PREVIEW_CSS
 
 
 def test_text_is_hard_wrapped_to_card_width() -> None:

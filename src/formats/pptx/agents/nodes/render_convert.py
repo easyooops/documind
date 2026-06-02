@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import re
 import sys
 import uuid
@@ -25,6 +26,19 @@ from src.schemas.agents import DocuMindState
 logger = get_logger(__name__)
 
 _capture_executor = None
+
+PPTX_TEXT_ALIGNMENT_PREVIEW_CSS = """
+[data-pptx-type="textbox"][data-pptx-text-align="left"],
+[data-pptx-type="shape"][data-pptx-text-align="left"]{text-align:left}
+[data-pptx-type="textbox"][data-pptx-text-align="center"],
+[data-pptx-type="shape"][data-pptx-text-align="center"]{text-align:center}
+[data-pptx-type="textbox"][data-pptx-text-align="right"],
+[data-pptx-type="shape"][data-pptx-text-align="right"]{text-align:right}
+[data-pptx-type="textbox"][data-pptx-text-valign="middle"],
+[data-pptx-type="shape"][data-pptx-text-valign="middle"]{display:flex;flex-direction:column;justify-content:center}
+[data-pptx-type="textbox"][data-pptx-text-valign="bottom"],
+[data-pptx-type="shape"][data-pptx-text-valign="bottom"]{display:flex;flex-direction:column;justify-content:flex-end}
+""".strip()
 
 
 def _get_executor():
@@ -126,6 +140,7 @@ def _wrap_slide_html(slide_html: str) -> str:
 <style>
 * {{ margin:0; padding:0; box-sizing:border-box; }}
 body {{ width:960px; height:540px; overflow:hidden; font-family:'Pretendard',system-ui,sans-serif; }}
+{PPTX_TEXT_ALIGNMENT_PREVIEW_CSS}
 </style>
 </head>
 <body>{slide_html}</body>
@@ -165,6 +180,7 @@ def _normalize_slide_html(slide_html: str) -> str:
         node.attrs["style"] = _style_to_string(styles)
 
     _enforce_text_contrast(elements)
+    _expand_backing_cards_for_text(elements)
     _resolve_content_overlaps(elements)
     return str(soup)
 
@@ -387,6 +403,23 @@ def _fit_text_element(node, styles: dict[str, str]) -> None:
     line_height = _line_height_ratio(styles.get("line-height", "1.35"))
     pad_top, pad_right, pad_bottom, pad_left = _padding_box(styles)
     min_size = 9 if font_size <= 28 else 18
+    top = _style_px(styles, "top")
+    available_height = max(1, 526 - top)
+    natural_height = _required_text_height(
+        text,
+        font_size,
+        line_height,
+        max(1, width - pad_left - pad_right),
+        pad_top,
+        pad_bottom,
+    )
+    if (
+        _should_expand_textbox_height(node, text, font_size)
+        and natural_height > height
+        and height < available_height
+    ):
+        height = min(available_height, natural_height)
+        _set_style_px(styles, "height", height)
 
     current = font_size
     while current >= min_size:
@@ -591,6 +624,77 @@ def _normalize_text_alignment_attrs(node, styles: dict[str, str]) -> None:
         if role in defaults:
             node.attrs["data-pptx-text-padding"] = defaults[role]
 
+    _apply_text_alignment_preview_styles(node, styles)
+
+
+def _apply_text_alignment_preview_styles(node, styles: dict[str, str]) -> None:
+    """Mirror PPTX text-frame intent in HTML preview styles."""
+    align = str(node.attrs.get("data-pptx-text-align", "")).strip().lower()
+    if align in {"left", "center", "right", "justify"}:
+        styles["text-align"] = align
+
+    valign = str(node.attrs.get("data-pptx-text-valign", "")).strip().lower()
+    if valign in {"top", "middle", "bottom"}:
+        styles["vertical-align"] = valign
+
+    has_css_padding = any(
+        styles.get(name)
+        for name in ("padding", "padding-top", "padding-right", "padding-bottom", "padding-left")
+    )
+    if has_css_padding:
+        return
+
+    padding = _text_padding_attr_to_css(node.attrs.get("data-pptx-text-padding"))
+    if padding:
+        styles["padding"] = padding
+
+
+def _text_padding_attr_to_css(raw: object) -> str:
+    values = _text_padding_attr_values(raw)
+    if not values:
+        return ""
+    top, right, bottom, left = values
+    return f"{top:g}px {right:g}px {bottom:g}px {left:g}px"
+
+
+def _text_padding_attr_values(raw: object) -> tuple[float, float, float, float] | None:
+    if isinstance(raw, dict):
+        return _padding_dict_values(raw)
+
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except (TypeError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            return _padding_dict_values(data)
+    return _padding_values(text)
+
+
+def _padding_dict_values(data: dict) -> tuple[float, float, float, float] | None:
+    if not data:
+        return None
+
+    def number(name: str, fallback: float = 0.0) -> float:
+        try:
+            return float(str(data.get(name, fallback)).replace("px", ""))
+        except (TypeError, ValueError):
+            return fallback
+
+    if "x" in data or "y" in data:
+        x = number("x")
+        y = number("y")
+        return y, x, y, x
+    return (
+        number("top"),
+        number("right"),
+        number("bottom"),
+        number("left"),
+    )
+
 
 def _text_role_for_preview(node, styles: dict[str, str], text: str) -> str:
     raw = str(node.attrs.get("data-pptx-text-role", "") or "").strip().lower().replace("-", "_")
@@ -666,23 +770,24 @@ def _normalize_textbox_lists(node) -> None:
         for li in list_node.find_all("li", recursive=False):
             text = li.get_text(" ", strip=True)
             if text:
-                list_items.append(text)
-        list_node.decompose()
+                list_items.append(_strip_list_marker(text))
 
     if list_items:
         node.attrs["data-pptx-list"] = "numbered" if ordered_list else "bullet"
-        node.string = _format_list_lines(list_items, ordered=ordered_list)
+        node.attrs.setdefault("data-pptx-text-role", "list")
+        _replace_node_with_list(node, list_items, ordered=ordered_list)
         return
 
     text = _direct_text(node)
     if not text:
         return
-    lines = [line.strip() for line in text.replace("\\n", "\n").split("\n") if line.strip()]
+    lines = _list_items_from_text(text)
     if len(lines) < 2:
         return
     if explicit_list or ordered_list or _looks_like_list_lines(lines):
         node.attrs["data-pptx-list"] = "numbered" if ordered_list else "bullet"
-        node.string = _format_list_lines(lines, ordered=ordered_list)
+        node.attrs.setdefault("data-pptx-text-role", "list")
+        _replace_node_with_list(node, lines, ordered=ordered_list)
 
 
 def _looks_like_list_lines(lines: list[str]) -> bool:
@@ -691,6 +796,51 @@ def _looks_like_list_lines(lines: list[str]) -> bool:
         return True
     short_lines = sum(1 for line in lines if len(_strip_list_marker(line)) <= 42)
     return len(lines) >= 3 and short_lines == len(lines)
+
+
+def _list_items_from_text(text: str) -> list[str]:
+    normalized = str(text or "").replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    if len(lines) >= 2:
+        return lines
+
+    compact = normalized.strip()
+    if not compact:
+        return []
+    marker_pattern = r"(?=\s*(?:[\u2022\u2023\u25E6\u2043\u2219\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s+)"
+    marker_hits = re.findall(marker_pattern, compact)
+    if len(marker_hits) >= 2:
+        return [
+            item.strip()
+            for item in re.split(marker_pattern, compact)
+            if item.strip()
+        ]
+    for separator in (" \u2022 ", " \u00b7 ", " \u30fb "):
+        if compact.count(separator) >= 2:
+            return [item.strip() for item in compact.split(separator) if item.strip()]
+    return [compact]
+
+
+def _replace_node_with_list(node, items: list[str], *, ordered: bool) -> None:
+    from bs4 import BeautifulSoup
+
+    cleaned = [_strip_list_marker(item) for item in items if _strip_list_marker(item)]
+    if not cleaned:
+        return
+
+    fragment = BeautifulSoup("", "html.parser")
+    list_tag = fragment.new_tag("ol" if ordered else "ul")
+    for item in cleaned:
+        list_tag.append("\n")
+        li = fragment.new_tag("li")
+        li.string = item
+        list_tag.append(li)
+    list_tag.append("\n")
+
+    node.clear()
+    node.append("\n")
+    node.append(list_tag)
+    node.append("\n")
 
 
 def _format_list_lines(lines: list[str], *, ordered: bool) -> str:
@@ -717,6 +867,29 @@ def _list_marker_match(line: str):
         r"^\s*(?:[\u2022\u2023\u25E6\u2043\u2219\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s+",
         str(line),
     )
+
+
+def _required_text_height(
+    text: str,
+    font_size: float,
+    line_height: float,
+    content_width: float,
+    pad_top: float,
+    pad_bottom: float,
+) -> float:
+    lines = _wrap_text(text, font_size, content_width)
+    return len(lines) * font_size * line_height + pad_top + pad_bottom + 4
+
+
+def _should_expand_textbox_height(node, text: str, font_size: float) -> bool:
+    if node.attrs.get("data-pptx-list"):
+        return True
+    if node.find(["ul", "ol"], recursive=False):
+        return True
+    lines = [line for line in str(text or "").replace("\\n", "\n").split("\n") if line.strip()]
+    if len(lines) >= 2:
+        return True
+    return font_size <= 20 and len(_list_items_from_text(text)) >= 2
 
 
 def _padding_box(styles: dict[str, str]) -> tuple[float, float, float, float]:
@@ -817,6 +990,76 @@ def _resolve_content_overlaps(elements: list) -> None:
         _set_style_px(item["styles"], "height", box[3])
         item["node"].attrs["style"] = _style_to_string(item["styles"])
         placed.append(item)
+
+
+def _expand_backing_cards_for_text(elements: list) -> None:
+    parsed = [
+        {
+            "node": node,
+            "styles": _parse_style(str(node.attrs.get("style", ""))),
+            "box": None,
+        }
+        for node in elements
+    ]
+    for item in parsed:
+        item["box"] = _box(item["styles"])
+
+    for index, item in enumerate(parsed):
+        node = item["node"]
+        if str(node.attrs.get("data-pptx-type", "")) not in {"textbox", "shape"}:
+            continue
+        if str(node.attrs.get("data-pptx-region", "")) in {"background", "header", "footer"}:
+            continue
+        if not _direct_text(node):
+            continue
+
+        text_box = item["box"]
+        if not text_box:
+            continue
+        text_bottom = text_box[1] + text_box[3]
+        for prior in reversed(parsed[:index]):
+            backing = prior["node"]
+            backing_styles = prior["styles"]
+            if str(backing.attrs.get("data-pptx-region", "")) in {"background", "header", "footer"}:
+                continue
+            if str(backing.attrs.get("data-pptx-type", "")) not in {"shape", "textbox"}:
+                continue
+            if not _node_background_colors(backing_styles):
+                continue
+            backing_box = prior["box"]
+            if not backing_box or not _is_probable_text_backing(text_box, backing_box):
+                continue
+            desired_bottom = text_bottom + 8
+            backing_bottom = backing_box[1] + backing_box[3]
+            if desired_bottom <= backing_bottom:
+                break
+            max_height = max(1, 526 - backing_box[1])
+            new_height = min(max_height, desired_bottom - backing_box[1])
+            if new_height > backing_box[3]:
+                _set_style_px(backing_styles, "height", new_height)
+                backing.attrs["style"] = _style_to_string(backing_styles)
+                prior["box"] = (
+                    backing_box[0],
+                    backing_box[1],
+                    backing_box[2],
+                    new_height,
+                )
+            break
+
+
+def _is_probable_text_backing(
+    text_box: tuple[float, float, float, float],
+    backing_box: tuple[float, float, float, float],
+) -> bool:
+    tx, ty, tw, th = text_box
+    bx, by, bw, bh = backing_box
+    if by > ty or bx > tx + 4:
+        return False
+    if bx + bw < tx + tw - 4:
+        return False
+    center_x = tx + tw / 2
+    center_y = ty + min(th, 24) / 2
+    return bx <= center_x <= bx + bw and by <= center_y <= by + bh + 4
 
 
 def _is_overlap_candidate(node, styles: dict[str, str]) -> bool:
@@ -973,6 +1216,7 @@ def _save_html_preview(slides_html: list[dict], output_dir: Path) -> str:
 * {{ margin:0; padding:0; box-sizing:border-box; }}
 body {{ background:#1a1a2e; display:flex; flex-direction:column; align-items:center; gap:24px; padding:24px; font-family:'Pretendard',system-ui,sans-serif; }}
 [data-slide] {{ border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.3); }}
+{PPTX_TEXT_ALIGNMENT_PREVIEW_CSS}
 </style>
 <script>
 function renderTables(){{document.querySelectorAll('[data-pptx-table-data]').forEach(function(el){{try{{var d=JSON.parse(el.getAttribute('data-pptx-table-data'));if(!d)return;var h=d.headers||[],rows=d.rows||[];var t='<table style="width:100%;height:100%;border-collapse:collapse;font-size:11px;font-family:Pretendard,sans-serif">';if(h.length){{t+='<tr>';h.forEach(function(c){{t+='<th style="background:#1e293b;color:#fff;padding:6px 8px;text-align:center;font-weight:600">'+c+'</th>';}});t+='</tr>';}}rows.forEach(function(r,i){{t+='<tr>';(Array.isArray(r)?r:Object.values(r)).forEach(function(c){{t+='<td style="padding:5px 8px;border-bottom:1px solid #e5e7eb;background:'+(i%2?'#f9fafb':'#fff')+'">'+c+'</td>';}});t+='</tr>';}});t+='</table>';el.innerHTML=t;}}catch(e){{}}}});}};
