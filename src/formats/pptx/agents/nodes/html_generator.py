@@ -317,6 +317,17 @@ async def _generate_single_slide(
             "\n### Approved Standard Body Layout (binding)\n"
             f"{json.dumps(body_layout, ensure_ascii=False, indent=2)}"
         )
+    element_placements = layout_plan.get("element_placements", [])
+    if element_placements:
+        context_parts.append(
+            "\n### Exact Element Placement Blueprint (binding)\n"
+            "Instantiate the planned major elements using these x/y/w/h boxes. Fill the body "
+            "area densely and keep each element within its assigned box. For any placement "
+            "with asset_role=\"visual_asset\", create an image slot in that exact box using "
+            "data-pptx-type=\"image\", data-pptx-asset-id or data-pptx-image-id, and "
+            "data-pptx-image-fit=\"contain\". Do not place a second diagram outside that slot.\n"
+            f"{json.dumps(element_placements, ensure_ascii=False, indent=2)}"
+        )
 
     slide_type = blueprint.get("slide_type", "content")
     if original_html and revision_scope == "minimal_patch":
@@ -407,10 +418,12 @@ Available body area: {body_region['w']}px wide × {body_region['h']}px tall (sta
     if visual_assets:
         context_parts.append(
             "\n### Required Slide Image Assets\n"
-            "Use these rendered assets as slide elements when they improve the layout. "
-            "If used, insert each as an element with data-pptx-type=\"image\", "
-            "data-pptx-image-id, and data-pptx-image-path exactly as supplied. "
-            "The system will also insert any required asset you omit.\n"
+            "Build the slide layout first, then place each rendered asset inside a specific "
+            "diagram frame, card, panel, or reserved body slot. Do not make the image a "
+            "full-slide layer or let it cover unrelated content. Insert each used asset as "
+            "data-pptx-type=\"image\" with data-pptx-image-id, data-pptx-image-path, and "
+            "data-pptx-image-fit=\"contain\" exactly as supplied. If you reserve the slot "
+            "but omit the path, the system will fill that slot after generation.\n"
             f"{json.dumps(_asset_prompt_records(visual_assets), ensure_ascii=False, indent=2)}"
         )
 
@@ -1020,6 +1033,7 @@ def _asset_prompt_records(visual_assets: list[dict]) -> list[dict]:
             "html_example": (
                 f'<div data-pptx-type="image" data-pptx-image-id="{asset.get("id")}" '
                 f'data-pptx-image-path="{asset.get("path")}" '
+                f'data-pptx-image-fit="contain" '
                 f'style="position:absolute;left:{placement.get("x", 360)}px;'
                 f'top:{placement.get("y", 112)}px;width:{placement.get("w", 520)}px;'
                 f'height:{placement.get("h", 330)}px"></div>'
@@ -1220,7 +1234,7 @@ def _qa_repair_instruction(slide_index: int, fix_instructions: list[str] | None)
 
 
 def _inject_visual_asset_images(slides_html: list[dict], visual_assets: list[dict]) -> list[dict]:
-    """Ensure materialized visual assets are present as image elements."""
+    """Fill generated image slots, falling back to a body-contained image element."""
     from bs4 import BeautifulSoup
 
     assets_by_slide: dict[int, list[dict]] = {}
@@ -1244,13 +1258,24 @@ def _inject_visual_asset_images(slides_html: list[dict], visual_assets: list[dic
         for asset in assets:
             asset_id = str(asset.get("id", ""))
             image_path = str(asset.get("path", ""))
-            if not asset_id or not image_path or _slide_has_visual_asset(html, asset):
+            if not asset_id or not image_path:
                 continue
-            image_element = _visual_asset_html(asset)
             soup = BeautifulSoup(html, "html.parser")
             wrapper = soup.find(attrs={"data-slide": True})
+            if _fill_visual_asset_slot(soup, asset):
+                _dedupe_visual_asset_nodes(soup, asset)
+                html = str(soup)
+                inserted = True
+                continue
+            if _slide_has_visual_asset(html, asset):
+                _dedupe_visual_asset_nodes(soup, asset)
+                html = str(soup)
+                inserted = True
+                continue
+            if _has_manual_diagram_composition(soup):
+                continue
+            image_element = _visual_asset_html(asset)
             if wrapper:
-                _remove_overlapping_body_elements(wrapper, _asset_box(asset))
                 image_node = BeautifulSoup(image_element, "html.parser").find(
                     attrs={"data-pptx-type": "image"}
                 )
@@ -1280,10 +1305,80 @@ def _visual_asset_html(asset: dict) -> str:
     image_path = str(asset.get("path", "")).replace('"', "&quot;")
     return (
         f'<div data-pptx-type="image" data-pptx-image-id="{asset_id}" '
-        f'data-pptx-image-path="{image_path}" data-pptx-auto-asset="true" data-pptx-z="50" '
+        f'data-pptx-image-path="{image_path}" data-pptx-image-fit="contain" '
+        f'data-pptx-auto-asset="true" data-pptx-z="20" '
         f'style="position:absolute;left:{x}px;top:{y}px;width:{w}px;height:{h}px;'
         f'background-color:#FFFFFF;border:1px solid #CBD5E1"></div>'
     )
+
+
+def _fill_visual_asset_slot(soup, asset: dict) -> bool:
+    asset_id = str(asset.get("id", ""))
+    image_path = str(asset.get("path", ""))
+    if not asset_id or not image_path:
+        return False
+    candidates = []
+    candidates.extend(soup.find_all(attrs={"data-pptx-image-id": asset_id}))
+    candidates.extend(soup.find_all(attrs={"data-pptx-asset-role": "visual_asset"}))
+    candidates.extend(soup.find_all(attrs={"data-pptx-asset-id": asset_id}))
+    candidates.extend(soup.find_all(attrs={"data-pptx-visual-asset-id": asset_id}))
+    seen = set()
+    for node in candidates:
+        node_key = id(node)
+        if node_key in seen:
+            continue
+        seen.add(node_key)
+        attrs = getattr(node, "attrs", {})
+        if not attrs:
+            continue
+        if str(attrs.get("data-pptx-type", "")) not in {"", "image", "shape"}:
+            continue
+        attrs["data-pptx-type"] = "image"
+        attrs["data-pptx-image-id"] = asset_id
+        attrs["data-pptx-image-path"] = image_path
+        attrs["data-pptx-asset-role"] = "visual_asset"
+        attrs.setdefault("data-pptx-image-fit", "contain")
+        attrs.setdefault("data-pptx-z", str(attrs.get("data-pptx-z", "20") or "20"))
+        node.attrs = attrs
+        return True
+    return False
+
+
+def _dedupe_visual_asset_nodes(soup, asset: dict) -> None:
+    asset_id = str(asset.get("id", ""))
+    image_path = str(asset.get("path", ""))
+    seen = False
+    for node in list(soup.find_all(attrs={"data-pptx-type": "image"})):
+        attrs = getattr(node, "attrs", {})
+        same_id = asset_id and str(attrs.get("data-pptx-image-id", "")) == asset_id
+        same_path = image_path and str(attrs.get("data-pptx-image-path", "")) == image_path
+        if not same_id and not same_path:
+            continue
+        if seen:
+            node.decompose()
+            continue
+        seen = True
+
+
+def _has_manual_diagram_composition(soup) -> bool:
+    """Detect a generated diagram made from native elements to avoid image overlays."""
+    connectors = soup.find_all(attrs={"data-pptx-type": "connector"})
+    if len(connectors) >= 2:
+        return True
+    diagram_nodes = 0
+    for node in soup.find_all(attrs={"data-pptx-type": True}):
+        attrs = getattr(node, "attrs", {})
+        pptx_type = str(attrs.get("data-pptx-type", ""))
+        if pptx_type not in {"shape", "textbox", "icon"}:
+            continue
+        marker = " ".join([
+            str(attrs.get("data-pptx-diagram-role", "")),
+            str(attrs.get("data-pptx-icon-placement", "")),
+            str(attrs.get("data-pptx-region", "")),
+        ]).lower()
+        if "diagram" in marker or "process" in marker:
+            diagram_nodes += 1
+    return diagram_nodes >= 4
 
 
 def _slide_has_visual_asset(html: str, asset: dict) -> bool:
@@ -1298,67 +1393,6 @@ def _slide_has_visual_asset(html: str, asset: dict) -> bool:
         if image_path and str(node.attrs.get("data-pptx-image-path", "")) == image_path:
             return True
     return False
-
-
-def _remove_overlapping_body_elements(wrapper, asset_box: tuple[float, float, float, float]) -> None:
-    for node in list(wrapper.find_all(recursive=False)):
-        attrs = getattr(node, "attrs", {})
-        if not attrs.get("data-pptx-type"):
-            continue
-        if attrs.get("data-pptx-region") in {"background", "header", "footer"}:
-            continue
-        pptx_type = str(attrs.get("data-pptx-type", ""))
-        if pptx_type == "icon":
-            threshold = 0.01
-        elif pptx_type in {"textbox", "shape", "table", "chart", "image"}:
-            threshold = 0.12
-        else:
-            continue
-        box = _node_box(node)
-        if not box:
-            continue
-        if _overlap_ratio(asset_box, box) > threshold:
-            node.decompose()
-
-
-def _asset_box(asset: dict) -> tuple[float, float, float, float]:
-    placement = asset.get("placement", {})
-    return (
-        _num(placement.get("x"), 360),
-        _num(placement.get("y"), 112),
-        _num(placement.get("w"), 520),
-        _num(placement.get("h"), 330),
-    )
-
-
-def _node_box(node) -> tuple[float, float, float, float] | None:
-    style = str(getattr(node, "attrs", {}).get("style", ""))
-    width = _style_number(style, "width")
-    height = _style_number(style, "height")
-    if width <= 0 or height <= 0:
-        return None
-    return (
-        _style_number(style, "left"),
-        _style_number(style, "top"),
-        width,
-        height,
-    )
-
-
-def _style_number(style: str, property_name: str) -> float:
-    match = re.search(rf"(?:^|;)\s*{property_name}\s*:\s*(-?\d+(?:\.\d+)?)px", style)
-    return float(match.group(1)) if match else 0.0
-
-
-def _overlap_ratio(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
-    ax, ay, aw, ah = a
-    bx, by, bw, bh = b
-    x_overlap = max(0, min(ax + aw, bx + bw) - max(ax, bx))
-    y_overlap = max(0, min(ay + ah, by + bh) - max(ay, by))
-    if x_overlap <= 0 or y_overlap <= 0:
-        return 0.0
-    area = x_overlap * y_overlap
-    return area / max(1, min(aw * ah, bw * bh))
 
 
 def _num(value: object, fallback: float) -> float:

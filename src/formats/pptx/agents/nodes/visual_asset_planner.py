@@ -34,14 +34,17 @@ logger = get_logger(__name__)
 AGENT_NAME = "visual_asset_planner"
 FORMAT_ID = "pptx"
 
-METHOD_MERMAID = "mermaid_image"
 METHOD_IMAGE = "image_model"
 METHOD_DIAGRAMS = "diagrams_image"
-ALLOWED_METHODS = {METHOD_MERMAID, METHOD_IMAGE, METHOD_DIAGRAMS}
+LEGACY_METHOD_MERMAID = "mermaid_image"
+ALLOWED_METHODS = {METHOD_IMAGE, METHOD_DIAGRAMS}
 MAX_DIAGRAMS_NODES = 24
 MAX_DIAGRAMS_EDGES = 36
 MAX_DIAGRAMS_CLUSTERS = 10
 MAX_DIAGRAMS_CLUSTER_DEPTH = 6
+DIAGRAMS_RENDER_SCALE = 2
+MIN_DIAGRAM_PNG_WIDTH = 1800
+MIN_DIAGRAM_PNG_HEIGHT = 1100
 
 
 async def visual_asset_planner(state: DocuMindState) -> dict:
@@ -78,12 +81,25 @@ async def visual_asset_planner(state: DocuMindState) -> dict:
     )
 
     if not normalized.get("enabled"):
-        logger.info("visual_asset_planner.skip_by_llm", reason=normalized.get("reason", ""))
-        return {
-            "visual_asset_plan": normalized,
-            "visual_assets": [],
-            "current_phase": "visual_asset_planning",
-        }
+        slot_plan = _fallback_visual_slot_plan(
+            user_query,
+            slide_blueprints,
+            state.get("slide_revision_instructions", {}),
+        )
+        if slot_plan.get("enabled"):
+            logger.info(
+                "visual_asset_planner.override_llm_skip_for_slots",
+                reason=normalized.get("reason", ""),
+                assets=len(slot_plan.get("assets", [])),
+            )
+            normalized = slot_plan
+        else:
+            logger.info("visual_asset_planner.skip_by_llm", reason=normalized.get("reason", ""))
+            return {
+                "visual_asset_plan": normalized,
+                "visual_assets": [],
+                "current_phase": "visual_asset_planning",
+            }
 
     output_dir = Path(settings.storage_local_path) / "visual-assets"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -159,6 +175,8 @@ def _normalize_plan(
         if not isinstance(raw, dict):
             continue
         method = str(raw.get("method", "")).strip()
+        if method == LEGACY_METHOD_MERMAID:
+            method = METHOD_DIAGRAMS
         if method not in ALLOWED_METHODS:
             method = _select_method(user_query, raw)
         description = str(raw.get("description") or raw.get("title") or user_query).strip()
@@ -174,6 +192,9 @@ def _normalize_plan(
             slide_index = _default_slide_index(slide_blueprints)
         if not description:
             continue
+        placement = _asset_slot_placement(slide_index, slide_blueprints) or _normalize_placement(
+            raw.get("placement")
+        )
         assets.append({
             "id": raw.get("id") or f"asset_{slide_index}_{len(assets) + 1}",
             "slide_index": slide_index,
@@ -192,7 +213,7 @@ def _normalize_plan(
             "diagrams_edges": _normalize_diagrams_edges(raw.get("diagrams_edges")),
             "mermaid": _clean_mermaid(str(raw.get("mermaid") or "")),
             "image_prompt": str(raw.get("image_prompt") or description)[:1200],
-            "placement": _normalize_placement(raw.get("placement")),
+            "placement": placement,
         })
 
     return {
@@ -230,12 +251,64 @@ def _fallback_plan(
         "diagrams_edges": _fallback_diagrams_edges(user_query, method),
         "mermaid": _fallback_mermaid(user_query, method),
         "image_prompt": description,
-        "placement": {"x": 360, "y": 112, "w": 520, "h": 330},
+        "placement": _asset_slot_placement(slide_index, slide_blueprints)
+        or {"x": 360, "y": 112, "w": 520, "h": 330},
     }
     return {
         "enabled": True,
         "reason": "Detected explicit slide visual asset intent.",
         "assets": [asset],
+    }
+
+
+def _fallback_visual_slot_plan(
+    user_query: str,
+    slide_blueprints: list[dict],
+    slide_revision_instructions: dict | None = None,
+) -> dict:
+    """Create diagrams assets when slide planning already reserved visual slots."""
+    assets = []
+    slide_revision_instructions = _normalize_slide_instruction_map(slide_revision_instructions)
+    for blueprint in slide_blueprints:
+        if not isinstance(blueprint, dict):
+            continue
+        try:
+            slide_index = int(blueprint.get("index", 0))
+        except (TypeError, ValueError):
+            continue
+        placement = _asset_slot_placement(slide_index, slide_blueprints)
+        if not placement:
+            continue
+        if slide_revision_instructions and slide_index not in slide_revision_instructions:
+            continue
+        description = _fallback_description(
+            " ".join([
+                str(blueprint.get("title") or ""),
+                str(blueprint.get("key_message") or ""),
+                user_query,
+            ]),
+            METHOD_DIAGRAMS,
+        )
+        assets.append({
+            "id": f"asset_{slide_index}_{len(assets) + 1}",
+            "slide_index": slide_index,
+            "asset_type": "architecture",
+            "method": METHOD_DIAGRAMS,
+            "title": str(blueprint.get("title") or "Architecture Diagram")[:80],
+            "description": description,
+            "diagrams_provider": _normalize_diagrams_provider(None, description, blueprint),
+            "diagrams_direction": "LR",
+            "diagrams_clusters": _fallback_diagrams_clusters(description, METHOD_DIAGRAMS),
+            "diagrams_nodes": _fallback_diagrams_nodes(description, METHOD_DIAGRAMS),
+            "diagrams_edges": _fallback_diagrams_edges(description, METHOD_DIAGRAMS),
+            "mermaid": _fallback_mermaid(description, METHOD_DIAGRAMS),
+            "image_prompt": description,
+            "placement": placement,
+        })
+    return {
+        "enabled": bool(assets),
+        "reason": "Slide blueprint reserved rendered diagram/image slots.",
+        "assets": assets[:3],
     }
 
 
@@ -286,21 +359,18 @@ async def _render_asset(asset: dict, output_dir: Path) -> dict | None:
                     ),
                 }
         else:
-            _render_mermaid_asset(asset, output_path)
-            render_metadata = {"renderer": "mermaid_fallback"}
+            _render_concept_placeholder(asset, output_path)
+            render_metadata = {"renderer": "concept_placeholder"}
 
     if not output_path.exists():
         return None
+    _ensure_minimum_png_resolution(output_path)
 
     rendered = dict(asset)
     rendered["path"] = str(output_path)
     rendered["mime_type"] = "image/png"
     if render_metadata:
         rendered.update(render_metadata)
-    if method == METHOD_MERMAID:
-        mermaid_path = output_path.with_suffix(".mmd")
-        mermaid_path.write_text(asset.get("mermaid", ""), encoding="utf-8")
-        rendered["mermaid_path"] = str(mermaid_path)
     if method == METHOD_DIAGRAMS:
         topology_path = output_path.with_suffix(".diagrams.json")
         topology_path.write_text(
@@ -378,6 +448,7 @@ def _render_diagrams_asset(asset: dict, output_path: Path) -> dict:
                     build_clusters(cluster_id, (*lineage, cluster_id), depth + 1)
 
         filename = output_path.with_suffix("")
+        font_name = _graphviz_font_name()
         with _temporary_graphviz_path(dot_path):
             with Diagram(
                 topology["title"],
@@ -392,9 +463,11 @@ def _render_diagrams_asset(asset: dict, output_path: Path) -> dict:
                     "nodesep": "0.5",
                     "splines": "ortho",
                     "concentrate": "true",
+                    "dpi": "192",
+                    "fontname": font_name,
                 },
-                node_attr={"fontsize": "12", "fontname": "Arial"},
-                edge_attr={"fontsize": "10", "fontname": "Arial", "color": "#475569"},
+                node_attr={"fontsize": "12", "fontname": font_name},
+                edge_attr={"fontsize": "10", "fontname": font_name, "color": "#475569"},
             ):
                 build_nodes(None)
                 build_clusters(None)
@@ -566,24 +639,38 @@ def _valid_png(path: Path) -> bool:
         return False
 
 
-def _render_mermaid_asset(asset: dict, output_path: Path) -> None:
-    graph = _parse_mermaid(asset.get("mermaid") or _fallback_mermaid("", METHOD_MERMAID))
-    _draw_graph_png(
-        graph,
-        output_path,
-        title=asset.get("title", "Diagram"),
-        palette={
-            "background": "#FFFFFF",
-            "panel": "#F8FAFC",
-            "primary": "#1E293B",
-            "accent": "#2563EB",
-            "node": "#EFF6FF",
-            "node_border": "#93C5FD",
-            "text": "#0F172A",
-            "muted": "#475569",
-        },
-        architecture_style=False,
-    )
+def _ensure_minimum_png_resolution(path: Path) -> None:
+    """Keep generated diagram assets crisp when they are scaled inside PPTX boxes."""
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+            if width >= MIN_DIAGRAM_PNG_WIDTH and height >= MIN_DIAGRAM_PNG_HEIGHT:
+                return
+            scale = max(
+                MIN_DIAGRAM_PNG_WIDTH / max(width, 1),
+                MIN_DIAGRAM_PNG_HEIGHT / max(height, 1),
+            )
+            target = (max(1, int(width * scale)), max(1, int(height * scale)))
+            resampling = getattr(Image.Resampling, "LANCZOS", Image.LANCZOS)
+            image.convert("RGBA").resize(target, resampling).save(path, format="PNG")
+    except Exception as exc:
+        logger.warning("visual_asset_planner.diagram_upscale_failed", error=str(exc)[:200])
+
+
+def _graphviz_font_name() -> str:
+    """Prefer fonts that cover Korean labels before falling back to Latin-only faces."""
+    font_candidates = [
+        ("C:/Windows/Fonts/malgun.ttf", "Malgun Gothic"),
+        ("C:/Windows/Fonts/malgunbd.ttf", "Malgun Gothic"),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
+        ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", "NanumGothic"),
+        ("/System/Library/Fonts/AppleSDGothicNeo.ttc", "Apple SD Gothic Neo"),
+    ]
+    for path, family in font_candidates:
+        if Path(path).exists():
+            return family
+    return "Arial"
 
 
 def _render_concept_placeholder(asset: dict, output_path: Path) -> None:
@@ -620,24 +707,34 @@ def _draw_graph_png(
     palette: dict,
     architecture_style: bool,
 ) -> None:
-    width, height = 1024, 640
+    scale = DIAGRAMS_RENDER_SCALE
+    base_width, base_height = 1024, 640
+    width, height = base_width * scale, base_height * scale
+
+    def sc(value: float) -> int:
+        return int(round(value * scale))
+
+    def spoint(point: tuple[float, float]) -> tuple[float, float]:
+        return point[0] * scale, point[1] * scale
+
     image = Image.new("RGB", (width, height), palette["background"])
     draw = ImageDraw.Draw(image)
-    title_font = _font(34, bold=True)
-    label_font = _font(20, bold=True)
-    edge_font = _font(15)
+    title_font = _font(34 * scale, bold=True)
+    label_font = _font(20 * scale, bold=True)
+    edge_font = _font(15 * scale)
 
     draw.rounded_rectangle(
-        (24, 24, 1000, 616),
-        radius=18,
+        (sc(24), sc(24), sc(1000), sc(616)),
+        radius=sc(18),
         fill=palette["panel"],
         outline="#CBD5E1",
+        width=sc(1),
     )
-    draw.text((48, 42), title[:58], font=title_font, fill=palette["primary"])
+    draw.text((sc(48), sc(42)), title[:58], font=title_font, fill=palette["primary"])
 
     nodes = graph["nodes"]
     edges = graph["edges"]
-    positions = _layout_nodes(nodes, edges, width=width, height=height)
+    positions = _layout_nodes(nodes, edges, width=base_width, height=base_height)
 
     if architecture_style:
         tiers = _tier_bounds(positions)
@@ -645,14 +742,14 @@ def _draw_graph_png(
         for idx, bounds in enumerate(tiers):
             x1, y1, x2, y2 = bounds
             draw.rounded_rectangle(
-                (x1, y1, x2, y2),
-                radius=12,
+                (sc(x1), sc(y1), sc(x2), sc(y2)),
+                radius=sc(12),
                 fill="#FFFFFF",
                 outline="#E2E8F0",
-                width=2,
+                width=sc(2),
             )
             draw.text(
-                (x1 + 14, y1 + 10),
+                (sc(x1 + 14), sc(y1 + 10)),
                 tier_names[idx],
                 font=edge_font,
                 fill=palette["muted"],
@@ -663,34 +760,41 @@ def _draw_graph_png(
         end = positions.get(edge["to"])
         if not start or not end:
             continue
-        _draw_arrow(draw, start, end, palette["accent"], width=4)
+        _draw_arrow(
+            draw,
+            spoint(start),
+            spoint(end),
+            palette["accent"],
+            width=sc(4),
+            scale=scale,
+        )
         if edge.get("label"):
             mx = (start[0] + end[0]) / 2
             my = (start[1] + end[1]) / 2 - 18
-            draw.text((mx - 30, my), edge["label"][:24], font=edge_font, fill=palette["muted"])
+            draw.text((sc(mx - 30), sc(my)), edge["label"][:24], font=edge_font, fill=palette["muted"])
 
     for node_id, label in nodes.items():
         cx, cy = positions[node_id]
-        box = (cx - 92, cy - 38, cx + 92, cy + 38)
+        box = (sc(cx - 92), sc(cy - 38), sc(cx + 92), sc(cy + 38))
         fill = palette["node"]
         outline = palette["node_border"]
         if architecture_style and _is_cloud_label(label):
             fill, outline = "#E0F2FE", "#38BDF8"
         elif architecture_style and _is_data_label(label):
             fill, outline = "#ECFDF5", "#34D399"
-        draw.rounded_rectangle(box, radius=14, fill=fill, outline=outline, width=3)
+        draw.rounded_rectangle(box, radius=sc(14), fill=fill, outline=outline, width=sc(3))
         if architecture_style:
-            _draw_service_glyph(draw, cx - 72, cy - 18, label, palette["accent"])
-            text_x = cx - 42
-            text_w = 122
+            _draw_service_glyph(draw, sc(cx - 72), sc(cy - 18), label, palette["accent"], scale=scale)
+            text_x = sc(cx - 42)
+            text_w = sc(122)
         else:
-            text_x = cx - 74
-            text_w = 148
+            text_x = sc(cx - 74)
+            text_w = sc(148)
         wrapped = _wrap_text(label, label_font, text_w)
-        text_y = cy - min(len(wrapped), 2) * 12
+        text_y = sc(cy) - min(len(wrapped), 2) * sc(12)
         for line in wrapped[:2]:
             draw.text((text_x, text_y), line, font=label_font, fill=palette["text"])
-            text_y += 24
+            text_y += sc(24)
 
     image.save(output_path, format="PNG")
 
@@ -895,16 +999,18 @@ def _draw_arrow(
     end: tuple[float, float],
     color: str,
     width: int,
+    *,
+    scale: int = 1,
 ) -> None:
     sx, sy = start
     ex, ey = end
     angle = math.atan2(ey - sy, ex - sx)
-    sx += math.cos(angle) * 96
-    sy += math.sin(angle) * 42
-    ex -= math.cos(angle) * 96
-    ey -= math.sin(angle) * 42
+    sx += math.cos(angle) * 96 * scale
+    sy += math.sin(angle) * 42 * scale
+    ex -= math.cos(angle) * 96 * scale
+    ey -= math.sin(angle) * 42 * scale
     draw.line((sx, sy, ex, ey), fill=color, width=width)
-    head = 14
+    head = 14 * scale
     left = angle + math.pi * 0.82
     right = angle - math.pi * 0.82
     points = [
@@ -921,19 +1027,24 @@ def _draw_service_glyph(
     y: float,
     label: str,
     color: str,
+    *,
+    scale: int = 1,
 ) -> None:
+    def sc(value: float) -> int:
+        return int(round(value * scale))
+
     label_lower = label.lower()
     if _is_data_label(label):
-        draw.ellipse((x, y, x + 32, y + 10), outline=color, width=3)
-        draw.rectangle((x, y + 5, x + 32, y + 28), outline=color, width=3)
-        draw.ellipse((x, y + 20, x + 32, y + 30), outline=color, width=3)
+        draw.ellipse((x, y, x + sc(32), y + sc(10)), outline=color, width=sc(3))
+        draw.rectangle((x, y + sc(5), x + sc(32), y + sc(28)), outline=color, width=sc(3))
+        draw.ellipse((x, y + sc(20), x + sc(32), y + sc(30)), outline=color, width=sc(3))
     elif "user" in label_lower or "client" in label_lower:
-        draw.ellipse((x + 8, y, x + 24, y + 16), outline=color, width=3)
-        draw.arc((x + 2, y + 14, x + 30, y + 42), 200, 340, fill=color, width=3)
+        draw.ellipse((x + sc(8), y, x + sc(24), y + sc(16)), outline=color, width=sc(3))
+        draw.arc((x + sc(2), y + sc(14), x + sc(30), y + sc(42)), 200, 340, fill=color, width=sc(3))
     else:
-        draw.rounded_rectangle((x, y, x + 32, y + 30), radius=6, outline=color, width=3)
-        draw.line((x + 6, y + 10, x + 26, y + 10), fill=color, width=2)
-        draw.line((x + 6, y + 20, x + 26, y + 20), fill=color, width=2)
+        draw.rounded_rectangle((x, y, x + sc(32), y + sc(30)), radius=sc(6), outline=color, width=sc(3))
+        draw.line((x + sc(6), y + sc(10), x + sc(26), y + sc(10)), fill=color, width=sc(2))
+        draw.line((x + sc(6), y + sc(20), x + sc(26), y + sc(20)), fill=color, width=sc(2))
 
 
 def _provider_for_label(label: str) -> str:
@@ -1702,7 +1813,7 @@ def _select_method(user_query: str, raw: dict) -> str:
         return METHOD_DIAGRAMS
     if any(signal in text for signal in image_signals):
         return METHOD_IMAGE
-    return METHOD_MERMAID
+    return METHOD_DIAGRAMS
 
 
 def _fallback_description(user_query: str, method: str) -> str:
@@ -1866,6 +1977,46 @@ def _normalize_placement(raw: Any) -> dict:
     return {"x": round(x), "y": round(y), "w": round(w), "h": round(h)}
 
 
+def _asset_slot_placement(slide_index: int, slide_blueprints: list[dict]) -> dict | None:
+    """Use the slide planner's explicit diagram/image slot as the asset box."""
+    for blueprint in slide_blueprints:
+        if not isinstance(blueprint, dict):
+            continue
+        try:
+            index = int(blueprint.get("index", 0))
+        except (TypeError, ValueError):
+            continue
+        if index != slide_index:
+            continue
+        placements = blueprint.get("layout_plan", {}).get("element_placements", [])
+        if not isinstance(placements, list):
+            return None
+        candidates = [
+            placement for placement in placements
+            if isinstance(placement, dict)
+            and (
+                str(placement.get("asset_role") or "") == "visual_asset"
+                or str(placement.get("element") or "").lower() in {"diagram", "image"}
+            )
+        ]
+        candidates.sort(key=lambda item: 0 if str(item.get("asset_role") or "") == "visual_asset" else 1)
+        for placement in candidates:
+            normalized = _placement_from_layout_item(placement)
+            if normalized:
+                return normalized
+    return None
+
+
+def _placement_from_layout_item(item: dict) -> dict | None:
+    x = _optional_num(item.get("x", item.get("left")))
+    y = _optional_num(item.get("y", item.get("top")))
+    w = _optional_num(item.get("w", item.get("width")))
+    h = _optional_num(item.get("h", item.get("height")))
+    if None in {x, y, w, h}:
+        return None
+    return _normalize_placement({"x": x, "y": y, "w": w, "h": h})
+
+
 def _optional_num(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -1945,11 +2096,21 @@ def _font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
     if bold:
         candidates.extend([
             "C:/Windows/Fonts/malgunbd.ttf",
+            "C:/Windows/Fonts/NotoSansKR-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+            "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc",
             "C:/Windows/Fonts/arialbd.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         ])
     candidates.extend([
         "C:/Windows/Fonts/malgun.ttf",
+        "C:/Windows/Fonts/NotoSansKR-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
         "C:/Windows/Fonts/arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ])

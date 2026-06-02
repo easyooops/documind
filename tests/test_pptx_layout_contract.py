@@ -23,6 +23,7 @@ from src.formats.pptx.agents.nodes.render_convert import (
     _normalize_slide_html,
 )
 from src.formats.pptx.agents.nodes.unified_planner import (
+    _extend_blueprints_to_requested_count,
     _extract_slide_revision_instructions,
     _normalize_blueprints,
     _normalize_revision_scope,
@@ -31,6 +32,7 @@ from src.formats.pptx.agents.nodes.visual_asset_planner import (
     METHOD_DIAGRAMS,
     _diagrams_node_candidates,
     _diagrams_topology,
+    _fallback_visual_slot_plan,
     _fallback_plan,
     _layout_nodes,
     _negative_visual_asset_signal,
@@ -120,6 +122,76 @@ def test_blueprints_are_normalized_to_known_body_layouts() -> None:
     assert blueprints[0]["layout_plan"]["master_role"] == "cover"
     assert blueprints[1]["layout_plan"]["body_layout_id"] == "dashboard_chart_sidebar"
     assert blueprints[1]["layout_plan"]["sub_layout_ids"] == ["grid_2x2"]
+
+
+def test_blueprints_add_dense_visual_asset_slot_for_architecture_slide() -> None:
+    blueprints = _normalize_blueprints(
+        [
+            {
+                "index": 2,
+                "slide_type": "content",
+                "title": "LangGraph service architecture",
+                "suggested_elements": ["diagram", "connector", "card"],
+                "layout_plan": {"body_layout_id": "split_60_40"},
+            }
+        ],
+        get_ruleset(),
+    )
+
+    placements = blueprints[0]["layout_plan"]["element_placements"]
+    visual_slot = next(item for item in placements if item.get("asset_role") == "visual_asset")
+    assert visual_slot["element"] == "image"
+    assert visual_slot["w"] >= 560
+    assert visual_slot["h"] >= 300
+    assert len(placements) >= 5
+
+
+def test_requested_slide_count_is_extended_when_planner_under_produces() -> None:
+    ruleset = get_ruleset()
+    blueprints = _normalize_blueprints(
+        [
+            {"index": 1, "slide_type": "cover", "title": "Opening"},
+            {"index": 2, "slide_type": "content", "title": "Problem"},
+            {"index": 3, "slide_type": "content", "title": "Solution"},
+        ],
+        ruleset,
+    )
+
+    extended = _extend_blueprints_to_requested_count(
+        blueprints,
+        6,
+        "6 slides product brief",
+        ruleset,
+    )
+
+    assert len(extended) == 6
+    assert extended[-1]["slide_type"] == "summary"
+    assert extended[-1]["layout_plan"]["element_placements"]
+
+
+def test_overlapping_geometric_placements_are_replaced_with_safe_layout() -> None:
+    blueprints = _normalize_blueprints(
+        [
+            {
+                "index": 2,
+                "slide_type": "content",
+                "title": "Dense layout",
+                "layout_plan": {
+                    "body_layout_id": "split_60_40",
+                    "element_placements": [
+                        {"id": "a", "element": "card", "x": 40, "y": 100, "w": 400, "h": 240},
+                        {"id": "b", "element": "card", "x": 80, "y": 120, "w": 400, "h": 240},
+                        {"id": "c", "element": "callout", "x": 40, "y": 430, "w": 880, "h": 70},
+                    ],
+                },
+            }
+        ],
+        get_ruleset(),
+    )
+
+    placements = blueprints[0]["layout_plan"]["element_placements"]
+    assert placements[0]["id"] == "main_proof"
+    assert placements[1]["x"] >= placements[0]["x"] + placements[0]["w"]
 
 
 def test_fixed_template_uses_selected_master_zone_positions() -> None:
@@ -616,6 +688,93 @@ def test_architecture_request_routes_to_diagrams_visual_asset() -> None:
     assert "CloudFront" in plan["assets"][0]["mermaid"]
 
 
+def test_legacy_mermaid_method_is_normalized_to_diagrams() -> None:
+    plan = _normalize_plan(
+        {
+            "enabled": True,
+            "assets": [
+                {
+                    "slide_index": 2,
+                    "method": "mermaid_image",
+                    "description": "Logical workflow diagram",
+                    "mermaid": "graph LR\n  A[Input] --> B[Output]",
+                }
+            ],
+        },
+        "workflow diagram",
+        [{"index": 2, "slide_type": "content"}],
+    )
+
+    assert plan["assets"][0]["method"] == METHOD_DIAGRAMS
+
+
+def test_visual_asset_placement_uses_planned_image_slot() -> None:
+    plan = _normalize_plan(
+        {
+            "enabled": True,
+            "assets": [
+                {
+                    "slide_index": 2,
+                    "method": METHOD_DIAGRAMS,
+                    "description": "LangGraph architecture",
+                    "placement": {"x": 360, "y": 112, "w": 300, "h": 180},
+                }
+            ],
+        },
+        "LangGraph architecture diagram",
+        [
+            {
+                "index": 2,
+                "slide_type": "content",
+                "layout_plan": {
+                    "element_placements": [
+                        {
+                            "id": "visual_asset_main",
+                            "element": "image",
+                            "asset_role": "visual_asset",
+                            "x": 48,
+                            "y": 92,
+                            "w": 604,
+                            "h": 318,
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+
+    assert plan["assets"][0]["placement"] == {"x": 48, "y": 92, "w": 604, "h": 318}
+
+
+def test_visual_asset_slot_fallback_overrides_llm_skip() -> None:
+    plan = _fallback_visual_slot_plan(
+        "Create a product brief",
+        [
+            {
+                "index": 2,
+                "title": "Service architecture",
+                "layout_plan": {
+                    "element_placements": [
+                        {
+                            "id": "visual_asset_main",
+                            "element": "image",
+                            "asset_role": "visual_asset",
+                            "x": 48,
+                            "y": 92,
+                            "w": 604,
+                            "h": 318,
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+
+    assert plan["enabled"] is True
+    assert plan["assets"][0]["method"] == METHOD_DIAGRAMS
+    assert plan["assets"][0]["placement"]["w"] == 604
+
+
 def test_diagrams_topology_fields_are_preserved() -> None:
     plan = _normalize_plan(
         {
@@ -813,7 +972,7 @@ def test_db_backed_pptx_preview_embeds_local_visual_asset(tmp_path: Path) -> Non
     assert str(image_path) not in preview
 
 
-def test_auto_visual_asset_removes_overlapping_body_content(tmp_path: Path) -> None:
+def test_auto_visual_asset_fallback_preserves_existing_layout_content(tmp_path: Path) -> None:
     image_path = tmp_path / "diagram.png"
     Image.new("RGB", (64, 48), (12, 34, 56)).save(image_path)
     html = (
@@ -839,9 +998,80 @@ def test_auto_visual_asset_removes_overlapping_body_content(tmp_path: Path) -> N
     [slide] = _inject_visual_asset_images(slides, assets)
 
     assert 'data-pptx-image-id="arch"' in slide["html"]
-    assert "Overlapping content" not in slide["html"]
+    assert "Overlapping content" in slide["html"]
     assert "Safe note" in slide["html"]
     assert "Title" in slide["html"]
+
+
+def test_visual_asset_injection_fills_existing_slot(tmp_path: Path) -> None:
+    image_path = tmp_path / "diagram.png"
+    Image.new("RGB", (64, 48), (12, 34, 56)).save(image_path)
+    html = (
+        '<div data-slide="2">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'data-pptx-asset-id="arch" '
+        'style="position:absolute;left:120px;top:130px;width:320px;height:180px"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:40px;top:440px;'
+        'width:200px;height:40px">Safe note</div>'
+        "</div>"
+    )
+    slides = [{"index": 2, "html": html, "elements_used": []}]
+    assets = [
+        {
+            "id": "arch",
+            "slide_index": 2,
+            "path": str(image_path),
+            "placement": {"x": 100, "y": 110, "w": 320, "h": 180},
+        }
+    ]
+
+    [slide] = _inject_visual_asset_images(slides, assets)
+
+    assert 'data-pptx-type="image"' in slide["html"]
+    assert f'data-pptx-image-path="{image_path}"' in slide["html"]
+    assert 'data-pptx-image-fit="contain"' in slide["html"]
+    assert slide["html"].count('data-pptx-image-id="arch"') == 1
+    assert "Safe note" in slide["html"]
+
+
+def test_visual_asset_injection_dedupes_duplicate_image_nodes(tmp_path: Path) -> None:
+    image_path = tmp_path / "diagram.png"
+    Image.new("RGB", (64, 48), (12, 34, 56)).save(image_path)
+    html = (
+        '<div data-slide="2">'
+        f'<div data-pptx-type="image" data-pptx-image-id="arch" data-pptx-image-path="{image_path}" '
+        'style="position:absolute;left:40px;top:100px;width:300px;height:180px"></div>'
+        f'<div data-pptx-type="image" data-pptx-image-id="arch" data-pptx-image-path="{image_path}" '
+        'style="position:absolute;left:420px;top:100px;width:300px;height:180px"></div>'
+        "</div>"
+    )
+    slides = [{"index": 2, "html": html, "elements_used": []}]
+    assets = [{"id": "arch", "slide_index": 2, "path": str(image_path)}]
+
+    [slide] = _inject_visual_asset_images(slides, assets)
+
+    assert slide["html"].count('data-pptx-image-id="arch"') == 1
+
+
+def test_visual_asset_injection_does_not_overlay_manual_diagram(tmp_path: Path) -> None:
+    image_path = tmp_path / "diagram.png"
+    Image.new("RGB", (64, 48), (12, 34, 56)).save(image_path)
+    html = (
+        '<div data-slide="2">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:40px;top:100px;width:120px;height:60px"></div>'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:240px;top:100px;width:120px;height:60px"></div>'
+        '<div data-pptx-type="connector" style="position:absolute;left:160px;top:128px;width:80px;height:2px"></div>'
+        '<div data-pptx-type="connector" style="position:absolute;left:360px;top:128px;width:80px;height:2px"></div>'
+        "</div>"
+    )
+    slides = [{"index": 2, "html": html, "elements_used": []}]
+    assets = [{"id": "arch", "slide_index": 2, "path": str(image_path)}]
+
+    [slide] = _inject_visual_asset_images(slides, assets)
+
+    assert 'data-pptx-image-id="arch"' not in slide["html"]
 
 
 def test_pptx_image_preserves_source_aspect_inside_html_box(tmp_path: Path) -> None:
@@ -960,6 +1190,9 @@ async def test_diagrams_visual_asset_renders_and_maps_to_pptx(tmp_path: Path) ->
     assert rendered is not None
     assert Path(rendered["path"]).exists()
     assert Path(rendered["diagrams_topology_path"]).exists()
+    with Image.open(rendered["path"]) as image:
+        assert image.size[0] >= 1800
+        assert image.size[1] >= 1100
     topology = Path(rendered["diagrams_topology_path"]).read_text(encoding="utf-8")
     assert '"provider": "aws"' in topology
     assert '"service": "rds"' in topology

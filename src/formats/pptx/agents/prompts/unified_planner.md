@@ -43,7 +43,18 @@ Return ONLY valid JSON:
         "body_layout_id": "Choose one standard body layout ID supplied in the layout contract",
         "sub_layout_ids": ["Optional standard nested body layout IDs"],
         "element_placements": [
-          {"element": "chart|table|timeline|diagram|card|text|icon|line|shape|image", "role": "proof_object|support|annotation", "zone": "main|rail|callout"}
+          {
+            "id": "stable_element_id",
+            "element": "chart|table|timeline|diagram|card|text|icon|line|shape|image",
+            "role": "proof_object|support|annotation|process_step|synthesis",
+            "zone": "main|rail|callout",
+            "x": 40,
+            "y": 92,
+            "w": 560,
+            "h": 300,
+            "asset_role": "visual_asset when this is the rendered diagram/image slot",
+            "fit": "contain for rendered diagrams/images"
+          }
         ]
       },
       "layout_hint": "Brief rationale for the selected standard layout",
@@ -71,6 +82,8 @@ Return ONLY valid JSON:
 6. Use concise copy. Every visible object must support reading order, evidence, or navigation.
 7. Use icons deliberately as semantic anchors. Do not force icons into every block and never approximate a brand mark.
 8. Maintain visual rhythm by varying body layout families without breaking the master zones.
+9. For every content slide, provide coordinate-level `element_placements` that fill the body region densely.
+10. For architecture, diagram, flowchart, workflow, or topology slides, reserve one explicit large image/diagram slot with `asset_role:"visual_asset"` and `fit:"contain"`.
 
 ## OOXML Planning Boundary
 
@@ -86,3 +99,11 @@ unsupported SVG decoration, arbitrary widgets, or unverified logos.
 - Data claims need a chart, table, KPI, or cited comparison.
 - Do not invent externally verifiable metrics. State qualitative evidence when data is unavailable.
 - Use one selected theme consistently; do not add off-palette colors.
+
+## Layout Density Contract
+
+- Content slides must use 70-90% of the body region with planned elements.
+- Avoid one tiny central object with large unused margins. If a diagram is the proof object, make it a large planned slot, usually 55-70% of body width and 60-80% of body height.
+- Each non-cover slide should plan 4-8 major zones: one proof object, 2-4 support cards/annotations, and one concise synthesis/callout when useful.
+- `element_placements` are binding implementation instructions for downstream HTML generation. Include x/y/w/h for every planned major element.
+- Keep all coordinates inside the 960x540 canvas body area, normally x 40-920 and y 82-510.

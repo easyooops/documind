@@ -185,6 +185,19 @@ async def unified_planner(state: DocuMindState) -> dict:
             requested=requested_count,
             planned=len(slide_blueprints),
         )
+        slide_blueprints = _extend_blueprints_to_requested_count(
+            slide_blueprints,
+            requested_count,
+            user_query,
+            ruleset,
+        )
+    elif requested_count and not base_version and len(slide_blueprints) > requested_count:
+        logger.warning(
+            "unified_planner.slide_count_mismatch",
+            requested=requested_count,
+            planned=len(slide_blueprints),
+        )
+        slide_blueprints = slide_blueprints[:requested_count]
 
     title = result.get("title", user_query[:60])
     generated_design = result.get("design_tokens", {})
@@ -431,6 +444,12 @@ def _normalize_blueprints(slides: list, ruleset=None) -> list[dict]:
             layout_id for layout_id in layout_plan.get("sub_layout_ids", [])
             if ruleset.get_body_layout(layout_id)
         ]
+        element_placements = _normalize_element_placements(
+            slide,
+            slide_type,
+            body_layout_id,
+            layout_plan.get("element_placements", []),
+        )
         blueprints.append({
             "index": slide.get("index", idx),
             "slide_type": slide_type,
@@ -452,10 +471,313 @@ def _normalize_blueprints(slides: list, ruleset=None) -> list[dict]:
                 "master_role": "cover" if slide_type in {"cover", "section"} else "content",
                 "body_layout_id": body_layout_id if slide_type not in {"cover", "section"} else "",
                 "sub_layout_ids": sub_layout_ids,
-                "element_placements": layout_plan.get("element_placements", []),
+                "element_placements": element_placements,
             },
         })
     return blueprints or _minimal_blueprints()
+
+
+def _normalize_element_placements(
+    slide: dict,
+    slide_type: str,
+    body_layout_id: str,
+    raw_placements: object,
+) -> list[dict]:
+    """Return a dense, coordinate-level body plan for downstream slide agents."""
+    if slide_type in {"cover", "section"}:
+        return []
+    raw_items = raw_placements if isinstance(raw_placements, list) else []
+    normalized = [
+        placement for placement in (
+            _normalize_element_placement_item(item) for item in raw_items
+        )
+        if placement
+    ]
+    if _placements_are_geometric(normalized):
+        return _repair_element_placements(slide, slide_type, body_layout_id, normalized)
+    return _default_element_placements(slide, slide_type, body_layout_id)
+
+
+def _normalize_element_placement_item(item: object) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    element = str(item.get("element") or item.get("type") or "shape").strip() or "shape"
+    role = str(item.get("role") or "support").strip() or "support"
+    zone = str(item.get("zone") or "main").strip() or "main"
+    geometry = _placement_geometry(item)
+    placement = {
+        "id": str(item.get("id") or f"{zone}_{element}_{role}")[:64],
+        "element": element,
+        "role": role,
+        "zone": zone,
+    }
+    if geometry:
+        placement.update(geometry)
+    if item.get("asset_id"):
+        placement["asset_id"] = str(item.get("asset_id"))
+    if item.get("asset_role"):
+        placement["asset_role"] = str(item.get("asset_role"))
+    if item.get("fit"):
+        placement["fit"] = str(item.get("fit"))
+    return placement
+
+
+def _placements_are_geometric(placements: list[dict]) -> bool:
+    if len(placements) < 3:
+        return False
+    geometric = [
+        placement for placement in placements
+        if all(key in placement for key in ("x", "y", "w", "h"))
+    ]
+    return len(geometric) >= max(3, len(placements) // 2)
+
+
+def _repair_element_placements(
+    slide: dict,
+    slide_type: str,
+    body_layout_id: str,
+    placements: list[dict],
+) -> list[dict]:
+    if _placements_have_problematic_overlap(placements):
+        return _default_element_placements(slide, slide_type, body_layout_id)
+    return placements[:24]
+
+
+def _placements_have_problematic_overlap(placements: list[dict]) -> bool:
+    boxed = [
+        placement for placement in placements
+        if all(key in placement for key in ("x", "y", "w", "h"))
+    ]
+    if len(boxed) < 2:
+        return False
+    for index, first in enumerate(boxed):
+        if _is_background_like_placement(first):
+            continue
+        for second in boxed[index + 1:]:
+            if _is_background_like_placement(second):
+                continue
+            if _planned_overlap_ratio(first, second) > 0.08:
+                return True
+    return False
+
+
+def _is_background_like_placement(placement: dict) -> bool:
+    role = str(placement.get("role") or "").lower()
+    element = str(placement.get("element") or "").lower()
+    return role in {"background", "decoration"} or element in {"line", "connector"}
+
+
+def _planned_overlap_ratio(first: dict, second: dict) -> float:
+    ax, ay, aw, ah = first["x"], first["y"], first["w"], first["h"]
+    bx, by, bw, bh = second["x"], second["y"], second["w"], second["h"]
+    x_overlap = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    y_overlap = max(0, min(ay + ah, by + bh) - max(ay, by))
+    if x_overlap <= 0 or y_overlap <= 0:
+        return 0.0
+    return (x_overlap * y_overlap) / max(1, min(aw * ah, bw * bh))
+
+
+def _default_element_placements(slide: dict, slide_type: str, body_layout_id: str) -> list[dict]:
+    if _slide_needs_visual_asset_slot(slide):
+        return [
+            _placement("visual_asset_main", "image", "proof_object", "main", 48, 92, 604, 318, asset_role="visual_asset", fit="contain"),
+            _placement("insight_rail_1", "card", "support", "rail", 676, 92, 244, 92),
+            _placement("insight_rail_2", "card", "support", "rail", 676, 208, 244, 92),
+            _placement("insight_rail_3", "card", "support", "rail", 676, 324, 244, 86),
+            _placement("bottom_takeaway", "callout", "synthesis", "callout", 48, 430, 872, 72),
+        ]
+    if body_layout_id.startswith("dashboard_chart_sidebar"):
+        return [
+            _placement("main_chart", "chart", "proof_object", "main", 40, 92, 560, 292),
+            _placement("metric_1", "card", "support", "rail", 620, 92, 300, 78),
+            _placement("metric_2", "card", "support", "rail", 620, 184, 300, 78),
+            _placement("metric_3", "card", "support", "rail", 620, 276, 300, 78),
+            _placement("bottom_implication", "callout", "synthesis", "callout", 40, 410, 880, 86),
+        ]
+    if body_layout_id.startswith("process_"):
+        return [
+            _placement("step_1", "card", "process_step", "main", 40, 112, 184, 296),
+            _placement("step_2", "card", "process_step", "main", 268, 112, 184, 296),
+            _placement("step_3", "card", "process_step", "main", 496, 112, 184, 296),
+            _placement("step_4", "card", "process_step", "main", 724, 112, 184, 296),
+            _placement("process_summary", "callout", "synthesis", "callout", 40, 428, 880, 74),
+        ]
+    if body_layout_id.startswith("grid_"):
+        return [
+            _placement("card_1", "card", "support", "main", 40, 92, 420, 180),
+            _placement("card_2", "card", "support", "main", 500, 92, 420, 180),
+            _placement("card_3", "card", "support", "main", 40, 300, 420, 180),
+            _placement("card_4", "card", "support", "main", 500, 300, 420, 180),
+        ]
+    if body_layout_id.startswith("compare_"):
+        return [
+            _placement("left_panel", "card", "comparison", "main", 40, 98, 410, 346),
+            _placement("right_panel", "card", "comparison", "main", 510, 98, 410, 346),
+            _placement("bottom_decision", "callout", "synthesis", "callout", 40, 462, 880, 42),
+        ]
+    return [
+        _placement("main_proof", "card", "proof_object", "main", 40, 92, 540, 318),
+        _placement("support_1", "card", "support", "rail", 612, 92, 308, 92),
+        _placement("support_2", "card", "support", "rail", 612, 208, 308, 92),
+        _placement("support_3", "card", "support", "rail", 612, 324, 308, 86),
+        _placement("bottom_takeaway", "callout", "synthesis", "callout", 40, 430, 880, 72),
+    ]
+
+
+def _placement(
+    placement_id: str,
+    element: str,
+    role: str,
+    zone: str,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    *,
+    asset_role: str = "",
+    fit: str = "",
+) -> dict:
+    placement = {
+        "id": placement_id,
+        "element": element,
+        "role": role,
+        "zone": zone,
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+    }
+    if asset_role:
+        placement["asset_role"] = asset_role
+    if fit:
+        placement["fit"] = fit
+    return placement
+
+
+def _placement_geometry(item: dict) -> dict | None:
+    x = _optional_px(item.get("x", item.get("left")))
+    y = _optional_px(item.get("y", item.get("top")))
+    w = _optional_px(item.get("w", item.get("width")))
+    h = _optional_px(item.get("h", item.get("height")))
+    if None in {x, y, w, h}:
+        return None
+    x = max(40, min(int(round(x)), 900))
+    y = max(82, min(int(round(y)), 500))
+    w = max(80, min(int(round(w)), 920 - x))
+    h = max(36, min(int(round(h)), 510 - y))
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _optional_px(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(str(value).replace("px", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _slide_needs_visual_asset_slot(slide: dict) -> bool:
+    text = " ".join([
+        str(slide.get("title") or ""),
+        str(slide.get("key_message") or ""),
+        str(slide.get("purpose") or ""),
+        json.dumps(slide.get("suggested_elements", []), ensure_ascii=False),
+        json.dumps(slide.get("content_blocks", []), ensure_ascii=False)[:2000],
+    ]).lower()
+    signals = (
+        "architecture", "diagram", "flowchart", "workflow", "pipeline", "topology",
+        "langgraph", "service architecture", "system architecture", "infra",
+        "network", "aws", "azure", "gcp", "kubernetes",
+    )
+    return any(signal in text for signal in signals)
+
+
+def _extend_blueprints_to_requested_count(
+    blueprints: list[dict],
+    requested_count: int,
+    user_query: str,
+    ruleset,
+) -> list[dict]:
+    """Deterministically add missing slides when the planner under-produces."""
+    if len(blueprints) >= requested_count:
+        return blueprints
+    existing = [dict(blueprint) for blueprint in blueprints]
+    existing_indices = [
+        int(blueprint.get("index", position + 1))
+        for position, blueprint in enumerate(existing)
+        if str(blueprint.get("index", position + 1)).isdigit()
+    ]
+    next_index = max(existing_indices or [0]) + 1
+    while len(existing) < requested_count:
+        missing_number = len(existing) + 1
+        slide_type = "summary" if missing_number == requested_count else "content"
+        raw_slide = _missing_slide_blueprint(
+            next_index,
+            slide_type,
+            missing_number,
+            requested_count,
+            user_query,
+        )
+        normalized = _normalize_blueprints([raw_slide], ruleset)
+        existing.extend(normalized)
+        next_index += 1
+    return existing[:requested_count]
+
+
+def _missing_slide_blueprint(
+    index: int,
+    slide_type: str,
+    missing_number: int,
+    requested_count: int,
+    user_query: str,
+) -> dict:
+    if slide_type == "summary":
+        title = "실행 전환과 기대 효과"
+        key_message = "도입 판단에 필요한 효과와 다음 액션을 한 장에서 정리합니다."
+        purpose = "Summarize decision rationale and next steps."
+        body_layout_id = "numbered_list_card"
+        suggested = ["rounded_rect", "icon", "textbox", "connector"]
+        blocks = [
+            {
+                "type": "action_summary",
+                "items": [
+                    {"title": "도입 판단", "body": "비용, 품질, 일관성 관점의 효과 확인", "icon": "target"},
+                    {"title": "파일럿", "body": "핵심 문서 유형부터 적용 범위 검증", "icon": "rocket"},
+                    {"title": "확산", "body": "템플릿과 QA 기준을 표준 운영으로 전환", "icon": "checkmark"},
+                ],
+            }
+        ]
+    else:
+        title = f"핵심 설계 포인트 {missing_number}"
+        key_message = "사용자 요청의 남은 핵심 내용을 별도 슬라이드로 분리해 가독성을 확보합니다."
+        purpose = "Cover remaining requested content without crowding adjacent slides."
+        body_layout_id = "split_60_40"
+        suggested = ["rounded_rect", "table", "icon", "textbox"]
+        blocks = [
+            {
+                "type": "supporting_points",
+                "items": [
+                    {"title": "요구사항", "body": "요청 범위와 제약을 구조화", "icon": "document"},
+                    {"title": "설계 기준", "body": "레이아웃, 요소, QA 기준을 명확화", "icon": "layers"},
+                    {"title": "운영 관점", "body": "반복 생성과 검증 흐름을 안정화", "icon": "gear"},
+                ],
+            }
+        ]
+    return {
+        "index": index,
+        "slide_type": slide_type,
+        "section_label": "보강 슬라이드",
+        "title": title,
+        "key_message": key_message,
+        "purpose": purpose,
+        "content_blocks": blocks,
+        "layout_plan": {"body_layout_id": body_layout_id},
+        "layout_hint": "auto-filled to satisfy explicit slide count",
+        "suggested_elements": suggested,
+        "visual_density": "high",
+        "source_citations": [],
+    }
 
 
 def _load_theme_colors(theme_id: str) -> dict | None:

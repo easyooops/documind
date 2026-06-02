@@ -1,5 +1,5 @@
 {
-  "description": "Visual Asset Planner - classifies slide image needs and selects Diagrams, Mermaid, or image model rendering",
+  "description": "Visual Asset Planner - classifies slide image needs and selects Diagrams or image model rendering",
   "provider_type": "llm",
   "llm": {
     "model": "gpt-4o",

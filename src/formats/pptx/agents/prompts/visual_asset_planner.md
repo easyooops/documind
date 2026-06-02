@@ -12,7 +12,7 @@ Return ONLY valid JSON:
     {
       "slide_index": 2,
       "asset_type": "architecture|service_diagram|process_diagram|concept_image|infographic",
-      "method": "diagrams_image|mermaid_image|image_model",
+      "method": "diagrams_image|image_model",
       "title": "Short asset title",
       "description": "What the asset must show",
       "diagrams_provider": "aws|azure|gcp|kubernetes|generic|mixed",
@@ -40,7 +40,7 @@ Return ONLY valid JSON:
           "style": "solid"
         }
       ],
-      "mermaid": "graph LR\\n  A[Client] --> B[API]",
+      "mermaid": "Optional legacy topology hint only; do not use as a rendering method",
       "image_prompt": "Prompt for an image model if method is image_model",
       "placement": {"x": 360, "y": 112, "w": 520, "h": 330}
     }
@@ -51,15 +51,14 @@ Method selection rules:
 
 1. Use `diagrams_image` for cloud, AWS, Azure, GCP, Kubernetes, network,
    infrastructure, system architecture, service topology, deployment topology,
-   data platform architecture, or 3-tier architecture requests. This method
-   renders with the Python Diagrams package, using provider-native node classes.
-2. Use `mermaid_image` for clean logical diagrams, workflows, flowcharts,
-   sequence-like service flows, decision trees, and dependency maps where cloud
-   provider icons are not the main requirement.
-3. Use `image_model` for conceptual illustrations, background visuals, product
+   data platform architecture, 3-tier architecture, clean logical diagrams,
+   workflows, flowcharts, sequence-like service flows, decision trees, and
+   dependency maps. This method renders with the Python Diagrams package, using
+   provider-native or generic flowchart node classes.
+2. Use `image_model` for conceptual illustrations, background visuals, product
    mood images, or non-technical editorial graphics where exact labels are less
    important.
-4. If the request does not imply a slide-level image asset, return
+3. If the request does not imply a slide-level image asset, return
    {"enabled": false, "reason": "...", "assets": []}.
 
 Diagrams planning rules:
@@ -91,8 +90,11 @@ General planning rules:
 
 - Prefer one dominant visual asset per slide.
 - Pick the slide whose purpose is most compatible with the requested visual.
+- Placement must use the slide blueprint's explicit `element_placements` diagram/image
+  slot when one is present. Treat that slot as the fixed rendered asset size.
 - Placement must stay within the 960x540 slide canvas and, for content slides,
   inside the typical body region: x 40-920, y 78-514.
 - If using `image_model`, write a precise visual prompt and leave Diagrams
   fields empty.
-- If using `mermaid_image`, write ASCII Mermaid syntax without markdown fences.
+- Do not choose or emit `mermaid_image`; Mermaid text may be supplied only as a
+  legacy topology hint when helpful.
