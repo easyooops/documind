@@ -53,16 +53,6 @@ export function DocumentPanel({ isMobile }: DocumentPanelProps) {
         <div className="flex items-center gap-2">
           <FileText className="w-4 h-4 text-primary" />
           <h2 className="font-semibold text-sm">{t("document.generatedTitle")}</h2>
-          {currentJob.fidelityScore !== undefined && currentJob.fidelityScore !== null && (
-            <span
-              className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-500 font-medium"
-              title={t("document.qualityScoreHelp")}
-            >
-              {t("document.qualityScore", {
-                score: Math.round(currentJob.fidelityScore * 100),
-              })}
-            </span>
-          )}
           {versions.length > 0 && (
             <select
               value={selectedVersionNumber ?? versions[0].versionNumber}

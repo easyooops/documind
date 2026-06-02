@@ -65,6 +65,13 @@ def _route_qa(state: DocuMindState) -> str:
     return "generate_html"
 
 
+def _route_after_render(state: DocuMindState) -> str:
+    """Evaluate only the first render; export the QA-driven regeneration."""
+    if state.get("qa_iterations", 0) >= 1:
+        return "export"
+    return "quality_assessment"
+
+
 async def _quality_assessment(state: DocuMindState) -> dict:
     """Run rule-based and visual QA as one user-visible quality step."""
     rule_output = await design_quality_evaluator(state)
@@ -117,7 +124,10 @@ def build_pptx_pipeline() -> StateGraph:
 
     # Phase B → C
     graph.add_edge("generate_html", "render_convert")
-    graph.add_edge("render_convert", "quality_assessment")
+    graph.add_conditional_edges("render_convert", _route_after_render, {
+        "quality_assessment": "quality_assessment",
+        "export": "export",
+    })
 
     # QA routing (pass → export, fail → retry HTML generation)
     graph.add_conditional_edges("quality_assessment", _route_qa, {

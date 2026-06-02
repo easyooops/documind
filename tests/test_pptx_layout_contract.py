@@ -9,19 +9,24 @@ from pptx.util import Emu
 
 from src.api.v1.documents import _embed_pptx_preview_assets
 from src.formats.pptx.agents.nodes.html_generator import (
+    _build_human_content_with_images,
+    _build_user_reference_images,
     _inject_fixed_template,
     _inject_visual_asset_images,
     _materialize_html_icon_node,
+    _user_reference_images_for_slide,
 )
 from src.formats.pptx.agents.nodes.render_convert import (
     _embed_cached_icons,
     _embed_local_images,
-    _normalize_slide_html,
     _normalize_legacy_icon_nodes,
+    _normalize_slide_html,
 )
-from src.formats.pptx.agents.nodes.unified_planner import _normalize_blueprints
-from src.formats.pptx.agents.nodes.unified_planner import _extract_slide_revision_instructions
-from src.formats.pptx.agents.nodes.unified_planner import _normalize_revision_scope
+from src.formats.pptx.agents.nodes.unified_planner import (
+    _extract_slide_revision_instructions,
+    _normalize_blueprints,
+    _normalize_revision_scope,
+)
 from src.formats.pptx.agents.nodes.visual_asset_planner import (
     METHOD_DIAGRAMS,
     _diagrams_node_candidates,
@@ -974,3 +979,58 @@ async def test_diagrams_visual_asset_renders_and_maps_to_pptx(tmp_path: Path) ->
 
     assert "data:image/png;base64" in preview
     assert slide.shapes[0].shape_type == MSO_SHAPE_TYPE.PICTURE
+
+
+def test_user_attached_images_are_added_to_generation_message() -> None:
+    buffer = BytesIO()
+    Image.new("RGB", (4, 4), (12, 34, 56)).save(buffer, format="PNG")
+
+    references = _build_user_reference_images(
+        {
+            "_image_attachments": [
+                {
+                    "content": buffer.getvalue(),
+                    "filename": "reference.png",
+                    "mime_type": "image/png",
+                }
+            ]
+        }
+    )
+    human_content = _build_human_content_with_images("Generate slide", references)
+
+    assert isinstance(human_content, list)
+    assert human_content[0] == {"type": "text", "text": "Generate slide"}
+    assert any(
+        part.get("image_url", {}).get("url", "").startswith("data:image/png;base64,")
+        for part in human_content
+        if isinstance(part, dict)
+    )
+
+
+def test_user_attached_images_are_not_broadcast_to_content_slides() -> None:
+    references = [
+        {
+            "label": "cover-reference.png",
+            "mime_type": "image/png",
+            "source": "user",
+            "content": b"image",
+        }
+    ]
+
+    assert _user_reference_images_for_slide(references, 1, "cover") == references
+    assert _user_reference_images_for_slide(references, 2, "content") == []
+
+
+def test_targeted_user_attached_images_apply_to_matching_content_slide() -> None:
+    references = [
+        {
+            "label": "slide 3 issue.png",
+            "mime_type": "image/png",
+            "source": "user",
+            "target_slide_index": 3,
+            "content": b"image",
+        }
+    ]
+
+    assert _user_reference_images_for_slide(references, 2, "content") == []
+    assert _user_reference_images_for_slide(references, 3, "content") == references

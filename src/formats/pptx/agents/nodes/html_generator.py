@@ -10,6 +10,8 @@ import asyncio
 import base64
 import json
 import re
+import zipfile
+from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -71,6 +73,17 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
     master_context = state.get("master_context", {})
     output_language = state.get("output_language", "ko_mixed")
     qa_feedback = state.get("qa_feedback", {})
+    qa_repair_mode = bool(qa_feedback) and state.get("qa_iterations", 0) > 0
+    qa_base_slides = {
+        slide.get("index"): slide
+        for slide in state.get("slides_html", [])
+        if isinstance(slide, dict) and slide.get("index") is not None
+    } if qa_repair_mode else {}
+    qa_reference_images = _build_qa_reference_images(state) if qa_repair_mode else {}
+    qa_reference_ooxml = (
+        _extract_last_slide_ooxml(state.get("output_path"), slide_blueprints)
+        if qa_repair_mode else {}
+    )
     base_slides = {
         slide.get("index"): slide
         for slide in state.get("_base_slides_html", [])
@@ -91,6 +104,7 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
         asset for asset in state.get("visual_assets", [])
         if isinstance(asset, dict) and asset.get("path")
     ]
+    user_reference_images = _build_user_reference_images(state)
 
     tracker = ElementUsageTracker()
     previous_usage = state.get("element_usage", {})
@@ -107,7 +121,7 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
 
         for blueprint in batch:
             index = blueprint.get("index", 0)
-            if base_slides and index not in changed_indices:
+            if base_slides and not qa_repair_mode and index not in changed_indices:
                 prior = dict(base_slides[index])
                 prior["metadata"] = {
                     "slide_type": blueprint.get("slide_type", "content"),
@@ -118,8 +132,22 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
                 tracker.record(prior.get("elements_used", []))
                 continue
             fix_instructions = _get_slide_fixes(blueprint.get("index", 0), qa_feedback)
+            slide_type = blueprint.get("slide_type", "content")
+            original_slide = qa_base_slides.get(index) if qa_repair_mode else base_slides.get(index, {})
+            original_html = original_slide.get("html") if isinstance(original_slide, dict) else None
+            original_blueprint = blueprint if qa_repair_mode else parent_blueprints.get(index)
+            revision_scope_for_slide = "qa_repair" if qa_repair_mode else revision_scope
+            slide_user_reference_images = _user_reference_images_for_slide(
+                user_reference_images,
+                index,
+                slide_type,
+            )
+            slide_reference_images = [
+                *(qa_reference_images.get(index) or []),
+                *slide_user_reference_images,
+            ] if qa_repair_mode else slide_user_reference_images
             slide_instruction = _revision_instruction_for_slide(
-                revision_instruction,
+                _qa_repair_instruction(index, fix_instructions) if qa_repair_mode else revision_instruction,
                 slide_revision_instructions,
                 index,
             )
@@ -131,14 +159,16 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
                     system_prompt=system_prompt,
                     diversity_hint=tracker.get_diversity_prompt(),
                     fix_instructions=fix_instructions,
-                    original_html=base_slides.get(index, {}).get("html"),
-                    original_blueprint=parent_blueprints.get(index),
+                    original_html=original_html,
+                    original_blueprint=original_blueprint,
                     revision_instruction=slide_instruction,
-                    revision_scope=revision_scope,
+                    revision_scope=revision_scope_for_slide,
                     visual_assets=[
                         asset for asset in visual_assets
                         if asset.get("slide_index") == index
                     ],
+                    qa_reference_images=slide_reference_images,
+                    qa_reference_ooxml=qa_reference_ooxml.get(index, ""),
                 )
             )
 
@@ -168,6 +198,8 @@ async def html_generator_parallel(state: DocuMindState) -> dict:
     return {
         "slides_html": slides_html,
         "element_usage": tracker.to_dict(),
+        "html_generation_parallel": True,
+        "html_generation_max_concurrent": max_parallel,
         "current_phase": "generating",
     }
 
@@ -229,6 +261,8 @@ async def _generate_single_slide(
     revision_instruction: str = "",
     revision_scope: str = "minimal_patch",
     visual_assets: list[dict] | None = None,
+    qa_reference_images: list[dict] | None = None,
+    qa_reference_ooxml: str = "",
 ) -> dict:
     """Generate Constrained HTML for a single slide."""
     from src.formats.pptx.rulesets import get_ruleset
@@ -300,6 +334,42 @@ async def _generate_single_slide(
             ),
             "\n### Existing Body HTML (edit minimally and reuse)\n" + original_body,
         ])
+    elif original_html and revision_scope == "qa_repair":
+        context_parts.extend([
+            "\n### QA REPAIR MODE (MANDATORY)",
+            f"Repair instruction: {revision_instruction}",
+            "This slide was already generated once and then evaluated. Use the initial full "
+            "HTML below as the concrete starting point. Correct the QA findings for this slide "
+            "while preserving the existing visual intent, content hierarchy, and approved layout "
+            "unless a fix requires changing them.",
+            (
+                "\n### Initial Generated Full Slide HTML (must be repaired)\n"
+                + original_html
+            ),
+        ])
+        if qa_reference_ooxml:
+            context_parts.append(
+                "\n### Last Generated OOXML Slide XML (must be considered)\n"
+                "This is the converted PowerPoint slide XML from the last generation attempt. "
+                "Use it to understand what the deterministic mapper produced and to avoid "
+                "repeating conversion problems.\n"
+                + _truncate_prompt_text(qa_reference_ooxml, 12000)
+            )
+        if qa_reference_images:
+            context_parts.append(
+                "\n### Initial Render Reference Images\n"
+                "The attached images show the initial HTML render and rendered PPTX output for "
+                "this same slide. Use them together with the QA fixes to make the regenerated "
+                "HTML visibly correct after PPTX conversion."
+            )
+    elif qa_reference_images:
+        context_parts.append(
+            "\n### User Attached Reference Images\n"
+            "The user attached reference images to the request. Inspect the attached images "
+            "as visual/content evidence during generation. Reflect relevant image content, "
+            "style constraints, or requested visual references in the slide when they support "
+            "the approved blueprint."
+        )
     elif original_html:
         context_parts.extend([
             "\n### EXISTING DOCUMENT REVISION",
@@ -360,9 +430,10 @@ Available body area: {body_region['w']}px wide × {body_region['h']}px tall (sta
 
     context = "\n".join(context_parts)
 
+    human_content = _build_human_content_with_images(context, qa_reference_images or [])
     messages = [
         SystemMessage(content=system_prompt),
-        HumanMessage(content=context),
+        HumanMessage(content=human_content),
     ]
 
     response = await llm.ainvoke(messages)
@@ -957,6 +1028,197 @@ def _asset_prompt_records(visual_assets: list[dict]) -> list[dict]:
     return records
 
 
+def _build_qa_reference_images(state: DocuMindState) -> dict[int, list[dict]]:
+    html_screenshots = state.get("html_screenshots", [])
+    pptx_screenshots = state.get("pptx_screenshots", [])
+    slides_html = state.get("slides_html", [])
+    references: dict[int, list[dict]] = {}
+    for position, slide in enumerate(slides_html):
+        if not isinstance(slide, dict):
+            continue
+        try:
+            slide_index = int(slide.get("index", position + 1))
+        except (TypeError, ValueError):
+            slide_index = position + 1
+        slide_refs = []
+        if position < len(html_screenshots):
+            slide_refs.append({
+                "label": "Initial HTML render image",
+                "path": html_screenshots[position],
+                "source": "qa_render",
+            })
+        if position < len(pptx_screenshots):
+            slide_refs.append({
+                "label": "Initial PPTX render image",
+                "path": pptx_screenshots[position],
+                "source": "qa_render",
+            })
+        if slide_refs:
+            references[slide_index] = slide_refs
+    return references
+
+
+def _extract_last_slide_ooxml(output_path: object, blueprints: list[dict]) -> dict[int, str]:
+    path = Path(str(output_path or ""))
+    if not path.exists() or not path.is_file():
+        return {}
+    slide_indices = []
+    for position, blueprint in enumerate(blueprints, start=1):
+        if not isinstance(blueprint, dict):
+            slide_indices.append(position)
+            continue
+        try:
+            slide_indices.append(int(blueprint.get("index", position)))
+        except (TypeError, ValueError):
+            slide_indices.append(position)
+    result: dict[int, str] = {}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            for position, slide_index in enumerate(slide_indices, start=1):
+                member = f"ppt/slides/slide{position}.xml"
+                if member not in names:
+                    continue
+                result[slide_index] = archive.read(member).decode("utf-8", errors="replace")
+    except (OSError, zipfile.BadZipFile):
+        return {}
+    return result
+
+
+def _truncate_prompt_text(value: str, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    half = max(1, limit // 2)
+    return text[:half] + "\n...[truncated]...\n" + text[-half:]
+
+
+def _build_human_content_with_images(context: str, images: list[dict]) -> object:
+    if not images:
+        return context
+    content: list[dict] = [{"type": "text", "text": context}]
+    for image in images:
+        encoded = ""
+        mime_type = str(image.get("mime_type") or "image/png")
+        raw_content = image.get("content")
+        if isinstance(raw_content, str):
+            try:
+                raw_content = raw_content.encode("latin1")
+            except UnicodeEncodeError:
+                raw_content = None
+        if isinstance(raw_content, bytes):
+            encoded = base64.b64encode(raw_content).decode("ascii")
+        if not encoded:
+            path = Path(str(image.get("path") or image.get("file_path") or ""))
+            if not path.exists() or not path.is_file():
+                try:
+                    from src.core.config import settings
+
+                    storage_path = Path(settings.storage_local_path) / str(
+                        image.get("file_path") or ""
+                    )
+                except Exception:
+                    storage_path = Path()
+                if storage_path.exists() and storage_path.is_file():
+                    path = storage_path
+                else:
+                    continue
+            if path.suffix.lower() in {".jpg", ".jpeg"}:
+                mime_type = "image/jpeg"
+            elif path.suffix.lower() == ".webp":
+                mime_type = "image/webp"
+            elif path.suffix.lower() == ".gif":
+                mime_type = "image/gif"
+            elif path.suffix.lower() == ".svg":
+                mime_type = "image/svg+xml"
+            else:
+                mime_type = "image/png"
+            try:
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            except OSError:
+                continue
+        content.append({"type": "text", "text": str(image.get("label", "Reference image"))})
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
+        })
+    return content if len(content) > 1 else context
+
+
+def _build_user_reference_images(state: DocuMindState) -> list[dict]:
+    references = []
+    for index, image in enumerate(state.get("_image_attachments", []) or [], start=1):
+        if not isinstance(image, dict):
+            continue
+        label = str(
+            image.get("description")
+            or image.get("filename")
+            or f"User attached reference image {index}"
+        )
+        record = {
+            "label": label,
+            "mime_type": image.get("mime_type") or "image/png",
+            "source": "user",
+        }
+        target_slide = _reference_target_slide_index(label)
+        if target_slide is not None:
+            record["target_slide_index"] = target_slide
+        if image.get("content"):
+            record["content"] = image.get("content")
+        elif image.get("path"):
+            record["path"] = image.get("path")
+        elif image.get("file_path"):
+            record["file_path"] = image.get("file_path")
+        if record.get("content") or record.get("path") or record.get("file_path"):
+            references.append(record)
+    return references[:4]
+
+
+def _reference_target_slide_index(label: object) -> int | None:
+    match = re.search(r"(?:slide|슬라이드|s)\s*#?\s*(\d+)", str(label or ""), re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _user_reference_images_for_slide(
+    references: list[dict],
+    slide_index: int,
+    slide_type: str,
+) -> list[dict]:
+    if not references:
+        return []
+    targeted = [
+        reference for reference in references
+        if reference.get("target_slide_index") == slide_index
+    ]
+    if targeted:
+        return targeted
+    # Unscoped user screenshots often show the cover or problem examples. Avoid
+    # broadcasting those raw images into every body slide, where they can override
+    # the body-only layout contract and pull cover styling into content slides.
+    if slide_type in {"cover", "section"}:
+        return references
+    return []
+
+
+def _qa_repair_instruction(slide_index: int, fix_instructions: list[str] | None) -> str:
+    if fix_instructions:
+        return (
+            f"Repair slide {slide_index} using only these QA fixes. The regenerated HTML must "
+            "materially address every listed fix while preserving content that is not implicated:\n"
+            + "\n".join(f"- {fix}" for fix in fix_instructions)
+        )
+    return (
+        f"Regenerate slide {slide_index} from the initial HTML and render images. No explicit "
+        "slide-specific fixes were reported, so preserve the slide closely and only correct "
+        "obvious conversion, clipping, spacing, or readability problems visible in the images."
+    )
+
+
 def _inject_visual_asset_images(slides_html: list[dict], visual_assets: list[dict]) -> list[dict]:
     """Ensure materialized visual assets are present as image elements."""
     from bs4 import BeautifulSoup
@@ -1244,6 +1506,7 @@ def _remove_style_properties(style: str, property_names: set[str]) -> str:
 async def _generate_slide_images(slides_html: list[dict]) -> None:
     """Generate images for slides that have data-pptx-image-gen attributes."""
     import re
+
     from src.utils.image_gen import generate_image
 
     image_pattern = re.compile(r'data-pptx-image-gen="([^"]+)"')

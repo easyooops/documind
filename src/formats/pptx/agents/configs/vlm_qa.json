@@ -8,8 +8,11 @@
     "top_p": 1.0
   },
   "qa": {
-    "max_iterations": 2,
+    "max_iterations": 1,
     "fidelity_threshold": 0.85
+  },
+  "parallel": {
+    "max_concurrent": 6
   },
   "retry": {
     "max_attempts": 1,

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from datetime import datetime
@@ -53,6 +54,26 @@ def _as_list(value: object) -> list:
     if value in (None, ""):
         return []
     return [value]
+
+
+def _slide_fix_counts(feedback: dict) -> dict[int, int]:
+    counts: dict[int, int] = {}
+    per_slide_issues = _as_dict(feedback.get("per_slide_issues"))
+    for key, value in per_slide_issues.items():
+        try:
+            idx = int(key)
+        except (TypeError, ValueError):
+            continue
+        counts[idx] = len(value) if isinstance(value, list) else 0
+
+    for item in _as_list(feedback.get("fix_instructions")) + _as_list(feedback.get("issues")):
+        text = str(item)
+        match = re.search(r"\bSlide\s+(\d+)\b|\bS(\d+)\b", text, re.IGNORECASE)
+        if not match:
+            continue
+        idx = int(next(group for group in match.groups() if group))
+        counts[idx] = max(counts.get(idx, 0), 1)
+    return counts
 
 
 def _requested_base_version_number(
@@ -269,9 +290,31 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
         slides = _as_list(node_output.get("slides_html"))
         usage = _as_dict(node_output.get("element_usage"))
         used = _as_list(usage.get("used"))
+        max_concurrent = node_output.get("html_generation_max_concurrent")
+        parallel_text = ""
+        if node_output.get("html_generation_parallel") and isinstance(max_concurrent, int):
+            parallel_text = (
+                f"Parallel generation: up to {max_concurrent} slides at once."
+                if is_en else
+                f"슬라이드별 병렬 생성: 최대 {max_concurrent}개 동시 처리"
+            )
         if is_en:
-            return [f"Generated HTML for {len(slides)} slides.", f"Elements used: {_compact_text(', '.join(used[:6]))}"]
-        return [f"{len(slides)}개 슬라이드 HTML을 생성했습니다.", f"사용 요소: {_compact_text(', '.join(used[:6]))}"]
+            return [
+                f"Generated HTML for {len(slides)} slides.",
+                parallel_text,
+                f"Elements used: {_compact_text(', '.join(used[:6]))}",
+            ] if parallel_text else [
+                f"Generated HTML for {len(slides)} slides.",
+                f"Elements used: {_compact_text(', '.join(used[:6]))}",
+            ]
+        return [
+            f"{len(slides)}개 슬라이드 HTML을 생성했습니다.",
+            parallel_text,
+            f"사용 요소: {_compact_text(', '.join(used[:6]))}",
+        ] if parallel_text else [
+            f"{len(slides)}개 슬라이드 HTML을 생성했습니다.",
+            f"사용 요소: {_compact_text(', '.join(used[:6]))}",
+        ]
 
     if node_name == "init_document_context":
         return (
@@ -353,12 +396,6 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
         feedback = _as_dict(node_output.get("qa_feedback"))
         passed = feedback.get("passed", False)
         latest = scores[-1] if scores else None
-        issues = list(
-            dict.fromkeys(
-                _as_list(feedback.get("fix_instructions"))
-                + _as_list(feedback.get("issues"))
-            )
-        )
         category_scores = _as_dict(feedback.get("category_scores"))
         status = "passed" if passed else "refinement needed"
         status_ko = "\ud1b5\uacfc" if passed else "\ubcf4\uc644 \ud544\uc694"
@@ -367,6 +404,9 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
         evaluated = feedback.get("evaluated_slide_count")
         total = feedback.get("total_slide_count")
         per_slide = _as_list(feedback.get("visual_per_slide"))
+        per_slide_scores = _as_list(feedback.get("per_slide_scores"))
+        fix_counts = _slide_fix_counts(feedback)
+        eval_inputs = _as_dict(feedback.get("evaluation_inputs"))
         items = []
         if is_en:
             items.append(f"Quality assessment: {status}" + (f" ({latest:.2f})" if isinstance(latest, (int, float)) else ""))
@@ -385,22 +425,48 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
                     if isinstance(evaluated, int) and isinstance(total, int) else ""
                 )
                 items.append(f"\uc804\uccb4 \uc2ac\ub77c\uc774\ub4dc \ubcd1\ub82c \ud3c9\uac00: \uaddc\uce59 {rule_score:.2f} | VLM {visual_score:.2f}{coverage}")
-        if per_slide:
+        if eval_inputs.get("per_slide_html") or eval_inputs.get("per_slide_ooxml"):
+            items.append(
+                "LLM evaluated each slide with HTML+OOXML code and paired images."
+                if is_en else
+                "LLM\uc774 \uc2ac\ub77c\uc774\ub4dc\ubcc4 HTML+OOXML \ucf54\ub4dc\uc640 \uc774\ubbf8\uc9c0\ub97c \ud568\uaed8 \ud3c9\uac00"
+            )
+        slide_records: dict[int, dict] = {}
+        for result in per_slide_scores:
+            result_dict = _as_dict(result)
+            try:
+                idx = int(result_dict.get("index"))
+            except (TypeError, ValueError):
+                continue
+            slide_records.setdefault(idx, {})["rule_score"] = result_dict.get("score")
+        for result in per_slide:
+            result_dict = _as_dict(result)
+            try:
+                idx = int(result_dict.get("index"))
+            except (TypeError, ValueError):
+                continue
+            record = slide_records.setdefault(idx, {})
+            record["visual_score"] = result_dict.get("score")
+            record["passed"] = bool(result_dict.get("passed"))
+        if isinstance(total, int):
+            for idx in range(1, total + 1):
+                slide_records.setdefault(idx, {})
+        for idx in fix_counts:
+            slide_records.setdefault(idx, {})
+        if slide_records:
             slide_parts = []
-            for result in per_slide[:6]:
-                result_dict = _as_dict(result)
-                score = result_dict.get("score")
-                if not isinstance(score, (int, float)):
-                    continue
-                label = result_dict.get("index", "?")
-                verdict = "pass" if result_dict.get("passed") else "review"
-                verdict_ko = "\ud1b5\uacfc" if result_dict.get("passed") else "\uac80\ud1a0"
+            for idx in sorted(slide_records):
+                record = slide_records[idx]
+                score = record.get("visual_score", record.get("rule_score"))
+                verdict = "pass" if record.get("passed") else "review"
+                verdict_ko = "\ud1b5\uacfc" if record.get("passed") else "\uac80\ud1a0"
+                score_text = f"{score:.2f} " if isinstance(score, (int, float)) else ""
+                fix_text = f"Fix {fix_counts.get(idx, 0)}"
                 slide_parts.append(
-                    f"S{label}: {score:.2f} {verdict if is_en else verdict_ko}"
+                    f"S{idx}: {score_text}{verdict if is_en else verdict_ko}, {fix_text}"
                 )
-            if slide_parts:
-                prefix = "Slide scores" if is_en else "\uc2ac\ub77c\uc774\ub4dc\ubcc4 \uc810\uc218"
-                items.append(f"{prefix}: " + " | ".join(slide_parts))
+            prefix = "Slide summaries" if is_en else "\uc2ac\ub77c\uc774\ub4dc\ubcc4 \uc694\uc57d"
+            items.append(f"{prefix}: " + " | ".join(slide_parts))
         if category_scores:
             cat_parts = []
             cat_labels = {
@@ -417,8 +483,6 @@ def _summarize_node_output(node_name: str, node_output: dict, locale: str = "ko"
                     cat_parts.append(f"{label}: {val:.2f}")
             if cat_parts:
                 items.append("  " + " | ".join(cat_parts))
-        for issue in issues[:2]:
-            items.append(f"  - {_compact_text(issue)}")
         return items
 
     return []
@@ -986,6 +1050,7 @@ async def stream_generation(
             "_base_document_spec": base_pipeline_data.get("document_spec", {}) if base_version else {},
             "visual_intent": visual_intent,
             "image_attachment_ids": attachment_ids,
+            "_image_attachments": attachment_payload,
         }
 
         NODE_PHASE_MAP = {  # noqa: N806 - node constants are local to the stream lifecycle.

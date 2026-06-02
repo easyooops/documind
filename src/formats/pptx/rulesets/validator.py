@@ -6,13 +6,10 @@ Produces structured scores, per-slide issues, and fix instructions.
 
 from __future__ import annotations
 
-import json
-import math
 import re
-from typing import Any
 
 from src.core.logging import get_logger
-from src.formats.pptx.rulesets import get_ruleset, RuleSet
+from src.formats.pptx.rulesets import RuleSet, get_ruleset
 
 logger = get_logger(__name__)
 
@@ -142,7 +139,6 @@ class DesignQualityEvaluator:
         score = 1.0
         canvas = self._ruleset.canvas
         safe_area = canvas.get("safe_area", {})
-        regions = canvas.get("regions", {})
         canvas_w = canvas.get("canvas", {}).get("width_px", 960)
         canvas_h = canvas.get("canvas", {}).get("height_px", 540)
 
@@ -239,7 +235,6 @@ class DesignQualityEvaluator:
         """Check typography: fonts, sizes, overflow, consistency."""
         score = 1.0
         typo_rules = self._ruleset.typography
-        scale = typo_rules.get("scale", {})
         fonts_allowed = typo_rules.get("fonts", {}).get("allowed", [])
         text_fitting = typo_rules.get("text_fitting", {})
         max_chars = text_fitting.get("max_chars_per_role", {})
@@ -286,7 +281,6 @@ class DesignQualityEvaluator:
                             "message": f"Title text overflow: {len(text)} chars > {max_title_chars} char limit"
                         })
                 elif font_size >= 13:
-                    max_body_chars = max_chars.get("body_per_line", 40)
                     width = el.get("position", {}).get("width", 800)
                     char_width = font_size * 0.85
                     chars_per_line = int(width / char_width) if char_width > 0 else 40

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import zipfile
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -25,17 +26,35 @@ async def vlm_quality_gate(state: DocuMindState) -> dict:
     iteration = state.get("qa_iterations", 0) + 1
     config = _as_dict(load_agent_config(AGENT_NAME, format_id=FORMAT_ID))
     threshold = _as_dict(config.get("qa")).get("fidelity_threshold", 0.85)
+    max_concurrent = int(
+        _as_dict(config.get("parallel")).get(
+            "max_concurrent",
+            _as_dict(config.get("qa")).get("max_concurrent", 6),
+        )
+    )
     html_screenshots = state.get("html_screenshots", [])
     pptx_screenshots = state.get("pptx_screenshots", [])
     slides_html = state.get("slides_html", [])
     slide_indices = [slide.get("index", index + 1) for index, slide in enumerate(slides_html)]
     pair_count = min(len(html_screenshots), len(pptx_screenshots), len(slide_indices))
+    html_by_index = {
+        slide.get("index", index + 1): str(slide.get("html", ""))
+        for index, slide in enumerate(slides_html)
+        if isinstance(slide, dict)
+    }
+    slide_type_by_index = {
+        slide.get("index", index + 1): _as_dict(slide.get("metadata")).get("slide_type", "content")
+        for index, slide in enumerate(slides_html)
+        if isinstance(slide, dict)
+    }
+    ooxml_by_index = _extract_slide_ooxml(state.get("output_path"), slide_indices[:pair_count])
     rule_feedback = _as_dict(state.get("rule_based_feedback"))
     rule_score = float(rule_feedback.get("score", 1.0))
     template_profile = (
         _as_dict(_as_dict(_as_dict(state.get("master_context")).get("template")).get("visual_analysis"))
         .get("profile", {})
     )
+    user_reference_images = _build_user_reference_images(state)
 
     if pair_count == 0:
         logger.warning("vlm_qa.no_rendered_pairs")
@@ -57,15 +76,24 @@ async def vlm_quality_gate(state: DocuMindState) -> dict:
             "current_phase": "qa",
         }
 
-    semaphore = asyncio.Semaphore(3)
+    semaphore = asyncio.Semaphore(max(1, max_concurrent))
 
     async def evaluate(index: int) -> dict:
+        slide_index = slide_indices[index]
+        slide_user_reference_images = _user_reference_images_for_slide(
+            user_reference_images,
+            slide_index,
+            str(slide_type_by_index.get(slide_index, "content")),
+        )
         async with semaphore:
             return await _judge_slide_pair(
-                slide_indices[index],
+                slide_index,
+                html_by_index.get(slide_index, ""),
+                ooxml_by_index.get(slide_index, ""),
                 html_screenshots[index],
                 pptx_screenshots[index],
                 template_profile,
+                slide_user_reference_images,
             )
 
     per_slide = await asyncio.gather(*(evaluate(index) for index in range(pair_count)))
@@ -107,11 +135,22 @@ async def vlm_quality_gate(state: DocuMindState) -> dict:
         "rule_issues": rule_issues,
         "visual_issues": visual_issues,
         "per_slide_issues": per_slide_issues,
-        "issues_count": int(rule_feedback.get("issues_count", len(rule_issues))) + len(visual_issues),
+        "issues_count": (
+            int(rule_feedback.get("issues_count", len(rule_issues)))
+            + len(visual_issues)
+        ),
         "fix_instructions": list(rule_feedback.get("fix_instructions", [])) + visual_fixes,
         "category_scores": rule_feedback.get("category_scores", {}),
         "per_slide_scores": rule_feedback.get("per_slide_scores", []),
         "visual_per_slide": per_slide,
+        "parallel_evaluation": True,
+        "evaluation_inputs": {
+            "per_slide_html": True,
+            "per_slide_ooxml": bool(ooxml_by_index),
+            "paired_images": True,
+            "user_reference_images": bool(user_reference_images),
+            "max_concurrent": max(1, max_concurrent),
+        },
         "evaluated_slide_indices": [
             result["index"] for result in successful
         ],
@@ -140,22 +179,35 @@ async def vlm_quality_gate(state: DocuMindState) -> dict:
 
 async def _judge_slide_pair(
     slide_index: int,
+    html_code: str,
+    ooxml_code: str,
     html_path: str,
     pptx_path: str,
     template_profile: dict,
+    user_reference_images: list[dict] | None = None,
 ) -> dict:
-    """Evaluate a single HTML/PPTX raster pair with a visual-capable model."""
+    """Evaluate a single slide's code and HTML/PPTX raster pair with a visual-capable model."""
     try:
         html_bytes = Path(html_path).read_bytes()
         pptx_bytes = Path(pptx_path).read_bytes()
         prompt = (
-            f"Evaluate slide {slide_index}. Image 1 is its intended HTML render; image 2 is the "
-            "rendered PPTX result. Judge both conversion fidelity and final visible quality: "
+            f"Evaluate slide {slide_index}. You have the generated HTML code, the converted "
+            "PowerPoint OOXML slide XML, then image 1 as the intended HTML render and image 2 "
+            "as the rendered PPTX result. Judge both code-level conversion quality and final "
+            "visible quality: "
             "clipping/overflow, missing elements, alignment, typography readability, contrast, "
             "spacing balance, and consistency with the template profile when supplied. "
-            "Do not complain about content semantics unless text is lost or unreadable.\n\n"
+            "Inspect whether the HTML intent is represented in the OOXML and whether the two "
+            "images confirm the conversion. Do not complain about content semantics unless text "
+            "is lost or unreadable. If user-attached reference images are provided after the "
+            "HTML/PPTX images, also check whether the generated slide respects relevant visual "
+            "or content evidence from those references.\n\n"
             "Template visual profile: "
             f"{json.dumps(template_profile, ensure_ascii=False)[:2500]}\n\n"
+            "Generated slide HTML:\n"
+            f"{_truncate_code(html_code, 12000)}\n\n"
+            "Converted slide OOXML:\n"
+            f"{_truncate_code(ooxml_code, 12000)}\n\n"
             + (
                 "The PPTX preserves the uploaded native OOXML master/layout background. "
                 "Treat the PPTX master styling and template profile as authoritative; do not "
@@ -182,6 +234,18 @@ async def _judge_slide_pair(
                 },
             },
         ]
+        for reference in user_reference_images or []:
+            data_url = _reference_image_data_url(reference)
+            if not data_url:
+                continue
+            message_content.append({
+                "type": "text",
+                "text": str(reference.get("label", "User attached reference image")),
+            })
+            message_content.append({
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            })
         llm = get_llm_for_agent(AGENT_NAME, format_id=FORMAT_ID)
         response = await llm.ainvoke([
             SystemMessage(content="You are a strict slide-by-slide visual presentation QA judge."),
@@ -207,13 +271,139 @@ async def _judge_slide_pair(
             "status": "failed",
             "score": 0.0,
             "passed": False,
-            "issues": [f"Slide {slide_index}: visual Judge evaluation failed."],
+            "issues": [f"Slide {slide_index}: visual/code Judge evaluation failed."],
             "fix_instructions": [],
         }
 
 
 def _strings(value: object) -> list[str]:
     return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _build_user_reference_images(state: DocuMindState) -> list[dict]:
+    references = []
+    for index, image in enumerate(state.get("_image_attachments", []) or [], start=1):
+        if not isinstance(image, dict):
+            continue
+        record = {
+            "label": str(
+                image.get("description")
+                or image.get("filename")
+                or f"User attached reference image {index}"
+            ),
+            "mime_type": image.get("mime_type") or "image/png",
+            "source": "user",
+        }
+        target_slide = _reference_target_slide_index(record["label"])
+        if target_slide is not None:
+            record["target_slide_index"] = target_slide
+        if image.get("content"):
+            record["content"] = image.get("content")
+        elif image.get("path"):
+            record["path"] = image.get("path")
+        elif image.get("file_path"):
+            record["file_path"] = image.get("file_path")
+        if record.get("content") or record.get("path") or record.get("file_path"):
+            references.append(record)
+    return references[:4]
+
+
+def _reference_target_slide_index(label: object) -> int | None:
+    import re
+
+    match = re.search(r"(?:slide|슬라이드|s)\s*#?\s*(\d+)", str(label or ""), re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _user_reference_images_for_slide(
+    references: list[dict],
+    slide_index: object,
+    slide_type: str,
+) -> list[dict]:
+    try:
+        normalized_index = int(slide_index)
+    except (TypeError, ValueError):
+        normalized_index = -1
+    targeted = [
+        reference for reference in references
+        if reference.get("target_slide_index") == normalized_index
+    ]
+    if targeted:
+        return targeted
+    if slide_type in {"cover", "section"}:
+        return references
+    return []
+
+
+def _reference_image_data_url(image: dict) -> str:
+    raw_content = image.get("content")
+    mime_type = str(image.get("mime_type") or "image/png")
+    if isinstance(raw_content, str):
+        try:
+            raw_content = raw_content.encode("latin1")
+        except UnicodeEncodeError:
+            raw_content = None
+    if isinstance(raw_content, bytes):
+        return f"data:{mime_type};base64,{base64.b64encode(raw_content).decode('ascii')}"
+
+    path = Path(str(image.get("path") or image.get("file_path") or ""))
+    if not path.exists() or not path.is_file():
+        try:
+            from src.core.config import settings
+
+            storage_path = Path(settings.storage_local_path) / str(image.get("file_path") or "")
+        except Exception:
+            storage_path = Path()
+        if storage_path.exists() and storage_path.is_file():
+            path = storage_path
+        else:
+            return ""
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        mime_type = "image/jpeg"
+    elif suffix == ".webp":
+        mime_type = "image/webp"
+    elif suffix == ".gif":
+        mime_type = "image/gif"
+    elif suffix == ".svg":
+        mime_type = "image/svg+xml"
+    else:
+        mime_type = "image/png"
+    try:
+        return f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+    except OSError:
+        return ""
+
+
+def _extract_slide_ooxml(output_path: object, slide_indices: list[object]) -> dict[object, str]:
+    path = Path(str(output_path or ""))
+    if not path.exists() or not path.is_file():
+        return {}
+    result: dict[object, str] = {}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            for position, slide_index in enumerate(slide_indices, start=1):
+                member = f"ppt/slides/slide{position}.xml"
+                if member not in names:
+                    continue
+                result[slide_index] = archive.read(member).decode("utf-8", errors="replace")
+    except (OSError, zipfile.BadZipFile):
+        return {}
+    return result
+
+
+def _truncate_code(value: str, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    half = max(1, limit // 2)
+    return text[:half] + "\n...[truncated]...\n" + text[-half:]
 
 
 def _as_dict(value: object) -> dict:
