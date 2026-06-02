@@ -813,10 +813,7 @@ class CSStoOOXMLEngine:
         """Apply shadow, border from styles. Skip shadows on line elements."""
         shadow_css = element.styles.get("box-shadow", "")
         if shadow_css:
-            # Skip shadow for lines (thin shapes with height <= 4px or connectors)
-            h = element.position.get("height", 0)
-            is_line = h <= 4 or element.pptx_type == "connector"
-            if not is_line:
+            if not self._is_line_like_element(element):
                 apply_shadow(pptx_shape, shadow_css)
 
         border_css = element.styles.get("border", "")
@@ -825,6 +822,20 @@ class CSStoOOXMLEngine:
             if parsed:
                 width = min(parsed["width"], 1.0)
                 apply_border(pptx_shape, width, parsed["color"], parsed["style"])
+
+    def _is_line_like_element(self, element: ParsedElement) -> bool:
+        """Separator lines and connectors should stay flat, without shadows."""
+        if element.pptx_type == "connector":
+            return True
+        pos = element.position
+        width = pos.get("width", 0)
+        height = pos.get("height", 0)
+        shape_name = str(element.pptx_shape or "").lower()
+        if shape_name in {"line", "straight_line"}:
+            return True
+        if width <= 0 or height <= 0:
+            return False
+        return min(width, height) <= 8 and max(width, height) >= min(width, height) * 4
 
     def _apply_shape_options(self, pptx_shape, element: ParsedElement) -> None:
         """Apply OOXML-style options for symbol/shape objects."""
@@ -867,7 +878,7 @@ class CSStoOOXMLEngine:
         from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
         from pptx.util import Emu, Pt
 
-        text = element.text_content
+        text = self._protect_label_colon_breaks(element.text_content)
         if not text:
             return
 
@@ -935,7 +946,7 @@ class CSStoOOXMLEngine:
 
         actual_paras = [p for p in text.split("\n") if p.strip()]
         if container_w > 0 and container_h > 0 and text and not self._is_generated_header(element):
-            font_size_px, actual_paras = self._fit_text_lines_to_box(
+            font_size_px, line_height, actual_paras = self._fit_text_lines_to_box(
                 text=text,
                 font_size_px=font_size_px,
                 line_height=line_height,
@@ -958,8 +969,8 @@ class CSStoOOXMLEngine:
             p.alignment = align_map.get(align_css, PP_ALIGN.LEFT)
             p.line_spacing = line_height
             if len(actual_paras) > 1:
-                p.space_before = Pt(2)
-                p.space_after = Pt(2)
+                p.space_before = Pt(0)
+                p.space_after = Pt(0)
             if list_kind:
                 p.level = 0
 
@@ -1023,23 +1034,38 @@ class CSStoOOXMLEngine:
         pad_right: float,
         pad_top: float,
         pad_bottom: float,
-    ) -> tuple[float, list[str]]:
+    ) -> tuple[float, float, list[str]]:
         """Hard-wrap and shrink text so PPTX export stays inside its card."""
         min_font_px = 8.0
         usable_h = max(1.0, container_h - pad_top - pad_bottom)
         current_size = font_size_px
         while current_size >= min_font_px:
             lines = self._wrap_text_for_box(text, current_size, container_w, pad_left, pad_right)
-            needed_h = len(lines) * current_size * line_height
-            if needed_h <= usable_h:
-                return current_size, lines
+            for candidate_line_height in self._line_height_candidates(line_height, len(lines)):
+                needed_h = len(lines) * current_size * candidate_line_height
+                if needed_h <= usable_h:
+                    return current_size, candidate_line_height, lines
             current_size -= 1
         lines = self._wrap_text_for_box(text, min_font_px, container_w, pad_left, pad_right)
-        max_lines = max(1, int(usable_h / (min_font_px * line_height)))
+        fitted_line_height = self._line_height_candidates(line_height, len(lines))[-1]
+        max_lines = max(1, int(usable_h / (min_font_px * fitted_line_height)))
         if len(lines) > max_lines:
             lines = lines[:max_lines]
             lines[-1] = self._ellipsize(lines[-1], max(8, len(lines[-1]) - 1))
-        return min_font_px, lines
+        return min_font_px, fitted_line_height, lines
+
+    def _line_height_candidates(self, line_height: float, line_count: int) -> list[float]:
+        """Compensate for PowerPoint's taller paragraph metrics in fitted boxes."""
+        if line_count <= 1:
+            return [line_height]
+        compact = max(1.02, min(line_height, line_height - 0.08))
+        tight = max(1.0, min(compact, line_height - 0.16))
+        candidates = [line_height, compact, tight]
+        deduped = []
+        for value in candidates:
+            if value not in deduped:
+                deduped.append(value)
+        return deduped
 
     def _wrap_text_for_box(
         self,
@@ -1065,6 +1091,32 @@ class CSStoOOXMLEngine:
     def _wrap_one_line(self, line: str, chars_per_line: int) -> list[str]:
         import re
 
+        unicode_marker_match = re.match(
+            r"^([\u2022\u2023\u25E6\u2043\u2219\-*+]|\d+[.)])\s*(.*)",
+            line,
+        )
+        if unicode_marker_match:
+            marker = unicode_marker_match.group(1) + " "
+            body = unicode_marker_match.group(2).strip()
+            chars_per_line = max(4, chars_per_line - len(marker))
+            if len(marker + body) <= chars_per_line + len(marker):
+                return [marker + body]
+            chunks = []
+            remaining = body
+            while remaining:
+                if len(remaining) <= chars_per_line:
+                    chunks.append(remaining)
+                    break
+                protected = self._protected_colon_prefix_length(remaining)
+                break_at = remaining.rfind(" ", 0, chars_per_line + 1)
+                if protected and break_at < protected:
+                    break_at = protected
+                if break_at < max(4, chars_per_line // 2):
+                    break_at = chars_per_line
+                chunks.append(remaining[:break_at].strip())
+                remaining = remaining[break_at:].strip()
+            return [(marker if idx == 0 else "  ") + chunk for idx, chunk in enumerate(chunks)]
+
         marker_match = re.match(r"^([•▸▶→▪◦◆◇✓]|\d+[.)])\s*(.*)", line)
         marker = ""
         body = line
@@ -1080,12 +1132,31 @@ class CSStoOOXMLEngine:
             if len(remaining) <= chars_per_line:
                 chunks.append(remaining)
                 break
+            protected = self._protected_colon_prefix_length(remaining)
             break_at = remaining.rfind(" ", 0, chars_per_line + 1)
+            if protected and break_at < protected:
+                break_at = protected
             if break_at < max(4, chars_per_line // 2):
                 break_at = chars_per_line
             chunks.append(remaining[:break_at].strip())
             remaining = remaining[break_at:].strip()
         return [(marker if idx == 0 else "  ") + chunk for idx, chunk in enumerate(chunks)]
+
+    def _protected_colon_prefix_length(self, text: str) -> int:
+        import re
+
+        match = re.match(r"^[^\s:：]{1,16}[:：]\u00a0\S+", str(text or ""))
+        return len(match.group(0)) if match else 0
+
+    def _protect_label_colon_breaks(self, text: str) -> str:
+        """Keep short label prefixes like '핵심:' attached to the following word."""
+        import re
+
+        return re.sub(
+            r"(?<!\S)([^\s:：]{1,16}[:：])\s+(?=\S)",
+            lambda match: match.group(1) + "\u00a0",
+            str(text or ""),
+        )
 
     def _ellipsize(self, text: str, max_chars: int) -> str:
         if len(text) <= max_chars:
@@ -1284,6 +1355,15 @@ class CSStoOOXMLEngine:
 
     def _normalize_list_text(self, text: str, *, ordered: bool) -> str:
         lines = [line.strip() for line in text.replace("\\n", "\n").split("\n") if line.strip()]
+        normalized_unicode = []
+        for index, line in enumerate(lines, start=1):
+            body = self._strip_list_marker(line)
+            if not body:
+                continue
+            marker = f"{index}." if ordered else "\u2022"
+            normalized_unicode.append(f"{marker} {body}")
+        return "\n".join(normalized_unicode)
+
         normalized = []
         for index, line in enumerate(lines, start=1):
             body = self._strip_list_marker(line)
@@ -1296,6 +1376,18 @@ class CSStoOOXMLEngine:
     def _strip_list_marker(self, line: str) -> str:
         import re
 
+        text = str(line)
+        previous = None
+        while previous != text:
+            previous = text
+            text = re.sub(
+                r"^\s*(?:[\u2022\u2023\u25E6\u2043\u2219\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s*",
+                "",
+                text,
+            )
+        if text != str(line):
+            return text.strip()
+
         return re.sub(
             r"^\s*(?:[•▸▶→▪◦◆◇✓\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s*",
             "",
@@ -1304,6 +1396,13 @@ class CSStoOOXMLEngine:
 
     def _list_marker_match(self, line: str):
         import re
+
+        unicode_match = re.match(
+            r"^\s*(?:[\u2022\u2023\u25E6\u2043\u2219\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s+",
+            str(line),
+        )
+        if unicode_match:
+            return unicode_match
 
         return re.match(
             r"^\s*(?:[•▸▶→▪◦◆◇✓\-*+]|[0-9]+[.)]|[A-Za-z][.)])\s+",

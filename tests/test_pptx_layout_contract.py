@@ -49,6 +49,7 @@ from src.formats.pptx.agents.nodes.visual_asset_planner import (
     _slot_constraints,
     _render_asset,
     _safe_diagrams_topology,
+    _add_diagram_image_border,
 )
 from src.formats.pptx.mapper.engine import CSStoOOXMLEngine
 from src.formats.pptx.mapper.html_parser import ParsedElement, parse_slide_html
@@ -519,6 +520,34 @@ def test_inline_bullet_text_is_materialized_as_html_list() -> None:
     ]
 
 
+def test_list_normalization_removes_duplicate_manual_bullets() -> None:
+    html = (
+        '<div data-slide="1">'
+        '<div data-pptx-type="textbox" style="position:absolute;left:40px;top:100px;'
+        'width:260px;height:72px;font-size:14px">'
+        "<ul><li>\u2022 Data collection</li><li>\u2022 \u2022 Model training</li></ul>"
+        "</div></div>"
+    )
+
+    normalized = _normalize_slide_html(html)
+    [element] = parse_slide_html(normalized)
+    pptx_text = CSStoOOXMLEngine()._normalize_list_text(
+        "\u2022 \u2022 Data collection\n\u2022 Model training",
+        ordered=False,
+    )
+
+    assert normalized.count("<li>") == 2
+    assert "\u2022 \u2022" not in normalized
+    assert element.text_content.splitlines() == [
+        "\u2022 Data collection",
+        "\u2022 Model training",
+    ]
+    assert pptx_text.splitlines() == [
+        "\u2022 Data collection",
+        "\u2022 Model training",
+    ]
+
+
 def test_inline_flow_arrow_text_is_not_split_as_list() -> None:
     html = (
         '<div data-slide="1">'
@@ -601,8 +630,27 @@ def test_overlapping_card_groups_move_with_their_icons_and_text() -> None:
     card_b = elements[3]
     card_b_text = next(element for element in elements if element.text_content == "Card B")
 
-    assert card_b.position["top"] >= card_a.position["top"] + card_a.position["height"] + 8
-    assert card_b_text.position["top"] > 130
+    horizontal_gap = card_b.position["left"] - (card_a.position["left"] + card_a.position["width"])
+    vertical_gap = card_b.position["top"] - (card_a.position["top"] + card_a.position["height"])
+    assert horizontal_gap >= 14 or vertical_gap >= 14
+    assert card_b_text.position["top"] > 130 or card_b_text.position["left"] > 108
+
+
+def test_nearby_cards_are_separated_by_minimum_layout_gap() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:40px;top:120px;width:180px;height:100px;'
+        'background-color:#ECFDF5"></div>'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:226px;top:120px;width:180px;height:100px;'
+        'background-color:#DBEAFE"></div>'
+        "</div>"
+    )
+
+    card_a, card_b = parse_slide_html(_normalize_slide_html(html))
+
+    assert card_b.position["left"] >= card_a.position["left"] + card_a.position["width"] + 14
 
 
 def test_parser_inherits_root_and_inline_font_details() -> None:
@@ -672,6 +720,23 @@ def test_normalized_html_forces_inline_span_contrast_on_dark_fill() -> None:
     normalized = _normalize_slide_html(html)
 
     assert 'span style="color:#FFFFFF"' in normalized
+
+
+def test_normalized_html_uses_same_family_dark_text_on_light_backing_shape() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:40px;top:100px;width:320px;height:120px;'
+        'background-color:#FCE7F3"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:60px;top:120px;'
+        'width:280px;height:40px;font-size:14px;color:#FFFFFF">'
+        'Readable text</div></div>'
+    )
+
+    normalized = _normalize_slide_html(html)
+
+    assert "color:#FFFFFF" not in normalized
+    assert "color:#360722" in normalized
 
 
 def test_pptx_text_color_is_corrected_against_own_dark_fill() -> None:
@@ -877,7 +942,7 @@ def test_preview_css_vertically_centers_textboxes_with_alignment_attrs() -> None
 
 def test_text_is_hard_wrapped_to_card_width() -> None:
     engine = CSStoOOXMLEngine()
-    size, lines = engine._fit_text_lines_to_box(
+    size, line_height, lines = engine._fit_text_lines_to_box(
         text="• 클라우드 MSP 전문 기업 토스뱅크 주주 참여 금융 진출",
         font_size_px=14,
         line_height=1.35,
@@ -890,8 +955,49 @@ def test_text_is_hard_wrapped_to_card_width() -> None:
     )
 
     assert size <= 14
+    assert line_height <= 1.35
     assert len(lines) >= 2
     assert all(len(line) <= 18 for line in lines)
+
+
+def test_pptx_text_fit_protects_short_colon_label_from_line_break() -> None:
+    engine = CSStoOOXMLEngine()
+    text = engine._protect_label_colon_breaks("핵심: 채널은 3가지로 다양하지만")
+    _size, _line_height, lines = engine._fit_text_lines_to_box(
+        text=text,
+        font_size_px=13,
+        line_height=1.35,
+        container_w=54,
+        container_h=80,
+        pad_left=0,
+        pad_right=0,
+        pad_top=0,
+        pad_bottom=0,
+    )
+
+    assert lines[0] != "핵심:"
+    assert lines[0].startswith("핵심:\u00a0")
+
+
+def test_pptx_multiline_text_uses_no_extra_paragraph_spacing() -> None:
+    element = ParsedElement(
+        pptx_type="textbox",
+        pptx_shape=None,
+        position={"left": 40, "top": 100, "width": 140, "height": 64},
+        styles={"font-size": "14px", "line-height": "1.35", "color": "#111827"},
+        text_content="HTML과 PPTX의 상하 자간 차이를 줄입니다",
+        children=[],
+        attributes={},
+    )
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+
+    CSStoOOXMLEngine()._add_element(slide, element)
+    paragraphs = slide.shapes[0].text_frame.paragraphs
+
+    assert len(paragraphs) >= 2
+    assert all(paragraph.space_before.pt == 0 for paragraph in paragraphs)
+    assert all(paragraph.space_after.pt == 0 for paragraph in paragraphs)
 
 
 def test_chart_table_shape_options_do_not_break_native_conversion(tmp_path: Path) -> None:
@@ -916,6 +1022,27 @@ def test_chart_table_shape_options_do_not_break_native_conversion(tmp_path: Path
 
     assert output.exists()
     assert output.stat().st_size > 0
+
+
+def test_line_like_shapes_do_not_receive_pptx_shadow() -> None:
+    element = ParsedElement(
+        pptx_type="shape",
+        pptx_shape="rect",
+        position={"left": 40, "top": 120, "width": 360, "height": 2},
+        styles={
+            "background-color": "#10B981",
+            "box-shadow": "0px 2px 6px rgba(0,0,0,0.25)",
+        },
+        text_content="",
+        children=[],
+        attributes={},
+    )
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+
+    CSStoOOXMLEngine()._add_element(slide, element)
+
+    assert "outerShdw" not in slide.shapes[0]._element.xml
 
 
 def test_fallback_icon_is_created_when_iconify_cache_is_missing() -> None:
@@ -1056,6 +1183,17 @@ def test_diagram_png_canvas_matches_slot_aspect(tmp_path: Path) -> None:
     with Image.open(path) as image:
         width, height = image.size
     assert abs((width / height) - (180 / 420)) < 0.03
+
+
+def test_diagram_png_border_is_baked_into_image(tmp_path: Path) -> None:
+    path = tmp_path / "diagram.png"
+    Image.new("RGBA", (900, 520), (255, 255, 255, 0)).save(path)
+
+    _add_diagram_image_border(path)
+
+    with Image.open(path) as image:
+        pixel = image.convert("RGBA").getpixel((0, 0))
+    assert pixel[3] > 0
 
 
 def test_llm_plan_validation_detects_missing_reserved_slot_asset() -> None:
@@ -1706,7 +1844,7 @@ def test_slide_html_normalizer_shrinks_overflowing_text_and_resolves_overlap() -
 
     assert "font-size:54px" not in output
     assert "overflow:hidden" in output
-    assert "top:178px" in output
+    assert "top:184px" in output
 
 
 def test_fallback_layout_keeps_many_unconnected_nodes_from_overlapping() -> None:

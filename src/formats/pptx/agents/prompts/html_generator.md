@@ -255,6 +255,9 @@ When creating nested cards, ALWAYS place in this order:
 - Container and its children must occupy EXACTLY the same x region
 - Header strip: same width as container, height:28-32px, starts at container top
 - Body text: starts at container.top + header_height + 8px padding
+- For list content, choose exactly one representation: either `<ul><li>Text</li></ul>`
+  without manual bullet characters inside `<li>`, or plain newline text with one
+  leading bullet per line. Never use `<li>• Text</li>`.
 - Text inside cards: use LINE BREAKS (\n) between bullets, NOT middle dots (·)
 - Each bullet line: max 20 characters (Korean) or 25 characters (English)
 - Prefer background-color contrast; on white template backgrounds, white cards MUST
@@ -264,7 +267,7 @@ When creating nested cards, ALWAYS place in this order:
 ## Border & Line Rules
 
 1. Card borders: normally none; use 1px #E2E8F0 only when a light card would disappear into a light background
-2. Separator lines: height:1px, background:#E2E8F0 (only between major sections)
+2. Separator lines: height:1px, background:#E2E8F0 (only between major sections); never use box-shadow on lines/connectors
 3. Table borders: 0.5px #E2E8F0
 4. Accent bars: width:48px, height:3px (title only)
 
@@ -317,7 +320,7 @@ Use data-pptx-shape-options for OOXML shape formatting when needed:
 - Only textbox elements (no visual variety)
 - Meaningless or decorative icon repetition
 - Slides without at least one non-text visual element (table, chart, KPI, or process flow)
-- Overlapping independent tables, charts, or cards; leave at least 12px between them
+- Overlapping independent tables, charts, or cards; leave at least 14px between them
 - Any body card/box/callout touching or crossing the footer safe area (bottom
   edge greater than y:510)
 

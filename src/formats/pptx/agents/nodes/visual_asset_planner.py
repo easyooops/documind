@@ -44,8 +44,9 @@ MAX_DIAGRAMS_EDGES = 36
 MAX_DIAGRAMS_CLUSTERS = 10
 MAX_DIAGRAMS_CLUSTER_DEPTH = 6
 DIAGRAMS_RENDER_SCALE = 2
-MIN_DIAGRAM_PNG_WIDTH = 1800
-MIN_DIAGRAM_PNG_HEIGHT = 1100
+MIN_DIAGRAM_PNG_WIDTH = 2400
+MIN_DIAGRAM_PNG_HEIGHT = 1500
+DIAGRAMS_DPI = 300
 
 
 async def visual_asset_planner(state: DocuMindState) -> dict:
@@ -816,6 +817,7 @@ async def _render_asset(asset: dict, output_dir: Path) -> dict | None:
     _ensure_minimum_png_resolution(output_path)
     if method == METHOD_DIAGRAMS:
         _fit_png_canvas_to_placement(output_path, asset.get("placement"))
+        _add_diagram_image_border(output_path)
 
     rendered = dict(asset)
     rendered["path"] = str(output_path)
@@ -934,7 +936,7 @@ def _render_diagrams_asset(asset: dict, output_path: Path) -> dict:
                     "nodesep": render_profile["nodesep"],
                     "splines": "ortho",
                     "concentrate": "true",
-                    "dpi": "192",
+                    "dpi": str(DIAGRAMS_DPI),
                     "fontname": font_name,
                     "size": render_profile["graph_size"],
                     "ratio": "compress",
@@ -1159,6 +1161,27 @@ def _fit_png_canvas_to_placement(path: Path, placement: Any) -> None:
         canvas.save(path, format="PNG")
     except Exception as exc:
         logger.warning("visual_asset_planner.diagram_canvas_fit_failed", error=str(exc)[:200])
+
+
+def _add_diagram_image_border(path: Path) -> None:
+    """Bake a subtle boundary into rendered diagrams for HTML/PPTX parity."""
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGBA")
+        width, height = image.size
+        if width <= 1 or height <= 1:
+            return
+        border_px = max(2, min(5, round(min(width, height) / 520)))
+        draw = ImageDraw.Draw(image)
+        color = (148, 163, 184, 170)
+        for offset in range(border_px):
+            draw.rectangle(
+                (offset, offset, width - 1 - offset, height - 1 - offset),
+                outline=color,
+            )
+        image.save(path, format="PNG")
+    except Exception as exc:
+        logger.warning("visual_asset_planner.diagram_border_failed", error=str(exc)[:200])
 
 
 def _graphviz_font_name() -> str:
