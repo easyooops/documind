@@ -304,7 +304,7 @@ Use independent data-pptx-type="icon" elements as visual proof anchors, not as t
 - **Process arrows**: right_arrow shapes between sequential elements
 
 ### Allowed Shapes (data-pptx-shape)
-rect, rounded_rect, oval, chevron, right_arrow, left_arrow, diamond
+rect, rounded_rect, oval, chevron, right_arrow, left_arrow, up_arrow, down_arrow, diamond
 
 Use data-pptx-shape-options for OOXML shape formatting when needed:
 '{"line_color":"#94A3B8","line_width":1,"line_dash":"dash","transparency":0.15}'
@@ -315,12 +315,18 @@ Use data-pptx-shape-options for OOXML shape formatting when needed:
 - Process arrows: 20-30px wide, 14-18px tall
 - Accent dots/shapes: 8-16px
 
+### Arrow Shape Rules
+- Use `data-pptx-type="shape"` and `data-pptx-shape="right_arrow|left_arrow|up_arrow|down_arrow"` for arrows.
+- Give arrows explicit width and height: horizontal arrows should be at least 18px wide and 10px high; vertical arrows should be at least 10px wide and 18px high.
+- Arrows should have a solid `background-color`, no text content, no `box-shadow`, and no decorative border unless the arrow itself is the main evidence object.
+- If `data-pptx-shape-options` is used, it must be valid JSON and only include supported keys such as `line_color`, `line_width`, `line_dash`, `transparency`, or `fill`.
+
 ### FORBIDDEN patterns:
 - All cards same size and same layout (boring grid)
 - Only textbox elements (no visual variety)
 - Meaningless or decorative icon repetition
 - Slides without at least one non-text visual element (table, chart, KPI, or process flow)
-- Overlapping independent tables, charts, or cards; leave at least 14px between them
+- Overlapping independent tables, charts, or cards; keep each object inside its assigned layout slot with a slight internal inset. Do not expand card-to-card gaps after the layout is chosen.
 - Any body card/box/callout touching or crossing the footer safe area (bottom
   edge greater than y:510)
 

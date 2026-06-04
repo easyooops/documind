@@ -49,12 +49,13 @@ Return ONLY valid JSON:
 
 Method selection rules:
 
-1. Use `diagrams_image` for cloud, AWS, Azure, GCP, Kubernetes, network,
+1. Use `diagrams_image` only when a rendered diagram is necessary to persuade or
+   clarify the audience: cloud, AWS, Azure, GCP, Kubernetes, network,
    infrastructure, system architecture, service topology, deployment topology,
-   data platform architecture, 3-tier architecture, clean logical diagrams,
-   workflows, flowcharts, sequence-like service flows, decision trees, and
-   dependency maps. This method renders with the Python Diagrams package, using
-   provider-native or generic flowchart node classes.
+   data platform architecture, 3-tier architecture, explicitly requested
+   diagrams, or slide content where relationships cannot be understood from
+   text/cards/tables alone. This method renders with the Python Diagrams
+   package, using provider-native or generic flowchart node classes.
 2. Use `image_model` for conceptual illustrations, background visuals, product
    mood images, or non-technical editorial graphics where exact labels are less
    important.
@@ -64,15 +65,21 @@ Method selection rules:
 Diagrams planning rules:
 
 - Do not emit Python code. Return structured JSON only.
-- Infer the user's intended topology first, then express it as provider,
-  clusters, nodes, and edges.
+- Infer the user's intended facts first, then express only the relationship
+  needed for audience understanding as provider, clusters, nodes, and edges.
+- For non-infrastructure fact flows, keep diagrams simple: usually 3-4 nodes,
+  one main path, short labels, and no clusters. Do not draw every detail just
+  because a flow can be imagined.
+- Use detailed clusters/topology only when the user asks for infrastructure,
+  architecture, network, deployment, platform design, or a technical diagram
+  where those details are the content.
 - Fallback generation is disabled. For every `diagrams_image` asset, you must
   provide slide-specific `diagrams_nodes` and `diagrams_edges`; do not rely on
   Mermaid, generic defaults, or a downstream fallback renderer to invent them.
-- If `required_visual_asset_slots` is present in the user context, return one
-  asset for every listed slot unless the user explicitly asked to remove
-  diagrams. Each asset must be based on that slide's title, key message,
-  content blocks, content elements, and data points.
+- If `required_visual_asset_slots` is present in the user context, treat each
+  slot as an opportunity, not an obligation. Return an asset only for slots
+  whose slide title, key message, content blocks, content elements, data points,
+  or user request show that a rendered diagram/image is visually necessary.
 - Each listed slot includes `slot_width_px`, `slot_height_px`,
   `slot_aspect_ratio`, `recommended_direction`, `max_recommended_nodes`, and
   `layout_guidance`. These constraints are binding. Choose

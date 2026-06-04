@@ -29,7 +29,7 @@ _capture_executor = None
 
 CONTENT_SAFE_RIGHT = 920
 CONTENT_SAFE_BOTTOM = 510
-CONTENT_GAP = 14
+CONTENT_GAP = 8
 
 PPTX_TEXT_ALIGNMENT_PREVIEW_CSS = """
 [data-pptx-type="textbox"][data-pptx-text-align="left"],
@@ -981,10 +981,7 @@ def _resolve_card_container_overlaps(elements: list, *, safe_bottom: float) -> N
     for group in groups:
         box = group["box"]
         for prior in placed:
-            if (
-                _overlap_ratio(box, prior["box"]) <= 0.08
-                and not _box_gap_violation(box, prior["box"], CONTENT_GAP)
-            ):
+            if _overlap_ratio(box, prior["box"]) <= 0.08:
                 continue
             left, top, width, height = box
             prior_left, prior_top, prior_width, prior_height = prior["box"]
@@ -1124,7 +1121,7 @@ def _resolve_content_overlaps(elements: list, *, safe_bottom: float = 540) -> No
         box = item["box"]
         for prior in placed:
             overlap = _overlap_ratio(box, prior["box"])
-            if overlap <= 0.08 and not _box_gap_violation(box, prior["box"], gap):
+            if overlap <= 0.08:
                 continue
             left, top, width, height = box
             prior_left, prior_top, prior_width, prior_height = prior["box"]
@@ -1290,18 +1287,6 @@ def _overlap_ratio(a: tuple[float, float, float, float], b: tuple[float, float, 
         return 0.0
     area = x_overlap * y_overlap
     return area / max(1, min(aw * ah, bw * bh))
-
-
-def _box_gap_violation(
-    a: tuple[float, float, float, float],
-    b: tuple[float, float, float, float],
-    gap: float,
-) -> bool:
-    ax, ay, aw, ah = a
-    bx, by, bw, bh = b
-    horizontal_gap = max(0, max(bx - (ax + aw), ax - (bx + bw)))
-    vertical_gap = max(0, max(by - (ay + ah), ay - (by + bh)))
-    return horizontal_gap < gap and vertical_gap < gap
 
 
 def _prefer_horizontal_separation(item: dict, prior: dict) -> bool:

@@ -817,7 +817,7 @@ def _repair_element_placements(
 ) -> list[dict]:
     if _placements_have_problematic_overlap(placements):
         return _default_element_placements(slide, slide_type, body_layout_id)
-    return placements[:24]
+    return _apply_layout_inset(placements[:24])
 
 
 def _placements_have_problematic_overlap(placements: list[dict]) -> bool:
@@ -856,49 +856,74 @@ def _planned_overlap_ratio(first: dict, second: dict) -> float:
 
 def _default_element_placements(slide: dict, slide_type: str, body_layout_id: str) -> list[dict]:
     if _slide_needs_visual_asset_slot(slide):
-        return [
+        return _apply_layout_inset([
             _placement("visual_asset_main", "image", "proof_object", "main", 48, 92, 604, 318, asset_role="visual_asset", fit="contain"),
             _placement("insight_rail_1", "card", "support", "rail", 676, 92, 244, 92),
             _placement("insight_rail_2", "card", "support", "rail", 676, 208, 244, 92),
             _placement("insight_rail_3", "card", "support", "rail", 676, 324, 244, 86),
             _placement("bottom_takeaway", "callout", "synthesis", "callout", 48, 430, 872, 72),
-        ]
+        ])
     if body_layout_id.startswith("dashboard_chart_sidebar"):
-        return [
+        return _apply_layout_inset([
             _placement("main_chart", "chart", "proof_object", "main", 40, 92, 560, 292),
             _placement("metric_1", "card", "support", "rail", 620, 92, 300, 78),
             _placement("metric_2", "card", "support", "rail", 620, 184, 300, 78),
             _placement("metric_3", "card", "support", "rail", 620, 276, 300, 78),
             _placement("bottom_implication", "callout", "synthesis", "callout", 40, 410, 880, 86),
-        ]
+        ])
     if body_layout_id.startswith("process_"):
-        return [
+        return _apply_layout_inset([
             _placement("step_1", "card", "process_step", "main", 40, 112, 184, 296),
             _placement("step_2", "card", "process_step", "main", 268, 112, 184, 296),
             _placement("step_3", "card", "process_step", "main", 496, 112, 184, 296),
             _placement("step_4", "card", "process_step", "main", 724, 112, 184, 296),
             _placement("process_summary", "callout", "synthesis", "callout", 40, 428, 880, 74),
-        ]
+        ])
     if body_layout_id.startswith("grid_"):
-        return [
+        return _apply_layout_inset([
             _placement("card_1", "card", "support", "main", 40, 92, 420, 180),
             _placement("card_2", "card", "support", "main", 500, 92, 420, 180),
             _placement("card_3", "card", "support", "main", 40, 300, 420, 180),
             _placement("card_4", "card", "support", "main", 500, 300, 420, 180),
-        ]
+        ])
     if body_layout_id.startswith("compare_"):
-        return [
+        return _apply_layout_inset([
             _placement("left_panel", "card", "comparison", "main", 40, 98, 410, 346),
             _placement("right_panel", "card", "comparison", "main", 510, 98, 410, 346),
             _placement("bottom_decision", "callout", "synthesis", "callout", 40, 462, 880, 42),
-        ]
-    return [
+        ])
+    return _apply_layout_inset([
         _placement("main_proof", "card", "proof_object", "main", 40, 92, 540, 318),
         _placement("support_1", "card", "support", "rail", 612, 92, 308, 92),
         _placement("support_2", "card", "support", "rail", 612, 208, 308, 92),
         _placement("support_3", "card", "support", "rail", 612, 324, 308, 86),
         _placement("bottom_takeaway", "callout", "synthesis", "callout", 40, 430, 880, 72),
-    ]
+    ])
+
+
+def _apply_layout_inset(placements: list[dict]) -> list[dict]:
+    """Give each planned slot a small internal margin without changing layout logic."""
+    inset = 6
+    result = []
+    for placement in placements:
+        copied = dict(placement)
+        if not all(key in copied for key in ("x", "y", "w", "h")):
+            result.append(copied)
+            continue
+        if _is_background_like_placement(copied):
+            result.append(copied)
+            continue
+        element = str(copied.get("element") or "").lower()
+        local_inset = 4 if element in {"connector", "line", "arrow", "right_arrow", "left_arrow"} else inset
+        if copied["w"] <= local_inset * 2 + 32 or copied["h"] <= local_inset * 2 + 24:
+            result.append(copied)
+            continue
+        copied["x"] = int(copied["x"] + local_inset)
+        copied["y"] = int(copied["y"] + local_inset)
+        copied["w"] = int(copied["w"] - local_inset * 2)
+        copied["h"] = int(copied["h"] - local_inset * 2)
+        result.append(copied)
+    return result
 
 
 def _placement(

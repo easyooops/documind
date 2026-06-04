@@ -334,6 +334,7 @@ class CSStoOOXMLEngine:
         from pptx.util import Emu
         from pptx.enum.shapes import MSO_SHAPE
 
+        self._normalize_arrow_shape_geometry(element)
         pos = element.position
         x = self._x(pos["left"])
         y = self._y(pos["top"])
@@ -364,6 +365,7 @@ class CSStoOOXMLEngine:
                 apply_corner_radius(pptx_shape, radius, w, h)
 
         self._apply_fill(pptx_shape, element.styles)
+        self._apply_arrow_shape_defaults(pptx_shape, element)
         self._apply_effects(pptx_shape, element)
         self._apply_shape_options(pptx_shape, element)
 
@@ -813,7 +815,7 @@ class CSStoOOXMLEngine:
         """Apply shadow, border from styles. Skip shadows on line elements."""
         shadow_css = element.styles.get("box-shadow", "")
         if shadow_css:
-            if not self._is_line_like_element(element):
+            if not self._is_line_like_element(element) and not self._is_arrow_shape(element):
                 apply_shadow(pptx_shape, shadow_css)
 
         border_css = element.styles.get("border", "")
@@ -871,6 +873,51 @@ class CSStoOOXMLEngine:
             pptx_shape.line.dash_style = dash_map[dash]
         if options.get("transparency") is not None:
             self._apply_shape_transparency(pptx_shape, float(options["transparency"]))
+
+    def _is_arrow_shape(self, element: ParsedElement) -> bool:
+        return str(element.pptx_shape or "").lower().strip() in {
+            "right_arrow",
+            "left_arrow",
+            "up_arrow",
+            "down_arrow",
+            "bent_arrow",
+            "circular_arrow",
+            "u_turn_arrow",
+            "striped_right_arrow",
+            "notched_right_arrow",
+            "chevron",
+        }
+
+    def _normalize_arrow_shape_geometry(self, element: ParsedElement) -> None:
+        """Give PPTX arrow shapes enough geometry to survive conversion."""
+        if not self._is_arrow_shape(element):
+            return
+        shape_name = str(element.pptx_shape or "").lower().strip()
+        horizontal = shape_name not in {"up_arrow", "down_arrow"}
+        min_w, min_h = (18.0, 10.0) if horizontal else (10.0, 18.0)
+        try:
+            element.position["width"] = max(float(element.position.get("width", 0)), min_w)
+            element.position["height"] = max(float(element.position.get("height", 0)), min_h)
+        except (TypeError, ValueError):
+            element.position["width"] = min_w
+            element.position["height"] = min_h
+        bg = str(
+            element.styles.get("background-color")
+            or element.styles.get("background")
+            or ""
+        ).strip().lower()
+        if bg in {"", "transparent", "none", "inherit", "initial"}:
+            fallback = self._extract_color(element.styles.get("color", "")) or "2563EB"
+            element.styles["background-color"] = f"#{fallback}"
+
+    def _apply_arrow_shape_defaults(self, pptx_shape, element: ParsedElement) -> None:
+        """Default arrows to solid fills and no outline unless explicitly styled."""
+        if not self._is_arrow_shape(element):
+            return
+        try:
+            pptx_shape.line.fill.background()
+        except (AttributeError, TypeError):
+            pass
 
     def _apply_text(self, pptx_shape, element: ParsedElement) -> None:
         """Apply text content with styling to shape's text frame."""
@@ -944,7 +991,9 @@ class CSStoOOXMLEngine:
         if list_kind:
             text = self._normalize_list_text(text, ordered=list_kind == "numbered")
 
-        actual_paras = [p for p in text.split("\n") if p.strip()]
+        explicit_newline = "\n" in text or "\\n" in text
+        actual_paras = [p for p in text.replace("\\n", "\n").split("\n") if p.strip()]
+        preserve_natural_lines = not list_kind and not explicit_newline and len(actual_paras) == 1
         if container_w > 0 and container_h > 0 and text and not self._is_generated_header(element):
             font_size_px, line_height, actual_paras = self._fit_text_lines_to_box(
                 text=text,
@@ -956,6 +1005,7 @@ class CSStoOOXMLEngine:
                 pad_right=pad_right,
                 pad_top=pad_top,
                 pad_bottom=pad_bottom,
+                preserve_natural_lines=preserve_natural_lines,
             )
             if letter_spacing_px >= 0 and font_size_px <= 9:
                 letter_spacing_px = -0.2
@@ -1034,20 +1084,28 @@ class CSStoOOXMLEngine:
         pad_right: float,
         pad_top: float,
         pad_bottom: float,
+        preserve_natural_lines: bool = False,
     ) -> tuple[float, float, list[str]]:
-        """Hard-wrap and shrink text so PPTX export stays inside its card."""
+        """Estimate wrapping and shrink text so PPTX export stays inside its card."""
         min_font_px = 8.0
         usable_h = max(1.0, container_h - pad_top - pad_bottom)
+        natural_lines = [p for p in text.replace("\\n", "\n").split("\n") if p.strip()]
         current_size = font_size_px
         while current_size >= min_font_px:
             lines = self._wrap_text_for_box(text, current_size, container_w, pad_left, pad_right)
             for candidate_line_height in self._line_height_candidates(line_height, len(lines)):
                 needed_h = len(lines) * current_size * candidate_line_height
                 if needed_h <= usable_h:
-                    return current_size, candidate_line_height, lines
+                    return (
+                        current_size,
+                        candidate_line_height,
+                        natural_lines if preserve_natural_lines and natural_lines else lines,
+                    )
             current_size -= 1
         lines = self._wrap_text_for_box(text, min_font_px, container_w, pad_left, pad_right)
         fitted_line_height = self._line_height_candidates(line_height, len(lines))[-1]
+        if preserve_natural_lines and natural_lines:
+            return min_font_px, fitted_line_height, natural_lines
         max_lines = max(1, int(usable_h / (min_font_px * fitted_line_height)))
         if len(lines) > max_lines:
             lines = lines[:max_lines]
@@ -1076,9 +1134,7 @@ class CSStoOOXMLEngine:
         pad_right: float,
     ) -> list[str]:
         usable_w = max(1.0, container_w - pad_left - pad_right)
-        char_ratio = 0.75
-        if any("\uac00" <= c <= "\ud7a3" for c in text):
-            char_ratio = 0.86
+        char_ratio = self._text_width_ratio(text)
         chars_per_line = max(4, int(usable_w / max(1.0, font_size_px * char_ratio)))
         lines: list[str] = []
         for raw in text.replace("\\n", "\n").split("\n"):
@@ -1087,6 +1143,30 @@ class CSStoOOXMLEngine:
                 continue
             lines.extend(self._wrap_one_line(raw, chars_per_line))
         return lines or [text.strip()]
+
+    def _text_width_ratio(self, text: str) -> float:
+        """Approximate mixed Korean/Latin line width for PPTX fitting."""
+        chars = [char for char in str(text or "") if char not in "\r\n"]
+        if not chars:
+            return 0.75
+        total = 0.0
+        for char in chars:
+            code = ord(char)
+            if "\uac00" <= char <= "\ud7a3" or 0x3040 <= code <= 0x30FF or 0x4E00 <= code <= 0x9FFF:
+                total += 0.88
+            elif char.isspace():
+                total += 0.32
+            elif char.isupper():
+                total += 0.68
+            elif char.islower():
+                total += 0.54
+            elif char.isdigit():
+                total += 0.58
+            elif char in ".,;:!?/\\|-_()[]{}":
+                total += 0.40
+            else:
+                total += 0.70
+        return max(0.46, min(0.92, total / len(chars)))
 
     def _wrap_one_line(self, line: str, chars_per_line: int) -> list[str]:
         import re

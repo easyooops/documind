@@ -44,9 +44,9 @@ MAX_DIAGRAMS_EDGES = 36
 MAX_DIAGRAMS_CLUSTERS = 10
 MAX_DIAGRAMS_CLUSTER_DEPTH = 6
 DIAGRAMS_RENDER_SCALE = 2
-MIN_DIAGRAM_PNG_WIDTH = 2400
-MIN_DIAGRAM_PNG_HEIGHT = 1500
-DIAGRAMS_DPI = 300
+MIN_DIAGRAM_PNG_WIDTH = 3600
+MIN_DIAGRAM_PNG_HEIGHT = 2250
+DIAGRAMS_DPI = 450
 
 
 async def visual_asset_planner(state: DocuMindState) -> dict:
@@ -477,12 +477,20 @@ def _missing_reserved_visual_asset_slides(
 ) -> list[int]:
     requested = _normalize_slide_instruction_map(slide_revision_instructions)
     reserved = set()
+    blueprints_by_index = {
+        int(blueprint.get("index", 0)): blueprint
+        for blueprint in slide_blueprints
+        if isinstance(blueprint, dict) and str(blueprint.get("index", "")).isdigit()
+    }
     for record in _reserved_visual_slot_records(slide_blueprints):
         try:
             slide_index = int(record.get("slide_index", 0))
         except (TypeError, ValueError):
             continue
         if requested and slide_index not in requested:
+            continue
+        instruction = requested.get(slide_index, "") if requested else ""
+        if not _slide_context_requires_diagram(blueprints_by_index.get(slide_index, {}), instruction):
             continue
         reserved.add(slide_index)
     planned = {
@@ -642,6 +650,8 @@ def _fallback_visual_slot_plan(
             continue
         placement = _asset_slot_placement(slide_index, slide_blueprints)
         if not placement:
+            continue
+        if not _slide_context_requires_diagram(blueprint, user_query):
             continue
         if slide_revision_instructions and slide_index not in slide_revision_instructions:
             continue
@@ -1960,6 +1970,8 @@ def _diagrams_service_for_label(label: str, provider: str) -> str:
 def _fallback_diagrams_clusters(user_query: str, method: str) -> list[dict]:
     if method != METHOD_DIAGRAMS:
         return []
+    if not _needs_detailed_diagram(user_query):
+        return []
     provider = _normalize_diagrams_provider(None, user_query, {})
     if provider == "aws":
         return [
@@ -1985,6 +1997,7 @@ def _fallback_diagrams_clusters(user_query: str, method: str) -> list[dict]:
 def _fallback_diagrams_nodes(user_query: str, method: str) -> list[dict]:
     if method != METHOD_DIAGRAMS:
         return []
+    detailed = _needs_detailed_diagram(user_query)
     provider = _normalize_diagrams_provider(None, user_query, {})
     if provider == "aws":
         return [
@@ -1996,9 +2009,15 @@ def _fallback_diagrams_nodes(user_query: str, method: str) -> list[dict]:
             _diagrams_node("db", "RDS Multi-AZ", "aws", "rds", "private_data"),
             _diagrams_node("s3", "S3 Object Storage", "aws", "s3", "private_data"),
         ]
-    content_nodes = _content_diagram_nodes(user_query, provider)
+    content_nodes = _content_diagram_nodes(user_query, provider, max_nodes=8 if detailed else 4)
     if content_nodes:
         return content_nodes
+    if not detailed:
+        return [
+            _diagrams_node("fact_1", "Key Fact", "generic", "document"),
+            _diagrams_node("fact_2", "Implication", "generic", "agent"),
+            _diagrams_node("fact_3", "Audience Takeaway", "generic", "output"),
+        ]
     return [
         _diagrams_node("client", "Client", "generic", "users"),
         _diagrams_node("edge", "Edge / Gateway", provider, "elb"),
@@ -2026,6 +2045,7 @@ def _diagrams_node(
 def _fallback_diagrams_edges(user_query: str, method: str) -> list[dict]:
     if method != METHOD_DIAGRAMS:
         return []
+    detailed = _needs_detailed_diagram(user_query)
     provider = _normalize_diagrams_provider(None, user_query, {})
     if provider == "aws":
         return [
@@ -2036,7 +2056,7 @@ def _fallback_diagrams_edges(user_query: str, method: str) -> list[dict]:
             {"from": "app", "to": "db", "label": "SQL", "color": "#16A34A", "style": "solid"},
             {"from": "app", "to": "s3", "label": "Objects", "color": "#16A34A", "style": "dashed"},
         ]
-    content_nodes = _content_diagram_nodes(user_query, provider)
+    content_nodes = _content_diagram_nodes(user_query, provider, max_nodes=8 if detailed else 4)
     if len(content_nodes) >= 2:
         edges = []
         for index, source in enumerate(content_nodes[:-1]):
@@ -2056,14 +2076,14 @@ def _fallback_diagrams_edges(user_query: str, method: str) -> list[dict]:
     ]
 
 
-def _content_diagram_nodes(text: str, provider: str) -> list[dict]:
+def _content_diagram_nodes(text: str, provider: str, max_nodes: int = 8) -> list[dict]:
     labels = _content_diagram_labels(text)
     if len(labels) < 3:
         return []
 
     nodes = []
     used_ids: set[str] = set()
-    for index, label in enumerate(labels[:8], start=1):
+    for index, label in enumerate(labels[:max(3, min(8, max_nodes))], start=1):
         base_id = _normalize_shape_id(label) or f"concept_{index}"
         node_id = _safe_id(base_id)[:36] or f"concept_{index}"
         if node_id in used_ids:
@@ -2123,6 +2143,18 @@ def _content_diagram_labels(text: str) -> list[str]:
     if len(labels) == 2:
         labels.append("Generated Output")
     return labels[:8]
+
+
+def _needs_detailed_diagram(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "architecture", "infrastructure", "network", "topology", "deployment",
+            "platform", "cloud", "aws", "azure", "gcp", "kubernetes", "vpc",
+            "subnet", "load balancer", "3-tier", "three tier", "service topology",
+        )
+    )
 
 
 def _fallback_label_phrases(text: str) -> list[str]:
@@ -2376,24 +2408,55 @@ def _generic_shape_for_label(label: str) -> str:
 def _quick_visual_signal(user_query: str, slide_blueprints: list[dict]) -> bool:
     if _negative_visual_asset_signal(user_query):
         return False
-    if _reserved_visual_slot_count(slide_blueprints) > 0:
+    user_text = str(user_query or "").lower()
+    if _has_visual_asset_signal(user_text):
+        return True
+    if any(_slide_context_requires_diagram(blueprint, user_query) for blueprint in slide_blueprints):
         return True
 
-    text = " ".join([
-        user_query,
-        json.dumps(slide_blueprints, ensure_ascii=False)[:6000],
-    ]).lower()
     korean_signals = ("아키텍처", "인프라", "서비스 구조", "다이어그램", "이미지")
-    if any(token in text for token in korean_signals):
+    if any(token in user_text for token in korean_signals):
         return True
     signals = (
         "architecture", "architect", "aws", "azure", "gcp", "cloud", "infra",
         "infrastructure", "network", "service topology", "diagram", "diagrams",
-        "mermaid", "flowchart", "workflow", "process", "system design",
+        "mermaid", "flowchart", "workflow", "system design",
         "3-tier", "three tier", "tier", "아키텍", "아키텍처", "인프라", "서비스 구조",
         "구조도", "구성도", "다이어그램", "머메이드", "이미지", "그림",
     )
-    return any(signal in text for signal in signals)
+    return any(signal in user_text for signal in signals)
+
+
+def _slide_context_requires_diagram(blueprint: dict, user_query: str = "") -> bool:
+    """Conservative gate: reserved slots alone do not require rendered diagrams."""
+    if not isinstance(blueprint, dict):
+        return False
+    text = " ".join([
+        str(user_query or ""),
+        str(blueprint.get("title") or ""),
+        str(blueprint.get("key_message") or ""),
+        str(blueprint.get("purpose") or ""),
+        " ".join(str(item) for item in blueprint.get("suggested_elements", []) if item),
+        json.dumps(blueprint.get("content_elements", []), ensure_ascii=False)[:1200],
+        json.dumps(blueprint.get("content_blocks", []), ensure_ascii=False)[:1200],
+    ]).lower()
+    required_terms = (
+        "architecture", "architect", "infrastructure", "infra", "network", "topology",
+        "system design", "service architecture", "3-tier", "three tier", "aws", "azure",
+        "gcp", "kubernetes", "vpc", "subnet", "load balancer", "diagram", "flowchart",
+        "workflow", "pipeline", "orchestration", "langgraph",
+        "아키텍처", "인프라", "다이어그램", "흐름도", "플로우", "파이프라인", "구성도",
+    )
+    if not any(term in text for term in required_terms):
+        return False
+    evidence_terms = (
+        "need", "required", "visual", "explain", "설명", "설득", "이해", "필요",
+        "suggested_elements", "diagram", "flowchart", "image",
+    )
+    return any(term in text for term in evidence_terms) or any(
+        str(item).lower() in {"diagram", "flowchart", "image"}
+        for item in blueprint.get("suggested_elements", [])
+    )
 
 
 def _negative_visual_asset_signal(user_query: str) -> bool:
@@ -2441,6 +2504,12 @@ def _select_method(user_query: str, raw: dict) -> str:
 
 def _fallback_description(user_query: str, method: str) -> str:
     if method == METHOD_DIAGRAMS:
+        if not _needs_detailed_diagram(user_query):
+            return (
+                "Simple fact-flow diagram with 3-4 short labeled nodes and one main "
+                "path. Show only the relationship needed for audience understanding. "
+                f"User request: {user_query}"
+            )
         return (
             "Diagrams-package technical architecture diagram that shows users, edge/load "
             "balancing, application services, and a data tier with clear connection flow. "

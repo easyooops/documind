@@ -24,12 +24,16 @@ from src.formats.pptx.agents.nodes.render_convert import (
     _normalize_slide_html,
 )
 from src.formats.pptx.agents.nodes.unified_planner import (
+    _apply_layout_inset,
     _extend_blueprints_to_requested_count,
     _extract_slide_revision_instructions,
     _normalize_blueprints,
     _normalize_revision_scope,
 )
 from src.formats.pptx.agents.nodes.visual_asset_planner import (
+    DIAGRAMS_DPI,
+    MIN_DIAGRAM_PNG_HEIGHT,
+    MIN_DIAGRAM_PNG_WIDTH,
     METHOD_DIAGRAMS,
     _diagrams_node_candidates,
     _diagrams_topology,
@@ -46,6 +50,7 @@ from src.formats.pptx.agents.nodes.visual_asset_planner import (
     _parse_mermaid,
     _quick_visual_signal,
     _fit_png_canvas_to_placement,
+    _slide_context_requires_diagram,
     _slot_constraints,
     _render_asset,
     _safe_diagrams_topology,
@@ -632,25 +637,21 @@ def test_overlapping_card_groups_move_with_their_icons_and_text() -> None:
 
     horizontal_gap = card_b.position["left"] - (card_a.position["left"] + card_a.position["width"])
     vertical_gap = card_b.position["top"] - (card_a.position["top"] + card_a.position["height"])
-    assert horizontal_gap >= 14 or vertical_gap >= 14
+    assert horizontal_gap >= 0 or vertical_gap >= 0
     assert card_b_text.position["top"] > 130 or card_b_text.position["left"] > 108
 
 
-def test_nearby_cards_are_separated_by_minimum_layout_gap() -> None:
-    html = (
-        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
-        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
-        'style="position:absolute;left:40px;top:120px;width:180px;height:100px;'
-        'background-color:#ECFDF5"></div>'
-        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
-        'style="position:absolute;left:226px;top:120px;width:180px;height:100px;'
-        'background-color:#DBEAFE"></div>'
-        "</div>"
-    )
+def test_layout_inset_shrinks_slots_without_replanning_card_gaps() -> None:
+    placements = [
+        {"id": "card_a", "element": "card", "x": 40, "y": 120, "w": 180, "h": 100},
+        {"id": "card_b", "element": "card", "x": 226, "y": 120, "w": 180, "h": 100},
+    ]
 
-    card_a, card_b = parse_slide_html(_normalize_slide_html(html))
+    inset = _apply_layout_inset(placements)
 
-    assert card_b.position["left"] >= card_a.position["left"] + card_a.position["width"] + 14
+    assert inset[0] == {"id": "card_a", "element": "card", "x": 46, "y": 126, "w": 168, "h": 88}
+    assert inset[1] == {"id": "card_b", "element": "card", "x": 232, "y": 126, "w": 168, "h": 88}
+    assert placements[1]["x"] - (placements[0]["x"] + placements[0]["w"]) == 6
 
 
 def test_parser_inherits_root_and_inline_font_details() -> None:
@@ -979,7 +980,28 @@ def test_pptx_text_fit_protects_short_colon_label_from_line_break() -> None:
     assert lines[0].startswith("핵심:\u00a0")
 
 
-def test_pptx_multiline_text_uses_no_extra_paragraph_spacing() -> None:
+def test_pptx_text_fit_preserves_natural_single_paragraph() -> None:
+    engine = CSStoOOXMLEngine()
+    text = "Korean and English mixed content should fit by shrinking instead of forced paragraph breaks"
+    size, line_height, lines = engine._fit_text_lines_to_box(
+        text=text,
+        font_size_px=14,
+        line_height=1.35,
+        container_w=180,
+        container_h=72,
+        pad_left=10,
+        pad_right=10,
+        pad_top=8,
+        pad_bottom=8,
+        preserve_natural_lines=True,
+    )
+
+    assert size <= 14
+    assert line_height <= 1.35
+    assert lines == [text]
+
+
+def test_pptx_single_paragraph_text_is_not_forced_into_multiple_paragraphs() -> None:
     element = ParsedElement(
         pptx_type="textbox",
         pptx_shape=None,
@@ -995,9 +1017,9 @@ def test_pptx_multiline_text_uses_no_extra_paragraph_spacing() -> None:
     CSStoOOXMLEngine()._add_element(slide, element)
     paragraphs = slide.shapes[0].text_frame.paragraphs
 
-    assert len(paragraphs) >= 2
-    assert all(paragraph.space_before.pt == 0 for paragraph in paragraphs)
-    assert all(paragraph.space_after.pt == 0 for paragraph in paragraphs)
+    assert len(paragraphs) == 1
+    assert all(paragraph.space_before is None or paragraph.space_before.pt == 0 for paragraph in paragraphs)
+    assert all(paragraph.space_after is None or paragraph.space_after.pt == 0 for paragraph in paragraphs)
 
 
 def test_chart_table_shape_options_do_not_break_native_conversion(tmp_path: Path) -> None:
@@ -1043,6 +1065,30 @@ def test_line_like_shapes_do_not_receive_pptx_shadow() -> None:
     CSStoOOXMLEngine()._add_element(slide, element)
 
     assert "outerShdw" not in slide.shapes[0]._element.xml
+
+
+def test_arrow_shapes_receive_stable_geometry_and_no_shadow() -> None:
+    element = ParsedElement(
+        pptx_type="shape",
+        pptx_shape="right_arrow",
+        position={"left": 40, "top": 120, "width": 6, "height": 4},
+        styles={
+            "color": "#10B981",
+            "box-shadow": "0px 2px 6px rgba(0,0,0,0.25)",
+        },
+        text_content="",
+        children=[],
+        attributes={},
+    )
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+
+    CSStoOOXMLEngine()._add_element(slide, element)
+
+    assert element.position["width"] == 18.0
+    assert element.position["height"] == 10.0
+    assert "outerShdw" not in slide.shapes[0]._element.xml
+    assert slide.shapes[0].shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
 
 
 def test_fallback_icon_is_created_when_iconify_cache_is_missing() -> None:
@@ -1196,6 +1242,12 @@ def test_diagram_png_border_is_baked_into_image(tmp_path: Path) -> None:
     assert pixel[3] > 0
 
 
+def test_diagram_rendering_uses_high_resolution_defaults() -> None:
+    assert MIN_DIAGRAM_PNG_WIDTH >= 3600
+    assert MIN_DIAGRAM_PNG_HEIGHT >= 2250
+    assert DIAGRAMS_DPI >= 450
+
+
 def test_llm_plan_validation_detects_missing_reserved_slot_asset() -> None:
     issues = _llm_plan_validation_issues(
         {
@@ -1225,6 +1277,8 @@ def test_llm_plan_validation_detects_missing_reserved_slot_asset() -> None:
             },
             {
                 "index": 4,
+                "title": "Architecture diagram",
+                "suggested_elements": ["diagram"],
                 "layout_plan": {
                     "element_placements": [
                         {"element": "image", "asset_role": "visual_asset", "x": 40, "y": 90, "w": 400, "h": 240}
@@ -1278,6 +1332,8 @@ def test_visual_asset_slot_fallback_overrides_llm_skip() -> None:
             {
                 "index": 2,
                 "title": "Service architecture",
+                "key_message": "Architecture diagram is required to explain service topology.",
+                "suggested_elements": ["diagram"],
                 "layout_plan": {
                     "element_placements": [
                         {
@@ -1304,8 +1360,9 @@ def test_fallback_visual_slots_create_slide_specific_diagrams() -> None:
     blueprints = [
         {
             "index": 3,
-            "title": "Native document auto generation",
-            "key_message": "Natural language request becomes PPTX, DOCX, HWP, and XLSX output.",
+            "title": "Native document conversion workflow diagram",
+            "key_message": "A flowchart is required to explain how natural language becomes native document output.",
+            "suggested_elements": ["flowchart"],
             "layout_plan": {
                 "element_placements": [
                     {
@@ -1322,8 +1379,9 @@ def test_fallback_visual_slots_create_slide_specific_diagrams() -> None:
         },
         {
             "index": 5,
-            "title": "PPTX vs Rich Document agentic pipelines",
-            "key_message": "PPTX uses layout QA while rich documents preserve native formats.",
+            "title": "PPTX vs Rich Document agentic pipeline diagram",
+            "key_message": "A pipeline diagram is required to compare PPTX and rich document generation.",
+            "suggested_elements": ["diagram"],
             "layout_plan": {
                 "element_placements": [
                     {
@@ -1369,7 +1427,7 @@ def test_generic_fallback_diagram_edges_follow_content_nodes() -> None:
     assert edges[-1]["to"] == nodes[-1]["id"]
 
 
-def test_visual_asset_signal_is_true_when_blueprint_reserves_image_slot() -> None:
+def test_visual_asset_signal_ignores_generic_reserved_image_slot() -> None:
     assert _quick_visual_signal(
         "Create a product brief",
         [
@@ -1390,14 +1448,41 @@ def test_visual_asset_signal_is_true_when_blueprint_reserves_image_slot() -> Non
                 },
             }
         ],
-    ) is True
+    ) is False
+
+
+def test_visual_asset_signal_uses_architecture_context_not_slot_alone() -> None:
+    blueprint = {
+        "index": 2,
+        "title": "Service architecture diagram",
+        "key_message": "Diagram is required to explain service topology.",
+        "suggested_elements": ["diagram"],
+        "layout_plan": {
+            "element_placements": [
+                {
+                    "id": "visual_asset_main",
+                    "element": "image",
+                    "asset_role": "visual_asset",
+                    "x": 48,
+                    "y": 92,
+                    "w": 604,
+                    "h": 318,
+                }
+            ]
+        },
+    }
+
+    assert _slide_context_requires_diagram(blueprint, "Create a product brief") is True
+    assert _quick_visual_signal("Create a product brief", [blueprint]) is True
 
 
 def test_visual_asset_plan_adds_missing_reserved_slot_asset() -> None:
     blueprints = [
         {
             "index": 2,
-            "title": "Architecture",
+            "title": "Architecture diagram",
+            "key_message": "Diagram is required to explain the architecture.",
+            "suggested_elements": ["diagram"],
             "layout_plan": {
                 "element_placements": [
                     {
@@ -1414,7 +1499,9 @@ def test_visual_asset_plan_adds_missing_reserved_slot_asset() -> None:
         },
         {
             "index": 4,
-            "title": "Operations flow",
+            "title": "Operations flow diagram",
+            "key_message": "Flowchart is required to explain operations.",
+            "suggested_elements": ["flowchart"],
             "layout_plan": {
                 "element_placements": [
                     {
@@ -1844,7 +1931,7 @@ def test_slide_html_normalizer_shrinks_overflowing_text_and_resolves_overlap() -
 
     assert "font-size:54px" not in output
     assert "overflow:hidden" in output
-    assert "top:184px" in output
+    assert "top:178px" in output
 
 
 def test_fallback_layout_keeps_many_unconnected_nodes_from_overlapping() -> None:
