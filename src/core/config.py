@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     aws_secret_access_key: str | None = None
     aws_session_token: str | None = None
     aws_role_arn: str | None = None
+    aws_bedrock_connect_timeout: int = 10
+    aws_bedrock_read_timeout: int = 180
+    aws_bedrock_max_attempts: int = 3
 
     # Azure OpenAI
     azure_openai_api_key: str = ""

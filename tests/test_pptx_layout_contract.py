@@ -27,8 +27,10 @@ from src.formats.pptx.agents.nodes.unified_planner import (
     _apply_layout_inset,
     _extend_blueprints_to_requested_count,
     _extract_slide_revision_instructions,
+    _invoke_planner_with_structured_output,
     _normalize_blueprints,
     _normalize_revision_scope,
+    _structured_planner_llm,
 )
 from src.formats.pptx.agents.nodes.visual_asset_planner import (
     DIAGRAMS_DPI,
@@ -61,6 +63,7 @@ from src.formats.pptx.mapper.html_parser import ParsedElement, parse_slide_html
 from src.formats.pptx.rulesets import get_ruleset
 from src.formats.pptx.rulesets.validator import DesignQualityEvaluator
 from src.utils.iconify import get_fallback_icon_path
+from src.utils.image_gen import _generate_with_nova_canvas
 
 
 def test_standard_layout_catalog_exposes_master_zones_and_body_patterns() -> None:
@@ -182,6 +185,105 @@ def test_requested_slide_count_is_extended_when_planner_under_produces() -> None
     assert len(extended) == 6
     assert extended[-1]["slide_type"] == "summary"
     assert extended[-1]["layout_plan"]["element_placements"]
+
+
+async def test_unified_planner_prefers_structured_output_when_available(monkeypatch) -> None:
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "llm_provider", "openai")
+
+    class FakeStructuredRunnable:
+        async def ainvoke(self, messages):
+            return {
+                "title": "Structured plan",
+                "slides": [{"index": 1, "slide_type": "cover", "title": "Opening"}],
+                "design_tokens": {"primary": "#111827"},
+            }
+
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.schema = None
+            self.kwargs = None
+
+        def with_structured_output(self, schema, **kwargs):
+            self.schema = schema
+            self.kwargs = kwargs
+            return FakeStructuredRunnable()
+
+    llm = FakeLLM()
+    result = await _invoke_planner_with_structured_output(
+        llm=llm,
+        messages=[],
+        requested_count=1,
+    )
+
+    assert result["title"] == "Structured plan"
+    assert result["slides"][0]["title"] == "Opening"
+    assert llm.kwargs == {"method": "json_schema"}
+
+
+def test_unified_planner_skips_structured_output_for_bedrock(monkeypatch) -> None:
+    from src.core.config import settings
+
+    class FakeLLM:
+        def with_structured_output(self, schema, **kwargs):
+            raise AssertionError("Bedrock should skip structured output")
+
+    monkeypatch.setattr(settings, "llm_provider", "bedrock")
+
+    assert _structured_planner_llm(FakeLLM()) is None
+
+
+async def test_unified_planner_rejects_empty_structured_output() -> None:
+    class FakeStructuredRunnable:
+        async def ainvoke(self, messages):
+            return {"title": "Incomplete plan"}
+
+    class FakeLLM:
+        def with_structured_output(self, schema, **kwargs):
+            return FakeStructuredRunnable()
+
+    result = await _invoke_planner_with_structured_output(
+        llm=FakeLLM(),
+        messages=[],
+        requested_count=None,
+    )
+
+    assert result is None
+
+
+async def test_nova_canvas_image_generation_uses_bedrock_text_image_payload(monkeypatch) -> None:
+    import base64
+    import json
+
+    captured = {}
+
+    class FakeBody:
+        def read(self):
+            return json.dumps({"images": [base64.b64encode(b"png").decode("ascii")]}).encode()
+
+    class FakeClient:
+        def invoke_model(self, **kwargs):
+            captured.update(kwargs)
+            return {"body": FakeBody()}
+
+    monkeypatch.setattr("src.utils.image_gen._bedrock_runtime_client", lambda: FakeClient())
+
+    image = await _generate_with_nova_canvas(
+        "amazon.nova-canvas-v1:0",
+        "Clean product illustration",
+        "watermark",
+        1024,
+        1024,
+    )
+
+    payload = json.loads(captured["body"])
+    assert captured["modelId"] == "amazon.nova-canvas-v1:0"
+    assert payload["taskType"] == "TEXT_IMAGE"
+    assert payload["textToImageParams"]["text"] == "Clean product illustration"
+    assert payload["textToImageParams"]["negativeText"] == "watermark"
+    assert payload["imageGenerationConfig"]["width"] == 1024
+    assert image == b"png"
 
 
 def test_overlapping_geometric_placements_are_replaced_with_safe_layout() -> None:

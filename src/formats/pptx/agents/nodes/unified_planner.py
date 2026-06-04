@@ -6,13 +6,16 @@ style_director into ONE agent call that outputs structured Slide Blueprints.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import re
+from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel, Field
 
 from src.agents.loader import get_llm_for_agent, load_agent_prompt
+from src.core.config import settings
 from src.core.logging import get_logger
 from src.formats.pptx.master_context import select_design_direction
 from src.schemas.agents import DocuMindState
@@ -23,6 +26,25 @@ logger = get_logger(__name__)
 
 AGENT_NAME = "unified_planner"
 FORMAT_ID = "pptx"
+
+
+class _PlannerStructuredOutput(BaseModel):
+    """Schema-constrained top-level planner output.
+
+    Keep nested fields flexible because downstream normalization already validates
+    and repairs layout IDs, placements, and slide content contracts.
+    """
+
+    title: str = ""
+    theme_id: str = ""
+    presentation_strategy: dict[str, Any] = Field(default_factory=dict)
+    layout_system: dict[str, Any] = Field(default_factory=dict)
+    header_footer: dict[str, Any] = Field(default_factory=dict)
+    slides: list[dict[str, Any]] = Field(default_factory=list)
+    design_tokens: dict[str, Any] = Field(default_factory=dict)
+    changed_slide_indices: list[int] = Field(default_factory=list)
+    removed_slide_indices: list[int] = Field(default_factory=list)
+    revision_scope: str = ""
 
 
 async def unified_planner(state: DocuMindState) -> dict:
@@ -160,26 +182,38 @@ async def unified_planner(state: DocuMindState) -> dict:
         HumanMessage(content=context),
     ]
 
-    response = await llm.ainvoke(messages)
-    response_text = _message_text(response.content)
-    logger.info(
-        "unified_planner.llm_response",
-        chars=len(response_text),
-        sha=_short_sha(response_text),
-        requested_slides=requested_slide_count,
-        has_json_fence="```" in response_text,
-        brace_delta=response_text.count("{") - response_text.count("}"),
-        bracket_delta=response_text.count("[") - response_text.count("]"),
-    )
-
-    result = await _parse_or_repair_planner_result(
+    structured_result = await _invoke_planner_with_structured_output(
         llm=llm,
         messages=messages,
-        response_text=response_text,
         requested_count=requested_slide_count,
-        user_query=user_query,
-        design_direction=design_direction,
     )
+    if structured_result is not None:
+        result = _coerce_planner_result(
+            structured_result,
+            source="structured",
+            requested_count=requested_slide_count,
+        )
+    else:
+        response = await llm.ainvoke(messages)
+        response_text = _message_text(response.content)
+        logger.info(
+            "unified_planner.llm_response",
+            chars=len(response_text),
+            sha=_short_sha(response_text),
+            requested_slides=requested_slide_count,
+            has_json_fence="```" in response_text,
+            brace_delta=response_text.count("{") - response_text.count("}"),
+            bracket_delta=response_text.count("[") - response_text.count("]"),
+        )
+
+        result = await _parse_or_repair_planner_result(
+            llm=llm,
+            messages=messages,
+            response_text=response_text,
+            requested_count=requested_slide_count,
+            user_query=user_query,
+            design_direction=design_direction,
+        )
 
     presentation_strategy = _normalize_presentation_strategy(
         result.get("presentation_strategy"), user_query
@@ -422,6 +456,73 @@ async def _parse_or_repair_planner_result(
         user_query_excerpt=user_query[:300],
     )
     return _fallback_blueprints(user_query, design_direction)
+
+
+async def _invoke_planner_with_structured_output(
+    *,
+    llm,
+    messages: list,
+    requested_count: int | None,
+) -> dict | None:
+    structured_llm = _structured_planner_llm(llm)
+    if structured_llm is None:
+        logger.info(
+            "unified_planner.structured_output_unavailable",
+            requested_slides=requested_count,
+        )
+        return None
+
+    try:
+        output = await structured_llm.ainvoke(messages)
+        result = _structured_output_to_dict(output)
+        slides = result.get("slides")
+        if not isinstance(slides, list) or not slides:
+            raise TypeError("Structured planner output did not include any slides")
+        text = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        logger.info(
+            "unified_planner.structured_response",
+            chars=len(text),
+            sha=_short_sha(text),
+            requested_slides=requested_count,
+            slides=len(slides),
+        )
+        return result
+    except Exception as exc:
+        logger.warning(
+            "unified_planner.structured_response_failed",
+            error_type=type(exc).__name__,
+            error=str(exc)[:300],
+            requested_slides=requested_count,
+        )
+        return None
+
+
+def _structured_planner_llm(llm):
+    if settings.llm_provider == "bedrock":
+        return None
+
+    with_structured_output = getattr(llm, "with_structured_output", None)
+    if not callable(with_structured_output):
+        return None
+
+    for kwargs in ({"method": "json_schema"}, {}):
+        try:
+            return with_structured_output(_PlannerStructuredOutput, **kwargs)
+        except (NotImplementedError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _structured_output_to_dict(value: object) -> dict:
+    if isinstance(value, _PlannerStructuredOutput):
+        return value.model_dump()
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    if isinstance(value, dict):
+        if "raw" in value and "parsed" in value:
+            return _structured_output_to_dict(value["parsed"])
+        return value
+    raise TypeError(f"Structured planner output parsed to {type(value).__name__}, expected object")
 
 
 async def _repair_slide_count_result(

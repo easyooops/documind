@@ -89,6 +89,7 @@ def _create_bedrock(model: str, **kwargs) -> BaseChatModel:
     """
     from langchain_aws import ChatBedrock
     import boto3
+    from botocore.config import Config
 
     session_kwargs: dict = {}
 
@@ -131,7 +132,17 @@ def _create_bedrock(model: str, **kwargs) -> BaseChatModel:
         )
         logger.debug("bedrock.auth", method="assume_role", role=settings.aws_role_arn)
 
-    bedrock_client = session.client("bedrock-runtime")
+    bedrock_client = session.client(
+        "bedrock-runtime",
+        config=Config(
+            connect_timeout=settings.aws_bedrock_connect_timeout,
+            read_timeout=settings.aws_bedrock_read_timeout,
+            retries={
+                "max_attempts": settings.aws_bedrock_max_attempts,
+                "mode": "standard",
+            },
+        ),
+    )
 
     model_kwargs = {k: v for k, v in kwargs.items() if k in ("temperature", "max_tokens", "top_p")}
 
