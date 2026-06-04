@@ -38,16 +38,25 @@ def _candidates(raw: str) -> list[str]:
 
     if text:
         candidates.append(text)
+        first_value = _first_json_value(text)
+        if first_value:
+            candidates.append(first_value)
 
     obj_start = text.find("{")
     obj_end = text.rfind("}")
     if obj_start >= 0 and obj_end > obj_start:
         candidates.append(text[obj_start : obj_end + 1])
+        first_obj = _first_json_value(text[obj_start:])
+        if first_obj:
+            candidates.append(first_obj)
 
     arr_start = text.find("[")
     arr_end = text.rfind("]")
     if arr_start >= 0 and arr_end > arr_start:
         candidates.append(text[arr_start : arr_end + 1])
+        first_arr = _first_json_value(text[arr_start:])
+        if first_arr:
+            candidates.append(first_arr)
 
     deduped = []
     seen = set()
@@ -56,6 +65,15 @@ def _candidates(raw: str) -> list[str]:
             deduped.append(candidate)
             seen.add(candidate)
     return deduped
+
+
+def _first_json_value(raw: str) -> str:
+    decoder = json.JSONDecoder()
+    try:
+        _, end = decoder.raw_decode(raw.strip())
+    except json.JSONDecodeError:
+        return ""
+    return raw.strip()[:end].strip()
 
 
 def _repair_json(raw: str) -> str:

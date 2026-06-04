@@ -245,6 +245,8 @@ class RuleSet:
             "## Slide Designer Principles (MANDATORY)",
             f"Core principle: {philosophy.get('core_principle', 'One claim and one proof object per slide.')}",
             "A slide exists to move a decision: express a conclusion, show its proof object, and remove decoration without meaning.",
+            "A proof object is not automatically a diagram. Prefer tables, charts, comparison panels, KPI/detail cards, or compact native process cards unless a rendered diagram is explicitly requested or necessary for comprehension.",
+            "Do not plan rendered diagram/image slots merely because the topic says workflow, process, flow, architecture, or pipeline.",
             "Use icons as semantic anchors for concepts or navigation, never as filler or approximated brand marks.",
             "Header and footer zones are master choices: select each once for the deck and keep them unchanged on all body slides.",
             "",
@@ -260,6 +262,7 @@ class RuleSet:
             "Plan only elements convertible by the deterministic mapper: textbox, shape, table, chart, image, connector, and icon.",
             "Do not plan flex/grid CSS, animations, unsupported SVG ornaments, arbitrary HTML widgets, or unverified brand marks.",
             "Every planned proof object must be representable later through data-pptx-* attributes and absolute pixel geometry.",
+            "Every planned top-level element must have non-overlapping x/y/w/h inside the body safe area; if nested composition is needed, allocate the parent slot first and then divide it into non-overlapping sub-slots.",
             "",
             self.get_icon_layout_rules(),
         ])

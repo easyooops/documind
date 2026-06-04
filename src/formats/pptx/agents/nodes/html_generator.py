@@ -319,14 +319,31 @@ async def _generate_single_slide(
         )
     element_placements = layout_plan.get("element_placements", [])
     if element_placements:
+        has_slide_visual_assets = bool(visual_assets)
+        prompt_placements = _element_placements_for_html_prompt(
+            element_placements,
+            has_visual_assets=has_slide_visual_assets,
+        )
+        visual_slot_instruction = (
+            "For any placement with asset_role=\"visual_asset\", create an image slot in that "
+            "exact box using data-pptx-type=\"image\", data-pptx-asset-id or "
+            "data-pptx-image-id, and data-pptx-image-fit=\"contain\". Do not place a second "
+            "diagram outside that slot."
+            if has_slide_visual_assets else
+            "No rendered visual asset is available for this slide. Do NOT create empty image "
+            "frames, placeholder rectangles, or unpopulated diagram panels. If a planned "
+            "placement was originally a visual_asset/image slot, treat the provided demoted "
+            "placement as a populated content card/table/process area instead."
+        )
         context_parts.append(
             "\n### Exact Element Placement Blueprint (binding)\n"
             "Instantiate the planned major elements using these x/y/w/h boxes. Fill the body "
-            "area densely and keep each element within its assigned box. For any placement "
-            "with asset_role=\"visual_asset\", create an image slot in that exact box using "
-            "data-pptx-type=\"image\", data-pptx-asset-id or data-pptx-image-id, and "
-            "data-pptx-image-fit=\"contain\". Do not place a second diagram outside that slot.\n"
-            f"{json.dumps(element_placements, ensure_ascii=False, indent=2)}"
+            "area densely and keep each element within its assigned box. Treat these boxes as "
+            "top-level layout slots, not as permission to nest overlapping cards. Do not draw "
+            "an empty outer wrapper behind another card; every visible background must own "
+            "readable content and its children must stay inside it with clear gaps. "
+            f"{visual_slot_instruction}\n"
+            f"{json.dumps(prompt_placements, ensure_ascii=False, indent=2)}"
         )
 
     slide_type = blueprint.get("slide_type", "content")
@@ -619,13 +636,21 @@ STYLE EXPRESSION RULES:
   contain actual text, table/chart data, icons, or a rendered image. Never draw
   placeholder rectangles. If a planned image slot has no image, convert the
   region into a populated content card instead of leaving an empty frame.
+- Treat planned x/y/w/h placements as outer bounds for top-level objects. Do not
+  place one large background panel and then stack multiple independent cards,
+  strips, or sub-panels inside it. When a placement needs multiple sections,
+  split them into separate non-overlapping top-level cards inside that
+  placement's available space.
+- Header strips, icons, titles, and body text inside a card must reserve their
+  own vertical bands. Do not let a header strip cover bullets or body copy; if
+  the text does not fit, reduce bullet count or font size instead of overlapping.
 """
         if master_context.get("source") == "template":
             design_section += """
 ## Uploaded Template Legibility Rules
 - The final PPTX inherits the uploaded template backdrop, which may be white.
 - Never place white or pale text directly on a light cover/background.
-- Keep independent content boxes, tables, and charts separated by at least 12px.
+- Keep independent content boxes, tables, and charts separated by compact 6-8px gaps.
 - Do not create a second title element in the body; the header title is injected once.
 """
         master_layout = _get_master_layout(design_system)
@@ -1075,6 +1100,38 @@ def _asset_prompt_records(visual_assets: list[dict]) -> list[dict]:
     return records
 
 
+def _element_placements_for_html_prompt(
+    element_placements: list,
+    *,
+    has_visual_assets: bool,
+) -> list:
+    if has_visual_assets:
+        return element_placements
+    prompt_placements = []
+    for item in element_placements:
+        if not isinstance(item, dict):
+            continue
+        copied = dict(item)
+        is_visual_slot = (
+            str(copied.get("asset_role") or "") == "visual_asset"
+            or str(copied.get("element") or "").lower() == "image"
+        )
+        if is_visual_slot:
+            copied["id"] = str(copied.get("id") or "visual_slot").replace(
+                "visual_asset", "content"
+            )
+            copied["element"] = "card"
+            copied["role"] = "proof_object"
+            copied["zone"] = copied.get("zone") or "main"
+            copied.pop("asset_role", None)
+            copied.pop("fit", None)
+            copied["content_requirement"] = (
+                "Populate this region with actual slide content. Do not leave it blank."
+            )
+        prompt_placements.append(copied)
+    return prompt_placements
+
+
 def _build_qa_reference_images(state: DocuMindState) -> dict[int, list[dict]]:
     html_screenshots = state.get("html_screenshots", [])
     pptx_screenshots = state.get("pptx_screenshots", [])
@@ -1267,7 +1324,7 @@ def _qa_repair_instruction(slide_index: int, fix_instructions: list[str] | None)
 
 
 def _inject_visual_asset_images(slides_html: list[dict], visual_assets: list[dict]) -> list[dict]:
-    """Fill generated image slots, falling back to a body-contained image element."""
+    """Fill generated image slots without overlaying unrelated layout content."""
     from bs4 import BeautifulSoup
 
     assets_by_slide: dict[int, list[dict]] = {}
@@ -1337,37 +1394,13 @@ def _inject_visual_asset_images(slides_html: list[dict], visual_assets: list[dic
                     )
                 else:
                     continue
-            image_element = _visual_asset_html(asset)
-            if wrapper:
-                image_node = BeautifulSoup(image_element, "html.parser").find(
-                    attrs={"data-pptx-type": "image"}
-                )
-                if image_node:
-                    wrapper.append(image_node)
-                    logger.info(
-                        "visual_asset.inject_appended_fallback",
-                        slide=slide_index,
-                        asset_id=asset_id,
-                        path=image_path,
-                    )
-                html = str(soup)
-            elif "</div>" in html:
-                html = html.rsplit("</div>", 1)[0] + f"  {image_element}\n</div>"
-                logger.info(
-                    "visual_asset.inject_inserted_fallback",
-                    slide=slide_index,
-                    asset_id=asset_id,
-                    path=image_path,
-                )
-            else:
-                html += image_element
-                logger.info(
-                    "visual_asset.inject_appended_raw",
-                    slide=slide_index,
-                    asset_id=asset_id,
-                    path=image_path,
-                )
-            inserted = True
+            logger.warning(
+                "visual_asset.inject_skip_missing_slot",
+                slide=slide_index,
+                asset_id=asset_id,
+                path=image_path,
+                reason="no explicit or geometry-matched visual asset slot",
+            )
         if inserted:
             slide["html"] = html
             elements = set(slide.get("elements_used", []))
@@ -1387,7 +1420,7 @@ def _visual_asset_html(asset: dict) -> str:
     return (
         f'<div data-pptx-type="image" data-pptx-image-id="{asset_id}" '
         f'data-pptx-image-path="{image_path}" data-pptx-image-fit="contain" '
-        f'data-pptx-auto-asset="true" data-pptx-z="20" '
+        f'data-pptx-auto-asset="true" data-pptx-z="4" '
         f'style="position:absolute;left:{x}px;top:{y}px;width:{w}px;height:{h}px;'
         f'background-color:#FFFFFF;border:1px solid #CBD5E1"></div>'
     )
@@ -1403,6 +1436,7 @@ def _fill_visual_asset_slot(soup, asset: dict) -> bool:
     candidates.extend(soup.find_all(attrs={"data-pptx-asset-role": "visual_asset"}))
     candidates.extend(soup.find_all(attrs={"data-pptx-asset-id": asset_id}))
     candidates.extend(soup.find_all(attrs={"data-pptx-visual-asset-id": asset_id}))
+    candidates.extend(_geometry_matched_visual_slot_candidates(soup, asset))
     seen = set()
     for node in candidates:
         node_key = id(node)
@@ -1414,15 +1448,126 @@ def _fill_visual_asset_slot(soup, asset: dict) -> bool:
             continue
         if str(attrs.get("data-pptx-type", "")) not in {"", "image", "shape"}:
             continue
+        if _visual_slot_has_unrelated_content(soup, node):
+            continue
         attrs["data-pptx-type"] = "image"
         attrs["data-pptx-image-id"] = asset_id
         attrs["data-pptx-image-path"] = image_path
         attrs["data-pptx-asset-role"] = "visual_asset"
         attrs.setdefault("data-pptx-image-fit", "contain")
-        attrs.setdefault("data-pptx-z", str(attrs.get("data-pptx-z", "20") or "20"))
+        attrs.setdefault("data-pptx-z", str(attrs.get("data-pptx-z", "4") or "4"))
         node.attrs = attrs
         return True
     return False
+
+
+def _geometry_matched_visual_slot_candidates(soup, asset: dict) -> list:
+    placement = asset.get("placement", {})
+    if not isinstance(placement, dict):
+        return []
+    target = _asset_placement_box(placement)
+    if not target:
+        return []
+    candidates = []
+    for node in soup.find_all(attrs={"data-pptx-type": True}):
+        attrs = getattr(node, "attrs", {})
+        pptx_type = str(attrs.get("data-pptx-type", ""))
+        if pptx_type not in {"image", "shape"}:
+            continue
+        style = str(attrs.get("style", ""))
+        box = _style_box(style)
+        if not box:
+            continue
+        if _box_overlap_ratio(box, target) < 0.82:
+            continue
+        if _visual_slot_has_unrelated_content(soup, node):
+            continue
+        candidates.append(node)
+    return candidates
+
+
+def _asset_placement_box(placement: dict) -> tuple[float, float, float, float] | None:
+    try:
+        return (
+            float(placement["x"]),
+            float(placement["y"]),
+            float(placement["w"]),
+            float(placement["h"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _style_box(style: str) -> tuple[float, float, float, float] | None:
+    try:
+        return (
+            _style_px_value(style, "left"),
+            _style_px_value(style, "top"),
+            _style_px_value(style, "width"),
+            _style_px_value(style, "height"),
+        )
+    except ValueError:
+        return None
+
+
+def _style_px_value(style: str, property_name: str) -> float:
+    match = re.search(rf"(?:^|;)\s*{property_name}\s*:\s*(-?\d+(?:\.\d+)?)px", style)
+    if not match:
+        raise ValueError(property_name)
+    return float(match.group(1))
+
+
+def _box_overlap_ratio(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    ax, ay, aw, ah = first
+    bx, by, bw, bh = second
+    x_overlap = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    y_overlap = max(0, min(ay + ah, by + bh) - max(ay, by))
+    if x_overlap <= 0 or y_overlap <= 0:
+        return 0.0
+    return (x_overlap * y_overlap) / max(1, min(aw * ah, bw * bh))
+
+
+def _visual_slot_has_unrelated_content(soup, node) -> bool:
+    node_box = _style_box(str(node.attrs.get("style", "")))
+    if not node_box:
+        return False
+    node_area = node_box[2] * node_box[3]
+    for other in soup.find_all(attrs={"data-pptx-type": True}):
+        if other is node:
+            continue
+        attrs = getattr(other, "attrs", {})
+        other_type = str(attrs.get("data-pptx-type", ""))
+        if other_type in {"connector", "line"}:
+            continue
+        other_box = _style_box(str(attrs.get("style", "")))
+        if not other_box:
+            continue
+        if _box_overlap_ratio(other_box, node_box) < 0.2:
+            continue
+        other_area = other_box[2] * other_box[3]
+        if other_area >= node_area * 0.9:
+            continue
+        if other_type in {"textbox", "icon", "table", "chart"}:
+            return True
+        if str(other.get_text(" ", strip=True) or "").strip():
+            return True
+        if (
+            other_type == "shape"
+            and other_area <= node_area * 0.55
+            and _shape_has_visible_content_or_fill(other)
+        ):
+            return True
+    return False
+
+
+def _shape_has_visible_content_or_fill(node) -> bool:
+    if str(node.get_text(" ", strip=True) or "").strip():
+        return True
+    style = str(getattr(node, "attrs", {}).get("style", ""))
+    return bool(re.search(r"(?:^|;)\s*background(?:-color)?\s*:\s*[^;]+", style))
 
 
 def _dedupe_visual_asset_nodes(soup, asset: dict) -> None:

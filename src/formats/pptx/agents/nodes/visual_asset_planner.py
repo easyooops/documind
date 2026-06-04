@@ -65,10 +65,16 @@ async def visual_asset_planner(state: DocuMindState) -> dict:
             "current_phase": "visual_asset_planning",
         }
 
-    quick_signal = _quick_visual_signal(user_query, slide_blueprints)
+    hard_signal = _hard_visual_asset_signal(
+        user_query,
+        slide_blueprints,
+        state.get("slide_revision_instructions", {}),
+    )
+    quick_signal = hard_signal or _quick_visual_signal(user_query, slide_blueprints)
     logger.info(
         "visual_asset_planner.signal",
         quick_signal=quick_signal,
+        hard_signal=hard_signal,
         reserved_slots=_reserved_visual_slot_count(slide_blueprints),
         slide_count=len(slide_blueprints),
     )
@@ -90,10 +96,12 @@ async def visual_asset_planner(state: DocuMindState) -> dict:
     )
 
     if not normalized.get("enabled"):
-        logger.warning(
-            "visual_asset_planner.llm_plan_required_no_fallback",
-            reason=normalized.get("reason", ""),
+        log_fn = logger.warning if hard_signal else logger.info
+        event_name = (
+            "visual_asset_planner.llm_plan_required_no_fallback"
+            if hard_signal else "visual_asset_planner.llm_plan_optional_skip"
         )
+        log_fn(event_name, reason=normalized.get("reason", ""))
         return {
             "visual_asset_plan": normalized,
             "visual_assets": [],
@@ -166,6 +174,15 @@ async def _llm_plan(user_query: str, slide_blueprints: list[dict], state: DocuMi
         "user_query": user_query,
         "slides": compact_blueprints,
         "required_visual_asset_slots": _reserved_visual_slot_records(slide_blueprints),
+        "visual_asset_requirement": (
+            "hard: user explicitly requested an externally rendered diagram/image asset."
+            if _hard_visual_asset_signal(
+                user_query,
+                slide_blueprints,
+                state.get("slide_revision_instructions", {}),
+            )
+            else "soft: rendered assets are optional; return enabled=false with assets=[] when standard slide layout is sufficient."
+        ),
         "fallback_policy": (
             "disabled: all diagrams_image assets must be planned by this LLM response "
             "with slide-specific diagrams_nodes and diagrams_edges."
@@ -205,6 +222,11 @@ async def _llm_plan(user_query: str, slide_blueprints: list[dict], state: DocuMi
                     user_query,
                     slide_blueprints,
                     state.get("slide_revision_instructions", {}),
+                    hard_required=_hard_visual_asset_signal(
+                        user_query,
+                        slide_blueprints,
+                        state.get("slide_revision_instructions", {}),
+                    ),
                 )
         except Exception as exc:
             raw_text = str(locals().get("raw_content", ""))
@@ -247,14 +269,40 @@ def _llm_plan_validation_issues(
     user_query: str,
     slide_blueprints: list[dict],
     slide_revision_instructions: dict | None = None,
+    *,
+    hard_required: bool | None = None,
 ) -> list[str]:
     issues: list[str] = []
     if not isinstance(plan.get("assets"), list):
         return ["Missing assets array."]
 
+    if hard_required is None:
+        hard_required = _hard_visual_asset_signal(
+            user_query,
+            slide_blueprints,
+            slide_revision_instructions,
+        )
     raw_assets = [asset for asset in plan.get("assets", []) if isinstance(asset, dict)]
     if not raw_assets:
-        return ["No asset objects returned despite visual asset signal."]
+        normalized_empty = _normalize_plan(
+            plan,
+            user_query,
+            slide_blueprints,
+            slide_revision_instructions,
+        )
+        missing_slides = _missing_reserved_visual_asset_slides(
+            normalized_empty,
+            slide_blueprints,
+            slide_revision_instructions,
+        )
+        if hard_required:
+            return ["No asset objects returned despite explicit visual asset request."]
+        if missing_slides:
+            return [
+                "Reserved visual slots missing LLM assets for slides: "
+                + ", ".join(str(slide) for slide in missing_slides)
+            ]
+        return []
 
     for index, asset in enumerate(raw_assets, start=1):
         method = str(asset.get("method") or "").strip()
@@ -2405,14 +2453,54 @@ def _generic_shape_for_label(label: str) -> str:
     return "process"
 
 
+def _hard_visual_asset_signal(
+    user_query: str,
+    slide_blueprints: list[dict],
+    slide_revision_instructions: dict | None = None,
+) -> bool:
+    if _negative_visual_asset_signal(user_query):
+        return False
+    if _explicit_rendered_visual_request(user_query):
+        return True
+    for instruction in _normalize_slide_instruction_map(slide_revision_instructions).values():
+        if _explicit_rendered_visual_request(instruction):
+            return True
+    return any(
+        _slide_context_requires_diagram(blueprint, user_query, require_explicit=True)
+        for blueprint in slide_blueprints
+    )
+
+
+def _explicit_rendered_visual_request(text: str) -> bool:
+    lowered = str(text or "").lower()
+    method_terms = (
+        "diagrams", "image model", "rendered image", "mermaid_image",
+        "다이어그램스", "이미지 모델", "이미지모델", "렌더링 이미지",
+    )
+    if any(term in lowered for term in method_terms):
+        return True
+    action_terms = (
+        "draw", "redraw", "visualize", "render", "generate image",
+        "그려", "다시 그려", "그려줘", "시각화", "렌더",
+    )
+    object_terms = (
+        "architecture", "diagram", "flowchart", "image", "topology", "network",
+        "아키텍처", "다이어그램", "이미지", "구성도", "토폴로지",
+    )
+    return any(term in lowered for term in action_terms) and any(
+        term in lowered for term in object_terms
+    )
+
+
 def _quick_visual_signal(user_query: str, slide_blueprints: list[dict]) -> bool:
     if _negative_visual_asset_signal(user_query):
         return False
     user_text = str(user_query or "").lower()
-    if _has_visual_asset_signal(user_text):
+    if _explicit_rendered_visual_request(user_text):
         return True
     if any(_slide_context_requires_diagram(blueprint, user_query) for blueprint in slide_blueprints):
         return True
+    return False
 
     korean_signals = ("아키텍처", "인프라", "서비스 구조", "다이어그램", "이미지")
     if any(token in user_text for token in korean_signals):
@@ -2427,7 +2515,12 @@ def _quick_visual_signal(user_query: str, slide_blueprints: list[dict]) -> bool:
     return any(signal in user_text for signal in signals)
 
 
-def _slide_context_requires_diagram(blueprint: dict, user_query: str = "") -> bool:
+def _slide_context_requires_diagram(
+    blueprint: dict,
+    user_query: str = "",
+    *,
+    require_explicit: bool = False,
+) -> bool:
     """Conservative gate: reserved slots alone do not require rendered diagrams."""
     if not isinstance(blueprint, dict):
         return False
@@ -2440,6 +2533,16 @@ def _slide_context_requires_diagram(blueprint: dict, user_query: str = "") -> bo
         json.dumps(blueprint.get("content_elements", []), ensure_ascii=False)[:1200],
         json.dumps(blueprint.get("content_blocks", []), ensure_ascii=False)[:1200],
     ]).lower()
+    explicit = _explicit_rendered_visual_request(text)
+    suggested = {
+        str(item).lower()
+        for item in blueprint.get("suggested_elements", [])
+        if item
+    }
+    if require_explicit and not explicit:
+        return False
+    if not explicit and not (suggested & {"diagram", "flowchart"}):
+        return False
     required_terms = (
         "architecture", "architect", "infrastructure", "infra", "network", "topology",
         "system design", "service architecture", "3-tier", "three tier", "aws", "azure",
@@ -2453,8 +2556,8 @@ def _slide_context_requires_diagram(blueprint: dict, user_query: str = "") -> bo
         "need", "required", "visual", "explain", "설명", "설득", "이해", "필요",
         "suggested_elements", "diagram", "flowchart", "image",
     )
-    return any(term in text for term in evidence_terms) or any(
-        str(item).lower() in {"diagram", "flowchart", "image"}
+    return explicit or any(term in text for term in evidence_terms) or any(
+        str(item).lower() in {"diagram", "flowchart"}
         for item in blueprint.get("suggested_elements", [])
     )
 

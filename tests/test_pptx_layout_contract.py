@@ -11,6 +11,7 @@ from src.api.v1.documents import _embed_pptx_preview_assets
 from src.formats.pptx.agents.nodes.html_generator import (
     _build_human_content_with_images,
     _build_user_reference_images,
+    _element_placements_for_html_prompt,
     _inject_fixed_template,
     _inject_visual_asset_images,
     _materialize_html_icon_node,
@@ -27,6 +28,7 @@ from src.formats.pptx.agents.nodes.unified_planner import (
     _apply_layout_inset,
     _extend_blueprints_to_requested_count,
     _extract_slide_revision_instructions,
+    _infer_target_slide_count,
     _invoke_planner_with_structured_output,
     _normalize_blueprints,
     _normalize_revision_scope,
@@ -64,6 +66,27 @@ from src.formats.pptx.rulesets import get_ruleset
 from src.formats.pptx.rulesets.validator import DesignQualityEvaluator
 from src.utils.iconify import get_fallback_icon_path
 from src.utils.image_gen import _generate_with_nova_canvas
+from src.utils.json_repair import parse_llm_json
+
+
+def _placements_overlap_for_test(placements: list[dict]) -> bool:
+    boxed = [
+        item for item in placements
+        if all(key in item for key in ("x", "y", "w", "h"))
+        and str(item.get("element", "")).lower() not in {"line", "connector"}
+    ]
+    for index, first in enumerate(boxed):
+        for second in boxed[index + 1:]:
+            ax, ay, aw, ah = first["x"], first["y"], first["w"], first["h"]
+            bx, by, bw, bh = second["x"], second["y"], second["w"], second["h"]
+            x_overlap = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+            y_overlap = max(0, min(ay + ah, by + bh) - max(ay, by))
+            if x_overlap <= 0 or y_overlap <= 0:
+                continue
+            ratio = (x_overlap * y_overlap) / max(1, min(aw * ah, bw * bh))
+            if ratio > 0.08:
+                return True
+    return False
 
 
 def test_standard_layout_catalog_exposes_master_zones_and_body_patterns() -> None:
@@ -142,7 +165,7 @@ def test_blueprints_are_normalized_to_known_body_layouts() -> None:
     assert blueprints[1]["layout_plan"]["sub_layout_ids"] == ["grid_2x2"]
 
 
-def test_blueprints_add_dense_visual_asset_slot_for_architecture_slide() -> None:
+def test_architecture_slide_does_not_reserve_empty_visual_asset_slot_by_default() -> None:
     blueprints = _normalize_blueprints(
         [
             {
@@ -157,11 +180,116 @@ def test_blueprints_add_dense_visual_asset_slot_for_architecture_slide() -> None
     )
 
     placements = blueprints[0]["layout_plan"]["element_placements"]
+    assert not any(item.get("asset_role") == "visual_asset" for item in placements)
+    assert any(item.get("element") == "card" for item in placements)
+    assert len(placements) >= 5
+
+
+def test_generic_flow_suggested_elements_are_demoted_without_explicit_visual_request() -> None:
+    blueprints = _normalize_blueprints(
+        [
+            {
+                "index": 2,
+                "slide_type": "content",
+                "title": "Native document generation flow",
+                "suggested_elements": ["diagram", "flowchart", "image", "table"],
+                "layout_plan": {"body_layout_id": "split_60_40"},
+            }
+        ],
+        get_ruleset(),
+        "제품 소개서를 만들어줘",
+    )
+
+    suggested = {item.lower() for item in blueprints[0]["suggested_elements"]}
+
+    assert "diagram" not in suggested
+    assert "flowchart" not in suggested
+    assert "image" not in suggested
+    assert {"connector", "rounded_rect", "table"} <= suggested
+
+
+def test_explicit_redraw_request_reserves_visual_asset_slot() -> None:
+    blueprints = _normalize_blueprints(
+        [
+            {
+                "index": 2,
+                "slide_type": "content",
+                "title": "LangGraph service architecture",
+                "suggested_elements": ["diagram", "connector", "card"],
+                "layout_plan": {"body_layout_id": "split_60_40"},
+            }
+        ],
+        get_ruleset(),
+        "architecture diagram을 다시 그려줘",
+    )
+
+    placements = blueprints[0]["layout_plan"]["element_placements"]
     visual_slot = next(item for item in placements if item.get("asset_role") == "visual_asset")
     assert visual_slot["element"] == "image"
     assert visual_slot["w"] >= 560
     assert visual_slot["h"] >= 300
     assert len(placements) >= 5
+
+
+def test_overlapping_explicit_visual_placements_repair_to_visual_slot() -> None:
+    blueprints = _normalize_blueprints(
+        [
+            {
+                "index": 2,
+                "slide_type": "content",
+                "title": "Agentic flow diagram",
+                "layout_plan": {
+                    "body_layout_id": "split_60_40",
+                    "element_placements": [
+                        {
+                            "id": "diagram",
+                            "element": "image",
+                            "asset_role": "visual_asset",
+                            "x": 100,
+                            "y": 110,
+                            "w": 560,
+                            "h": 300,
+                        },
+                        {"id": "card_a", "element": "card", "x": 120, "y": 130, "w": 240, "h": 90},
+                        {"id": "card_b", "element": "card", "x": 380, "y": 130, "w": 240, "h": 90},
+                    ],
+                },
+            }
+        ],
+        get_ruleset(),
+        "diagram redraw",
+    )
+
+    placements = blueprints[0]["layout_plan"]["element_placements"]
+
+    assert any(item.get("asset_role") == "visual_asset" for item in placements)
+    assert not _placements_overlap_for_test(placements)
+
+
+def test_html_prompt_demotes_visual_asset_slot_when_no_rendered_asset_exists() -> None:
+    placements = [
+        {
+            "id": "visual_asset_main",
+            "element": "image",
+            "role": "proof_object",
+            "asset_role": "visual_asset",
+            "x": 48,
+            "y": 92,
+            "w": 604,
+            "h": 318,
+            "fit": "contain",
+        }
+    ]
+
+    prompt_placements = _element_placements_for_html_prompt(
+        placements,
+        has_visual_assets=False,
+    )
+
+    assert prompt_placements[0]["element"] == "card"
+    assert prompt_placements[0]["role"] == "proof_object"
+    assert "asset_role" not in prompt_placements[0]
+    assert "content_requirement" in prompt_placements[0]
 
 
 def test_requested_slide_count_is_extended_when_planner_under_produces() -> None:
@@ -185,6 +313,75 @@ def test_requested_slide_count_is_extended_when_planner_under_produces() -> None
     assert len(extended) == 6
     assert extended[-1]["slide_type"] == "summary"
     assert extended[-1]["layout_plan"]["element_placements"]
+
+
+def test_visual_variant_request_infers_two_slide_scope() -> None:
+    query = (
+        "첨부된 이미지의 아키텍처에 트랜짓 게이트웨이를 추가해서 다시 그려줘. "
+        "슬라이드 한장은 다이어그램스로 한장은 이미지 모델로 그려줘."
+    )
+
+    assert _infer_target_slide_count(
+        query,
+        explicit_slide_count=None,
+        base_version={},
+        explicit_slide_instructions={},
+    ) == 2
+
+
+def test_existing_revision_defaults_to_parent_slide_count() -> None:
+    assert _infer_target_slide_count(
+        "아키텍처 다이어그램을 다시 그려줘",
+        explicit_slide_count=None,
+        base_version={"slide_plan": [{"index": 1}, {"index": 2}, {"index": 3}]},
+        explicit_slide_instructions={},
+    ) == 3
+
+
+def test_repeated_missing_layouts_are_diversified_by_position() -> None:
+    blueprints = _normalize_blueprints(
+        [
+            {"index": index, "slide_type": "content", "title": f"Architecture {index}"}
+            for index in range(1, 6)
+        ],
+        get_ruleset(),
+    )
+
+    layout_ids = [bp["layout_plan"]["body_layout_id"] for bp in blueprints]
+
+    assert len(set(layout_ids)) >= 4
+    assert len({layout_id.split("_", 1)[0] for layout_id in layout_ids}) >= 3
+
+
+def test_valid_llm_selected_layouts_are_not_rewritten_for_diversity() -> None:
+    blueprints = _normalize_blueprints(
+        [
+            {
+                "index": index,
+                "slide_type": "content",
+                "title": f"Comparison {index}",
+                "layout_plan": {"body_layout_id": "compare_vs"},
+            }
+            for index in range(1, 5)
+        ],
+        get_ruleset(),
+    )
+
+    assert [bp["layout_plan"]["body_layout_id"] for bp in blueprints] == [
+        "compare_vs",
+        "compare_vs",
+        "compare_vs",
+        "compare_vs",
+    ]
+
+
+def test_llm_json_parser_uses_first_complete_object_when_extra_data_follows() -> None:
+    parsed = parse_llm_json(
+        '{"score": 0.91, "passed": true, "issues": []}\n'
+        '{"score": 0.1, "passed": false}'
+    )
+
+    assert parsed == {"score": 0.91, "passed": True, "issues": []}
 
 
 async def test_unified_planner_prefers_structured_output_when_available(monkeypatch) -> None:
@@ -743,6 +940,49 @@ def test_overlapping_card_groups_move_with_their_icons_and_text() -> None:
     assert card_b_text.position["top"] > 130 or card_b_text.position["left"] > 108
 
 
+def test_large_overlapping_card_is_not_treated_as_inner_decoration() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:100px;top:120px;width:420px;height:300px;'
+        'background-color:#111827"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:124px;top:142px;'
+        'width:340px;height:36px;font-size:18px;color:#FFFFFF">Left card</div>'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:360px;top:120px;width:268px;height:300px;'
+        'background-color:#0F766E"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:384px;top:142px;'
+        'width:210px;height:36px;font-size:18px;color:#FFFFFF">Right card</div>'
+        "</div>"
+    )
+
+    elements = parse_slide_html(_normalize_slide_html(html))
+    left_card = elements[0]
+    right_card = elements[2]
+
+    assert right_card.position["left"] >= left_card.position["left"] + left_card.position["width"]
+
+
+def test_empty_large_card_container_is_removed_before_rendering() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:80px;top:120px;width:320px;height:180px;'
+        'background-color:#CCFBF1"></div>'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:460px;top:120px;width:320px;height:180px;'
+        'background-color:#DBEAFE"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:488px;top:148px;'
+        'width:250px;height:40px;font-size:18px;color:#1E3A8A">Filled card</div>'
+        "</div>"
+    )
+
+    elements = parse_slide_html(_normalize_slide_html(html))
+
+    assert len([element for element in elements if element.pptx_shape == "rounded_rect"]) == 1
+    assert any(element.text_content == "Filled card" for element in elements)
+
+
 def test_layout_inset_shrinks_slots_without_replanning_card_gaps() -> None:
     placements = [
         {"id": "card_a", "element": "card", "x": 40, "y": 120, "w": 180, "h": 100},
@@ -751,8 +991,8 @@ def test_layout_inset_shrinks_slots_without_replanning_card_gaps() -> None:
 
     inset = _apply_layout_inset(placements)
 
-    assert inset[0] == {"id": "card_a", "element": "card", "x": 46, "y": 126, "w": 168, "h": 88}
-    assert inset[1] == {"id": "card_b", "element": "card", "x": 232, "y": 126, "w": 168, "h": 88}
+    assert inset[0] == {"id": "card_a", "element": "card", "x": 44, "y": 124, "w": 172, "h": 92}
+    assert inset[1] == {"id": "card_b", "element": "card", "x": 230, "y": 124, "w": 172, "h": 92}
     assert placements[1]["x"] - (placements[0]["x"] + placements[0]["w"]) == 6
 
 
@@ -1205,7 +1445,7 @@ def test_fallback_icon_is_created_when_iconify_cache_is_missing() -> None:
 
 def test_architecture_request_routes_to_diagrams_visual_asset() -> None:
     plan = _fallback_plan(
-        "AWS 아키텍처 3 티어 구조 설계가 포함되어야되",
+        "AWS architecture 3-tier diagram을 다시 그려줘",
         [{"index": 1, "slide_type": "cover"}, {"index": 2, "slide_type": "content"}],
     )
 
@@ -1391,6 +1631,59 @@ def test_llm_plan_validation_detects_missing_reserved_slot_asset() -> None:
     )
 
     assert any("slides: 4" in issue for issue in issues)
+
+
+def test_llm_plan_validation_allows_empty_assets_for_soft_visual_signal() -> None:
+    issues = _llm_plan_validation_issues(
+        {"enabled": False, "assets": []},
+        "Create a product brief with a workflow overview",
+        [
+            {
+                "index": 2,
+                "title": "Generation workflow",
+                "key_message": "The workflow can be represented with native cards and connectors.",
+                "suggested_elements": ["connector", "card"],
+                "layout_plan": {
+                    "element_placements": [
+                        {
+                            "element": "image",
+                            "asset_role": "visual_asset",
+                            "x": 48,
+                            "y": 92,
+                            "w": 604,
+                            "h": 318,
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+
+    assert issues == []
+
+
+def test_llm_plan_validation_requires_assets_for_explicit_redraw_request() -> None:
+    issues = _llm_plan_validation_issues(
+        {"enabled": False, "assets": []},
+        "첨부된 아키텍처 다이어그램을 다시 그려줘",
+        [{"index": 2, "title": "Architecture diagram", "suggested_elements": ["diagram"]}],
+    )
+
+    assert any("explicit visual asset request" in issue for issue in issues)
+
+
+def test_workflow_topic_alone_does_not_trigger_external_visual_asset() -> None:
+    assert _quick_visual_signal(
+        "Create a product brief",
+        [
+            {
+                "index": 2,
+                "title": "Agentic workflow",
+                "key_message": "The process is shown with native cards.",
+                "suggested_elements": ["connector", "card"],
+            }
+        ],
+    ) is False
 
 
 def test_llm_plan_validation_detects_duplicate_diagram_topologies() -> None:
@@ -1837,7 +2130,7 @@ def test_db_backed_pptx_preview_embeds_local_visual_asset(tmp_path: Path) -> Non
     assert str(image_path) not in preview
 
 
-def test_auto_visual_asset_fallback_preserves_existing_layout_content(tmp_path: Path) -> None:
+def test_visual_asset_injection_skips_missing_slot_to_avoid_overlay(tmp_path: Path) -> None:
     image_path = tmp_path / "diagram.png"
     Image.new("RGB", (64, 48), (12, 34, 56)).save(image_path)
     html = (
@@ -1862,7 +2155,7 @@ def test_auto_visual_asset_fallback_preserves_existing_layout_content(tmp_path: 
 
     [slide] = _inject_visual_asset_images(slides, assets)
 
-    assert 'data-pptx-image-id="arch"' in slide["html"]
+    assert 'data-pptx-image-id="arch"' not in slide["html"]
     assert "Overlapping content" in slide["html"]
     assert "Safe note" in slide["html"]
     assert "Title" in slide["html"]
@@ -1897,6 +2190,64 @@ def test_visual_asset_injection_fills_existing_slot(tmp_path: Path) -> None:
     assert 'data-pptx-image-fit="contain"' in slide["html"]
     assert slide["html"].count('data-pptx-image-id="arch"') == 1
     assert "Safe note" in slide["html"]
+
+
+def test_visual_asset_injection_fills_geometry_matched_empty_slot(tmp_path: Path) -> None:
+    image_path = tmp_path / "diagram.png"
+    Image.new("RGB", (64, 48), (12, 34, 56)).save(image_path)
+    html = (
+        '<div data-slide="2">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:100px;top:110px;width:320px;height:180px;'
+        'background-color:#E0F2FE;border:1px solid #93C5FD"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:40px;top:440px;'
+        'width:200px;height:40px">Safe note</div>'
+        "</div>"
+    )
+    slides = [{"index": 2, "html": html, "elements_used": []}]
+    assets = [
+        {
+            "id": "arch",
+            "slide_index": 2,
+            "path": str(image_path),
+            "placement": {"x": 100, "y": 110, "w": 320, "h": 180},
+        }
+    ]
+
+    [slide] = _inject_visual_asset_images(slides, assets)
+
+    assert 'data-pptx-type="image"' in slide["html"]
+    assert f'data-pptx-image-path="{image_path}"' in slide["html"]
+    assert slide["html"].count('data-pptx-image-id="arch"') == 1
+    assert "Safe note" in slide["html"]
+
+
+def test_visual_asset_injection_does_not_replace_populated_geometry_slot(tmp_path: Path) -> None:
+    image_path = tmp_path / "diagram.png"
+    Image.new("RGB", (64, 48), (12, 34, 56)).save(image_path)
+    html = (
+        '<div data-slide="2">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:100px;top:110px;width:320px;height:180px;'
+        'background-color:#E0F2FE;border:1px solid #93C5FD"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:128px;top:140px;'
+        'width:220px;height:40px">Existing content</div>'
+        "</div>"
+    )
+    slides = [{"index": 2, "html": html, "elements_used": []}]
+    assets = [
+        {
+            "id": "arch",
+            "slide_index": 2,
+            "path": str(image_path),
+            "placement": {"x": 100, "y": 110, "w": 320, "h": 180},
+        }
+    ]
+
+    [slide] = _inject_visual_asset_images(slides, assets)
+
+    assert 'data-pptx-image-id="arch"' not in slide["html"]
+    assert "Existing content" in slide["html"]
 
 
 def test_visual_asset_injection_dedupes_duplicate_image_nodes(tmp_path: Path) -> None:
@@ -2033,7 +2384,27 @@ def test_slide_html_normalizer_shrinks_overflowing_text_and_resolves_overlap() -
 
     assert "font-size:54px" not in output
     assert "overflow:hidden" in output
-    assert "top:178px" in output
+    assert "top:176px" in output
+
+
+def test_slide_html_normalizer_moves_label_off_table_edge_overlap() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="table" data-pptx-table-data=\'{"headers":["Phase","설명"],"rows":[["A","B"]]}\' '
+        'style="position:absolute;left:40px;top:120px;width:880px;height:180px"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:40px;top:286px;'
+        'width:360px;height:28px;font-size:15px;font-weight:700;color:#1E1B4B">'
+        'Rich Document Agentic Flow</div>'
+        '<div data-pptx-type="table" data-pptx-table-data=\'{"headers":["단계","설명"],"rows":[["1","2"]]}\' '
+        'style="position:absolute;left:40px;top:304px;width:880px;height:180px"></div>'
+        '</div>'
+    )
+
+    elements = parse_slide_html(_normalize_slide_html(html))
+    first_table, label, second_table = elements[0], elements[1], elements[2]
+
+    assert label.position["top"] >= first_table.position["top"] + first_table.position["height"]
+    assert second_table.position["top"] >= label.position["top"] + label.position["height"]
 
 
 def test_fallback_layout_keeps_many_unconnected_nodes_from_overlapping() -> None:

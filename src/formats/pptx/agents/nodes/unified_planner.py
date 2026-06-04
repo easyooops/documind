@@ -166,13 +166,28 @@ async def unified_planner(state: DocuMindState) -> dict:
     context_parts.append(f"\n{planner_layout_rules}")
     context_parts.append(f"\n## OOXML Design Constraints\n{ooxml_constraints}")
 
-    requested_slide_count = _extract_requested_slide_count(user_query)
-    if requested_slide_count:
+    explicit_slide_count = _extract_requested_slide_count(user_query)
+    target_slide_count = _infer_target_slide_count(
+        user_query,
+        explicit_slide_count=explicit_slide_count,
+        base_version=base_version,
+        explicit_slide_instructions=explicit_slide_instructions,
+    )
+    if explicit_slide_count:
         context_parts.append(
             f"\n## CRITICAL: Slide Count Requirement\n"
-            f"User explicitly requested **{requested_slide_count} slides**. "
-            f"You MUST generate exactly {requested_slide_count} slides in your plan. "
-            f"Include 1 cover slide + {requested_slide_count - 1} content slides."
+            f"User explicitly requested **{explicit_slide_count} slides**. "
+            f"You MUST generate exactly {explicit_slide_count} slides in your plan. "
+            f"Include 1 cover slide + {explicit_slide_count - 1} content slides unless this is "
+            "an existing-document revision."
+        )
+    elif target_slide_count:
+        context_parts.append(
+            f"\n## Deterministic Slide Scope\n"
+            f"The user did not request a full new deck. Generate exactly {target_slide_count} "
+            "slide(s) because the request implies a bounded visual/revision deliverable. "
+            "Do not add a cover, agenda, general benefits, roadmap, or conclusion slide unless "
+            "the user explicitly asked for a full deck."
         )
 
     context = "\n".join(context_parts)
@@ -185,13 +200,13 @@ async def unified_planner(state: DocuMindState) -> dict:
     structured_result = await _invoke_planner_with_structured_output(
         llm=llm,
         messages=messages,
-        requested_count=requested_slide_count,
+        requested_count=target_slide_count,
     )
     if structured_result is not None:
         result = _coerce_planner_result(
             structured_result,
             source="structured",
-            requested_count=requested_slide_count,
+            requested_count=target_slide_count,
         )
     else:
         response = await llm.ainvoke(messages)
@@ -200,7 +215,8 @@ async def unified_planner(state: DocuMindState) -> dict:
             "unified_planner.llm_response",
             chars=len(response_text),
             sha=_short_sha(response_text),
-            requested_slides=requested_slide_count,
+            requested_slides=explicit_slide_count,
+            target_slides=target_slide_count,
             has_json_fence="```" in response_text,
             brace_delta=response_text.count("{") - response_text.count("}"),
             bracket_delta=response_text.count("[") - response_text.count("]"),
@@ -210,7 +226,7 @@ async def unified_planner(state: DocuMindState) -> dict:
             llm=llm,
             messages=messages,
             response_text=response_text,
-            requested_count=requested_slide_count,
+            requested_count=target_slide_count,
             user_query=user_query,
             design_direction=design_direction,
         )
@@ -222,9 +238,9 @@ async def unified_planner(state: DocuMindState) -> dict:
         layout_system = locked_design_system["master_layout"]
     else:
         layout_system = ruleset.resolve_master_layout(result.get("layout_system"))
-    slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset)
+    slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset, user_query)
 
-    requested_count = _extract_requested_slide_count(user_query)
+    requested_count = target_slide_count
     if requested_count and len(slide_blueprints) < requested_count:
         logger.warning(
             "unified_planner.slide_count_underproduced",
@@ -243,7 +259,7 @@ async def unified_planner(state: DocuMindState) -> dict:
         )
         if repaired_count_result is not None:
             result = repaired_count_result
-            slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset)
+            slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset, user_query)
         if len(slide_blueprints) < requested_count:
             logger.error(
                 "unified_planner.slide_count_last_resort_extend",
@@ -275,7 +291,7 @@ async def unified_planner(state: DocuMindState) -> dict:
         )
         if repaired_count_result is not None:
             result = repaired_count_result
-            slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset)
+            slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset, user_query)
         if len(slide_blueprints) > requested_count:
             logger.error(
                 "unified_planner.slide_count_last_resort_truncate",
@@ -352,7 +368,7 @@ async def unified_planner(state: DocuMindState) -> dict:
                 bp for bp in slide_blueprints
                 if bp.get("index") not in parent_indices and bp.get("index") in changed_set
             )
-        slide_blueprints = _normalize_blueprints(merged_plan, ruleset)
+        slide_blueprints = _normalize_blueprints(merged_plan, ruleset, user_query)
 
     revision_scope = (
         _normalize_revision_scope(result.get("revision_scope"), user_query)
@@ -536,8 +552,8 @@ async def _repair_slide_count_result(
 ) -> dict | None:
     repair_prompt = (
         "The previous PPTX planner JSON did not satisfy the requested slide count. "
-        f"The user requested exactly {requested_count} slides, but the JSON contained "
-        f"{planned_count} slides. Return ONLY a corrected valid JSON object with exactly "
+        f"The deterministic planner scope requires exactly {requested_count} slides, but "
+        f"the JSON contained {planned_count} slides. Return ONLY a corrected valid JSON object with exactly "
         f"{requested_count} slides. Preserve the same schema, theme, strategy, and intent. "
         "Do not use markdown fences or commentary.\n\n"
         "Original user request excerpt:\n"
@@ -674,6 +690,59 @@ def _raw_slide_indices(result: dict) -> list:
     ]
 
 
+def _infer_target_slide_count(
+    user_query: str,
+    *,
+    explicit_slide_count: int | None,
+    base_version: dict,
+    explicit_slide_instructions: dict[int, str],
+) -> int | None:
+    if explicit_slide_count:
+        return explicit_slide_count
+    parent_plan = [
+        item for item in base_version.get("slide_plan", []) if isinstance(item, dict)
+    ] if isinstance(base_version, dict) else []
+    if parent_plan and not _requests_slide_addition(user_query) and not _requests_slide_deletion(user_query):
+        return len(parent_plan)
+    if explicit_slide_instructions:
+        return len(explicit_slide_instructions)
+
+    text = str(user_query or "").lower()
+    variant_markers = len(re.findall(r"(?:한\s*장|1\s*장|one\s+slide)", text))
+    if variant_markers >= 2:
+        return min(variant_markers, 6)
+
+    two_variant_signals = (
+        ("diagrams" in text or "다이어그램" in text)
+        and ("image model" in text or "이미지 모델" in text or "rendering image" in text)
+    )
+    if two_variant_signals:
+        return 2
+
+    bounded_visual_request = any(
+        signal in text
+        for signal in (
+            "다시 그려", "그려줘", "수정", "변경", "교체", "redraw", "modify",
+            "update", "replace",
+        )
+    ) and any(
+        signal in text
+        for signal in (
+            "이미지", "다이어그램", "architecture", "diagram", "visual", "attached image",
+        )
+    )
+    full_deck_signal = any(
+        signal in text
+        for signal in (
+            "deck", "presentation", "발표", "제안서", "소개서", "브리프", "보고서",
+            "전체", "full",
+        )
+    )
+    if bounded_visual_request and not full_deck_signal:
+        return 1
+    return None
+
+
 def _normalize_revision_scope(value: object, user_query: str) -> str:
     """Resolve whether an existing slide should be patched or regenerated."""
     allowed = {"minimal_patch", "slide_rewrite", "layout_redesign"}
@@ -802,13 +871,15 @@ def _normalize_presentation_strategy(value: object, user_query: str) -> dict:
     }
 
 
-def _normalize_blueprints(slides: list, ruleset=None) -> list[dict]:
+def _normalize_blueprints(slides: list, ruleset=None, user_query: str = "") -> list[dict]:
     """Normalize LLM output into clean blueprint dicts."""
     if ruleset is None:
         from src.formats.pptx.rulesets import get_ruleset
 
         ruleset = get_ruleset()
     blueprints = []
+    last_layout_family = ""
+    repeated_family_count = 0
     for idx, slide in enumerate(slides, 1):
         if not isinstance(slide, dict):
             continue
@@ -816,8 +887,20 @@ def _normalize_blueprints(slides: list, ruleset=None) -> list[dict]:
         raw_layout_plan = slide.get("layout_plan", {})
         layout_plan = raw_layout_plan if isinstance(raw_layout_plan, dict) else {}
         body_layout_id = layout_plan.get("body_layout_id") or slide.get("body_layout_id", "")
-        if slide_type not in {"cover", "section"} and not ruleset.get_body_layout(body_layout_id):
-            body_layout_id = ruleset.get_default_body_layout_id(slide_type)
+        has_valid_body_layout = bool(ruleset.get_body_layout(body_layout_id))
+        if slide_type not in {"cover", "section"} and not has_valid_body_layout:
+            body_layout_id = _default_body_layout_for_position(slide_type, idx, ruleset)
+        if slide_type not in {"cover", "section"}:
+            layout_family = _body_layout_family(body_layout_id)
+            if layout_family == last_layout_family:
+                repeated_family_count += 1
+            else:
+                repeated_family_count = 1
+            if not has_valid_body_layout and repeated_family_count >= 3:
+                body_layout_id = _alternate_body_layout_for_position(slide_type, idx, ruleset)
+                layout_family = _body_layout_family(body_layout_id)
+                repeated_family_count = 1
+            last_layout_family = layout_family
         sub_layout_ids = [
             layout_id for layout_id in layout_plan.get("sub_layout_ids", [])
             if ruleset.get_body_layout(layout_id)
@@ -827,7 +910,9 @@ def _normalize_blueprints(slides: list, ruleset=None) -> list[dict]:
             slide_type,
             body_layout_id,
             layout_plan.get("element_placements", []),
+            user_query,
         )
+        suggested_elements = _normalize_suggested_elements(slide, user_query)
         blueprints.append({
             "index": slide.get("index", idx),
             "slide_type": slide_type,
@@ -840,7 +925,7 @@ def _normalize_blueprints(slides: list, ruleset=None) -> list[dict]:
             "content_blocks": slide.get("content_blocks", []),
             "data_points": slide.get("data_points", []),
             "layout_hint": slide.get("layout_hint", slide.get("layout_pattern", "balanced")),
-            "suggested_elements": slide.get("suggested_elements", []),
+            "suggested_elements": suggested_elements,
             "visual_style": slide.get("visual_style", ""),
             "visual_density": slide.get("visual_density", "high"),
             "bottom_note": slide.get("bottom_note", ""),
@@ -855,11 +940,107 @@ def _normalize_blueprints(slides: list, ruleset=None) -> list[dict]:
     return blueprints or _minimal_blueprints()
 
 
+def _normalize_suggested_elements(slide: dict, user_query: str = "") -> list[str]:
+    raw = slide.get("suggested_elements", [])
+    values = [str(item).strip() for item in raw if str(item).strip()] if isinstance(raw, list) else []
+    if _slide_needs_visual_asset_slot(slide, user_query):
+        return values
+    replacements = {
+        "diagram": ["connector", "rounded_rect"],
+        "flowchart": ["connector", "rounded_rect"],
+        "workflow": ["connector", "rounded_rect"],
+        "process_flow": ["connector", "rounded_rect"],
+        "architecture_diagram": ["table", "rounded_rect"],
+        "image": ["rounded_rect"],
+    }
+    normalized: list[str] = []
+    for value in values:
+        key = value.lower()
+        if key in replacements:
+            normalized.extend(replacements[key])
+        else:
+            normalized.append(value)
+    seen = set()
+    deduped = []
+    for value in normalized or ["rounded_rect", "textbox"]:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(value)
+    return deduped[:12]
+
+
+def _default_body_layout_for_position(slide_type: str, index: int, ruleset) -> str:
+    if str(slide_type or "content") != "content":
+        return ruleset.get_default_body_layout_id(slide_type)
+    type_defaults = {
+        "data": ["dashboard_chart_sidebar", "dashboard_kpi_top", "dashboard_quad"],
+        "comparison": ["compare_vs", "compare_before_after", "compare_matrix"],
+        "process": ["process_4col", "process_chevron", "timeline_horizontal"],
+        "summary": ["numbered_list_card", "callout_sidebar", "kpi_detail"],
+        "solution": ["split_60_40", "hub_spoke", "grid_2x2"],
+        "problem": ["grid_3x1", "split_70_30", "fact_sheet"],
+        "content": ["split_60_40", "grid_2x2", "dashboard_chart_sidebar", "process_4col", "compare_vs", "hub_spoke"],
+    }
+    candidates = type_defaults.get(str(slide_type or "content"), type_defaults["content"])
+    for offset in range(len(candidates)):
+        candidate = candidates[(index + offset - 1) % len(candidates)]
+        if ruleset.get_body_layout(candidate):
+            return candidate
+    return ruleset.get_default_body_layout_id(slide_type)
+
+
+def _alternate_body_layout_for_position(slide_type: str, index: int, ruleset) -> str:
+    candidates = [
+        "grid_2x2", "dashboard_chart_sidebar", "process_4col", "compare_vs",
+        "split_30_70", "nested_cards", "timeline_horizontal", "hub_spoke",
+    ]
+    for offset in range(len(candidates)):
+        candidate = candidates[(index + offset) % len(candidates)]
+        if ruleset.get_body_layout(candidate):
+            return candidate
+    return _default_body_layout_for_position(slide_type, index, ruleset)
+
+
+def _body_layout_family(layout_id: str) -> str:
+    text = str(layout_id or "")
+    if text.startswith("process_") or text.startswith("timeline_"):
+        return "process"
+    if text.startswith("grid_"):
+        return "grid"
+    if text.startswith("dashboard_"):
+        return "dashboard"
+    if text.startswith("compare_"):
+        return "comparison"
+    if text.startswith("split_"):
+        return "asymmetric"
+    if text in {"nested_cards", "tree_structure", "pyramid_3", "layers_stacked"}:
+        return "hierarchy"
+    if text in {"numbered_list_card", "bullet_columns", "callout_sidebar", "table_full", "fact_sheet"}:
+        return "content_heavy"
+    return "mixed"
+
+
+def _default_sub_layout_ids(body_layout_id: str, index: int, ruleset) -> list[str]:
+    by_family = {
+        "asymmetric": ["grid_2x2", "numbered_list_card", "kpi_detail"],
+        "dashboard": ["grid_3x1", "callout_sidebar", "bullet_columns"],
+        "mixed": ["grid_2x2", "process_3col", "compare_vs"],
+    }
+    candidates = by_family.get(_body_layout_family(body_layout_id), [])
+    if not candidates:
+        return []
+    candidate = candidates[(index - 1) % len(candidates)]
+    return [candidate] if ruleset.get_body_layout(candidate) else []
+
+
 def _normalize_element_placements(
     slide: dict,
     slide_type: str,
     body_layout_id: str,
     raw_placements: object,
+    user_query: str = "",
 ) -> list[dict]:
     """Return a dense, coordinate-level body plan for downstream slide agents."""
     if slide_type in {"cover", "section"}:
@@ -872,8 +1053,14 @@ def _normalize_element_placements(
         if placement
     ]
     if _placements_are_geometric(normalized):
-        return _repair_element_placements(slide, slide_type, body_layout_id, normalized)
-    return _default_element_placements(slide, slide_type, body_layout_id)
+        return _repair_element_placements(
+            slide,
+            slide_type,
+            body_layout_id,
+            normalized,
+            user_query,
+        )
+    return _default_element_placements(slide, slide_type, body_layout_id, user_query)
 
 
 def _normalize_element_placement_item(item: object) -> dict | None:
@@ -915,9 +1102,10 @@ def _repair_element_placements(
     slide_type: str,
     body_layout_id: str,
     placements: list[dict],
+    user_query: str = "",
 ) -> list[dict]:
     if _placements_have_problematic_overlap(placements):
-        return _default_element_placements(slide, slide_type, body_layout_id)
+        return _default_element_placements(slide, slide_type, body_layout_id, user_query)
     return _apply_layout_inset(placements[:24])
 
 
@@ -955,15 +1143,14 @@ def _planned_overlap_ratio(first: dict, second: dict) -> float:
     return (x_overlap * y_overlap) / max(1, min(aw * ah, bw * bh))
 
 
-def _default_element_placements(slide: dict, slide_type: str, body_layout_id: str) -> list[dict]:
-    if _slide_needs_visual_asset_slot(slide):
-        return _apply_layout_inset([
-            _placement("visual_asset_main", "image", "proof_object", "main", 48, 92, 604, 318, asset_role="visual_asset", fit="contain"),
-            _placement("insight_rail_1", "card", "support", "rail", 676, 92, 244, 92),
-            _placement("insight_rail_2", "card", "support", "rail", 676, 208, 244, 92),
-            _placement("insight_rail_3", "card", "support", "rail", 676, 324, 244, 86),
-            _placement("bottom_takeaway", "callout", "synthesis", "callout", 48, 430, 872, 72),
-        ])
+def _default_element_placements(
+    slide: dict,
+    slide_type: str,
+    body_layout_id: str,
+    user_query: str = "",
+) -> list[dict]:
+    if _slide_needs_visual_asset_slot(slide, user_query):
+        return _visual_asset_element_placements(body_layout_id)
     if body_layout_id.startswith("dashboard_chart_sidebar"):
         return _apply_layout_inset([
             _placement("main_chart", "chart", "proof_object", "main", 40, 92, 560, 292),
@@ -1002,9 +1189,62 @@ def _default_element_placements(slide: dict, slide_type: str, body_layout_id: st
     ])
 
 
+def _visual_asset_element_placements(body_layout_id: str) -> list[dict]:
+    family = _body_layout_family(body_layout_id)
+    if family == "comparison":
+        return _apply_layout_inset([
+            _placement("visual_asset_left", "image", "proof_object", "main", 40, 104, 412, 292, asset_role="visual_asset", fit="contain"),
+            _placement("comparison_right", "card", "comparison", "main", 500, 104, 420, 136),
+            _placement("risk_right", "card", "support", "rail", 500, 260, 420, 92),
+            _placement("decision_callout", "callout", "synthesis", "callout", 40, 424, 880, 72),
+        ])
+    if family == "process":
+        return _apply_layout_inset([
+            _placement("visual_asset_flow", "image", "proof_object", "main", 72, 98, 816, 230, asset_role="visual_asset", fit="contain"),
+            _placement("step_1", "card", "process_step", "main", 40, 358, 198, 80),
+            _placement("step_2", "card", "process_step", "main", 262, 358, 198, 80),
+            _placement("step_3", "card", "process_step", "main", 500, 358, 198, 80),
+            _placement("step_4", "card", "process_step", "main", 722, 358, 198, 80),
+            _placement("process_takeaway", "callout", "synthesis", "callout", 40, 456, 880, 46),
+        ])
+    if family == "grid":
+        return _apply_layout_inset([
+            _placement("visual_asset_main", "image", "proof_object", "main", 48, 96, 540, 250, asset_role="visual_asset", fit="contain"),
+            _placement("evidence_card_1", "card", "support", "rail", 620, 96, 300, 108),
+            _placement("evidence_card_2", "card", "support", "rail", 620, 232, 300, 108),
+            _placement("detail_card_1", "card", "annotation", "main", 48, 372, 260, 90),
+            _placement("detail_card_2", "card", "annotation", "main", 336, 372, 260, 90),
+            _placement("detail_card_3", "card", "annotation", "main", 624, 372, 296, 90),
+        ])
+    if family == "dashboard":
+        return _apply_layout_inset([
+            _placement("kpi_1", "card", "support", "main", 40, 92, 196, 72),
+            _placement("kpi_2", "card", "support", "main", 252, 92, 196, 72),
+            _placement("kpi_3", "card", "support", "main", 464, 92, 196, 72),
+            _placement("visual_asset_dashboard", "image", "proof_object", "main", 40, 190, 620, 240, asset_role="visual_asset", fit="contain"),
+            _placement("insight_rail", "card", "synthesis", "rail", 692, 92, 228, 338),
+            _placement("bottom_implication", "callout", "synthesis", "callout", 40, 454, 880, 48),
+        ])
+    if family == "hierarchy":
+        return _apply_layout_inset([
+            _placement("top_claim", "callout", "synthesis", "main", 84, 92, 792, 58),
+            _placement("visual_asset_center", "image", "proof_object", "main", 150, 176, 660, 250, asset_role="visual_asset", fit="contain"),
+            _placement("left_annotation", "card", "annotation", "rail", 40, 210, 92, 170),
+            _placement("right_annotation", "card", "annotation", "rail", 828, 210, 92, 170),
+            _placement("bottom_takeaway", "callout", "synthesis", "callout", 84, 452, 792, 50),
+        ])
+    return _apply_layout_inset([
+        _placement("visual_asset_main", "image", "proof_object", "main", 48, 92, 604, 318, asset_role="visual_asset", fit="contain"),
+        _placement("insight_rail_1", "card", "support", "rail", 676, 92, 244, 92),
+        _placement("insight_rail_2", "card", "support", "rail", 676, 208, 244, 92),
+        _placement("insight_rail_3", "card", "support", "rail", 676, 324, 244, 86),
+        _placement("bottom_takeaway", "callout", "synthesis", "callout", 48, 430, 872, 72),
+    ])
+
+
 def _apply_layout_inset(placements: list[dict]) -> list[dict]:
     """Give each planned slot a small internal margin without changing layout logic."""
-    inset = 6
+    inset = 4
     result = []
     for placement in placements:
         copied = dict(placement)
@@ -1015,7 +1255,7 @@ def _apply_layout_inset(placements: list[dict]) -> list[dict]:
             result.append(copied)
             continue
         element = str(copied.get("element") or "").lower()
-        local_inset = 4 if element in {"connector", "line", "arrow", "right_arrow", "left_arrow"} else inset
+        local_inset = 3 if element in {"connector", "line", "arrow", "right_arrow", "left_arrow"} else inset
         if copied["w"] <= local_inset * 2 + 32 or copied["h"] <= local_inset * 2 + 24:
             result.append(copied)
             continue
@@ -1080,20 +1320,32 @@ def _optional_px(value: object) -> float | None:
         return None
 
 
-def _slide_needs_visual_asset_slot(slide: dict) -> bool:
+def _slide_needs_visual_asset_slot(slide: dict, user_query: str = "") -> bool:
     text = " ".join([
+        str(user_query or ""),
         str(slide.get("title") or ""),
         str(slide.get("key_message") or ""),
         str(slide.get("purpose") or ""),
         json.dumps(slide.get("suggested_elements", []), ensure_ascii=False),
         json.dumps(slide.get("content_blocks", []), ensure_ascii=False)[:2000],
     ]).lower()
-    signals = (
-        "architecture", "diagram", "flowchart", "workflow", "pipeline", "topology",
-        "langgraph", "service architecture", "system architecture", "infra",
-        "network", "aws", "azure", "gcp", "kubernetes",
+    method_signals = (
+        "diagrams", "image model", "rendered image", "external image",
+        "다이어그램스", "이미지 모델", "이미지모델", "렌더링 이미지",
     )
-    return any(signal in text for signal in signals)
+    if any(signal in text for signal in method_signals):
+        return True
+    action_signals = (
+        "draw", "redraw", "render", "visualize", "generate image",
+        "그려", "다시 그려", "그려줘", "렌더", "시각화",
+    )
+    visual_objects = (
+        "diagram", "flowchart", "architecture", "topology", "image",
+        "다이어그램", "아키텍처", "구성도", "토폴로지", "이미지",
+    )
+    return any(signal in text for signal in action_signals) and any(
+        signal in text for signal in visual_objects
+    )
 
 
 def _extend_blueprints_to_requested_count(

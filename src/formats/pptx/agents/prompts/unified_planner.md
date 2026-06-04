@@ -78,12 +78,19 @@ Return ONLY valid JSON:
 2. Give every non-divider slide one claim title and one dominant proof object.
 3. Choose cover separately; choose one header/footer master pair once and keep it fixed for every content slide.
 4. Choose a standard body layout per slide; use a sub-layout only when a rough outer split needs an internal composition.
-5. Prefer evidence, diagrams, tables, timelines, charts, and meaningful comparisons over filler cards.
+5. Prefer evidence, tables, charts, timelines, meaningful comparisons, and
+   compact native process cards over filler cards. Use diagrams only when the
+   user's request or the content's relationships genuinely require a diagram.
 6. Use concise copy. Every visible object must support reading order, evidence, or navigation.
 7. Use icons deliberately as semantic anchors. Do not force icons into every block and never approximate a brand mark.
 8. Maintain visual rhythm by varying body layout families without breaking the master zones.
 9. For every content slide, provide coordinate-level `element_placements` that fill the body region densely.
-10. For architecture, diagram, flowchart, workflow, or topology slides, reserve one explicit large image/diagram slot with `asset_role:"visual_asset"` and `fit:"contain"`.
+10. Reserve an explicit large image/diagram slot with `asset_role:"visual_asset"`
+    and `fit:"contain"` only when the user explicitly asks for a rendered
+    diagram/image or when technical relationships cannot be understood from
+    native cards, tables, charts, timelines, and connectors. Do not reserve a
+    rendered diagram slot merely because a slide mentions workflow, process,
+    flow, architecture, or pipeline.
 
 ## OOXML Planning Boundary
 
@@ -103,14 +110,17 @@ unsupported SVG decoration, arbitrary widgets, or unverified logos.
 ## Layout Density Contract
 
 - Content slides must use 70-90% of the body region with planned elements.
-- Avoid one tiny central object with large unused margins. If a diagram is the proof object, make it a large planned slot, usually 55-70% of body width and 60-80% of body height.
+- Avoid one tiny central object with large unused margins. If a rendered diagram
+  is truly the proof object, make it a large planned slot, usually 55-70% of
+  body width and 60-80% of body height. Otherwise prefer dense native layouts:
+  table + insight cards, comparison panels, KPI/detail grids, or process cards.
 - Each non-cover slide should plan 4-8 major zones: one proof object, 2-4 support cards/annotations, and one concise synthesis/callout when useful.
 - `element_placements` are binding implementation instructions for downstream HTML generation. Include x/y/w/h for every planned major element.
 - Keep all coordinates inside the 960x540 canvas body area, normally x 40-920 and y 82-510.
 - No planned body element may overlap the fixed footer. For content slides,
   every placement must satisfy `y + h <= 510`; reduce height, move upward, or
   split content rather than allowing a card/callout to enter the footer band.
-- Planned cards and boxes must not overlap one another. Use at least 12px gaps
+- Planned cards and boxes must not overlap one another. Use compact 6-8px gaps
   between equal-level cards, callouts, tables, charts, images, and icon groups.
 - Icons are planned as independent elements only when they have a clear semantic
   anchor. Align icon rectangles with the related card/title grid, not as a
