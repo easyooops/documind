@@ -1,5 +1,9 @@
 /build/
 /dist/
+/dist_build/
 /.ruff_cache/
+/.venv/
+/.venv-test/
+/.venv-testpypi/
 /src/documind.egg-info/
 /src/src/

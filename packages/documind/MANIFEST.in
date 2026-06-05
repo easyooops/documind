@@ -1,7 +1,11 @@
 include README.md
 include README.ko.md
+include PUBLISHING.md
 include PUBLISHING.ko.md
+recursive-include scripts *.py
+recursive-include overlays *.py
 recursive-exclude src/src/api *
+recursive-exclude src/src/formats/pdf *
 exclude src/src/__main__.py
 exclude src/src/cli.py
 exclude src/src/main.py
@@ -9,5 +13,12 @@ exclude src/src/schemas/api.py
 exclude src/src/infrastructure/database.py
 exclude src/src/infrastructure/models.py
 exclude src/src/infrastructure/storage.py
+exclude src/src/formats/docx/preview.py
+exclude src/src/formats/pptx/agents/configs/design_evaluator.json
+exclude src/src/formats/pptx/agents/configs/vlm_qa.json
+exclude src/src/formats/pptx/agents/nodes/design_evaluator.py
+exclude src/src/formats/pptx/agents/nodes/vlm_qa.py
+exclude src/src/formats/pptx/template_visual.py
+exclude src/src/formats/pptx/visual_renderer.py
 recursive-exclude * __pycache__
 recursive-exclude * *.py[cod]
