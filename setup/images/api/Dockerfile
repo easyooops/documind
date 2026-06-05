@@ -13,6 +13,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         fonts-noto-cjk \
+        graphviz \
         libcairo2-dev \
         libreoffice \
         pkg-config \
