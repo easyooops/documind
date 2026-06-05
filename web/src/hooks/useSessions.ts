@@ -41,6 +41,10 @@ export function useSessionSelect(onAfterSelect?: () => void) {
     async (sessionId: string) => {
       const { currentSessionId } = useSessionStore.getState();
       if (sessionId === currentSessionId) {
+        const { currentJob, openPanel } = useDocumentStore.getState();
+        if (currentJob?.status === "completed") {
+          openPanel();
+        }
         onAfterSelect?.();
         return;
       }
@@ -64,11 +68,17 @@ export function useSessionSelect(onAfterSelect?: () => void) {
           .reverse()
           .find((m) => m.generationJobId);
         if (lastJobMsg?.generationJobId) {
-          const job = await getJobStatus(lastJobMsg.generationJobId);
-          if (job.status === "completed") {
-            useDocumentStore.getState().setCurrentJob(job);
-            const versions = await getDocumentVersions(lastJobMsg.generationJobId);
-            useDocumentStore.getState().setVersions(versions);
+          try {
+            const job = await getJobStatus(lastJobMsg.generationJobId);
+            const documentStore = useDocumentStore.getState();
+            documentStore.setCurrentJob(job);
+            if (job.status === "completed") {
+              const versions = await getDocumentVersions(lastJobMsg.generationJobId);
+              documentStore.setVersions(versions);
+              documentStore.openPanel();
+            }
+          } catch {
+            /* keep the restored chat visible even if document metadata is unavailable */
           }
         }
       } catch {

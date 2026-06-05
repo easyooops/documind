@@ -59,5 +59,5 @@ export function truncate(str: string, length: number): string {
 }
 
 export function generateId(): string {
-  return crypto.randomUUID?.() || Math.random().toString(36).slice(2);
+  return globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
 }

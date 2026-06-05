@@ -9,6 +9,7 @@ import type {
   User,
   ChatMessage,
 } from "@/types";
+import { generateId } from "@/lib/utils";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -130,7 +131,7 @@ export async function getSession(sessionId: string): Promise<Session> {
     id: data.id,
     title: data.title,
     messages: (data.messages || []).map((m) => ({
-      id: m.id || crypto.randomUUID(),
+      id: m.id || generateId(),
       role: m.role,
       content: m.content,
       generationJobId: m.generation_job_id,

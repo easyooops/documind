@@ -107,10 +107,6 @@ export function Sidebar({
   });
 
   const handleSessionSelect = (sessionId: string) => {
-    if (sessionId === currentSessionId) {
-      onSessionSelect?.();
-      return;
-    }
     requestNavigation(() => selectSession(sessionId));
   };
 
