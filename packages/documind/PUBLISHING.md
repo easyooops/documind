@@ -60,8 +60,8 @@ python -m build --no-isolation
 Expected outputs:
 
 ```text
-dist/documind-0.2.1-py3-none-any.whl
-dist/documind-0.2.1.tar.gz
+dist/documind-0.2.2-py3-none-any.whl
+dist/documind-0.2.2.tar.gz
 ```
 
 ## Validate
@@ -73,7 +73,7 @@ twine check dist/*
 Confirm the wheel contents:
 
 ```bash
-python -c "import zipfile; n=zipfile.ZipFile('dist/documind-0.2.1-py3-none-any.whl').namelist(); print(any(x.startswith('src/api') for x in n), any('/formats/pdf/' in x for x in n), any('playwright' in x.lower() for x in n), any('visual_renderer.py' in x for x in n))"
+python -c "import zipfile; n=zipfile.ZipFile('dist/documind-0.2.2-py3-none-any.whl').namelist(); print(any(x.startswith('src/api') for x in n), any('/formats/pdf/' in x for x in n), any('playwright' in x.lower() for x in n), any('visual_renderer.py' in x for x in n))"
 ```
 
 All printed values should be `False`.
@@ -82,7 +82,7 @@ Local install smoke test:
 
 ```bash
 python -m venv .venv-test
-.venv-test\Scripts\python -m pip install dist\documind-0.2.1-py3-none-any.whl
+.venv-test\Scripts\python -m pip install dist\documind-0.2.2-py3-none-any.whl
 .venv-test\Scripts\python -c "from documind import DocuMind, GenerationRequest; print(DocuMind.__name__, GenerationRequest(query='x').document_type)"
 ```
 
