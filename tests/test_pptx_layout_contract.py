@@ -26,25 +26,30 @@ from src.formats.pptx.agents.nodes.render_convert import (
 )
 from src.formats.pptx.agents.nodes.unified_planner import (
     _apply_layout_inset,
+    _compact_parent_slide_plan,
     _extend_blueprints_to_requested_count,
+    _extract_requested_slide_count,
     _extract_slide_revision_instructions,
     _infer_target_slide_count,
     _invoke_planner_with_structured_output,
     _normalize_blueprints,
     _normalize_revision_scope,
+    _repair_missing_slide_count_result,
     _structured_planner_llm,
 )
 from src.formats.pptx.agents.nodes.visual_asset_planner import (
     DIAGRAMS_DPI,
+    METHOD_DIAGRAMS,
     MIN_DIAGRAM_PNG_HEIGHT,
     MIN_DIAGRAM_PNG_WIDTH,
-    METHOD_DIAGRAMS,
+    _add_diagram_image_border,
     _diagrams_node_candidates,
     _diagrams_topology,
     _fallback_diagrams_edges,
     _fallback_diagrams_nodes,
-    _fallback_visual_slot_plan,
     _fallback_plan,
+    _fallback_visual_slot_plan,
+    _fit_png_canvas_to_placement,
     _layout_nodes,
     _llm_plan_validation_issues,
     _looks_like_truncated_json,
@@ -53,12 +58,10 @@ from src.formats.pptx.agents.nodes.visual_asset_planner import (
     _normalize_plan,
     _parse_mermaid,
     _quick_visual_signal,
-    _fit_png_canvas_to_placement,
-    _slide_context_requires_diagram,
-    _slot_constraints,
     _render_asset,
     _safe_diagrams_topology,
-    _add_diagram_image_border,
+    _slide_context_requires_diagram,
+    _slot_constraints,
 )
 from src.formats.pptx.mapper.engine import CSStoOOXMLEngine
 from src.formats.pptx.mapper.html_parser import ParsedElement, parse_slide_html
@@ -313,6 +316,164 @@ def test_requested_slide_count_is_extended_when_planner_under_produces() -> None
     assert len(extended) == 6
     assert extended[-1]["slide_type"] == "summary"
     assert extended[-1]["layout_plan"]["element_placements"]
+
+
+def test_requested_slide_count_extension_uses_user_source_material() -> None:
+    ruleset = get_ruleset()
+    blueprints = _normalize_blueprints(
+        [
+            {"index": 1, "slide_type": "cover", "title": "DocuMind"},
+            {"index": 2, "slide_type": "content", "title": "제품 한 줄"},
+            {"index": 3, "slide_type": "content", "title": "지원 포맷"},
+        ],
+        ruleset,
+    )
+    query = """
+    # DocuMind 상품 소개서 근거
+    ## 1. 제품 한 줄
+    - LangGraph 기반 Agentic AI 문서 자동화 플랫폼
+    ## 2. 지원 포맷
+    - PPTX, DOCX, PDF, Markdown, XLSX, HWPX 네이티브 생성
+    ## 3. 소비 채널
+    - FastAPI, Web UI, PyPI 패키지 3면 소비
+    ## 4. 오케스트레이션
+    - init, plan, visual asset, generate HTML, render, QA 단계
+    ## 5. 품질 보증
+    - deterministic OOXML mapper와 VLM QA 루프를 결합
+    """
+
+    extended = _extend_blueprints_to_requested_count(
+        blueprints,
+        7,
+        query,
+        ruleset,
+    )
+
+    assert len(extended) == 7
+    assert "소비 채널" in extended[3]["title"]
+    assert "오케스트레이션" in extended[4]["title"]
+    assert "품질 보증" in extended[5]["title"]
+    assert "deterministic OOXML mapper" in str(extended[5]["content_blocks"])
+    assert "핵심 설계 포인트" not in str(extended)
+    assert "보강 슬라이드" not in str(extended)
+
+
+def test_compact_parent_slide_plan_preserves_late_slide_context() -> None:
+    slide_plan = [
+        {
+            "index": index,
+            "slide_type": "content",
+            "title": f"Slide {index} source-backed title",
+            "key_message": f"Key message {index}",
+            "content_blocks": [
+                {
+                    "type": "points",
+                    "items": [
+                        {"title": f"Finding {index}", "body": "x" * 600},
+                    ],
+                }
+            ],
+        }
+        for index in range(1, 14)
+    ]
+
+    compact = _compact_parent_slide_plan(slide_plan, max_chars=6000)
+
+    assert "Slide 1 source-backed title" in compact
+    assert "Slide 13 source-backed title" in compact
+
+
+def test_slide_outline_scope_ignores_p99_latency_metric() -> None:
+    query = """
+    Slide 1 — 운영 관점
+    핵심 메시지: latency, error rate, throughput을 본다.
+    Slide 2 — 5대 관측 축
+    Metrics
+    QPS, P99 latency, 토큰, 비용
+    Slide 3 — 정리
+    """
+
+    explicit_count = _extract_requested_slide_count(query)
+    instructions = _extract_slide_revision_instructions(query)
+
+    assert explicit_count is None
+    assert sorted(instructions) == [1, 2, 3]
+    assert _infer_target_slide_count(
+        query,
+        explicit_slide_count=explicit_count,
+        base_version={},
+        explicit_slide_instructions=instructions,
+    ) == 3
+
+
+async def test_missing_slide_count_repair_requests_only_missing_slides() -> None:
+    ruleset = get_ruleset()
+    existing = _normalize_blueprints(
+        [
+            {"index": 1, "slide_type": "cover", "title": "Opening"},
+            {"index": 2, "slide_type": "content", "title": "Problem"},
+            {"index": 3, "slide_type": "content", "title": "Solution"},
+        ],
+        ruleset,
+    )
+
+    class FakeResponse:
+        content = """
+        {
+          "slides": [
+            {
+              "index": 4,
+              "slide_type": "content",
+              "title": "Execution Plan",
+              "key_message": "Pilot the workflow before scaling.",
+              "purpose": "Show the rollout path.",
+              "content_blocks": [
+                {"type": "steps", "items": [{"title": "Pilot", "body": "Start with one team."}]}
+              ],
+              "layout_plan": {"body_layout_id": "process_4col"},
+              "suggested_elements": ["rounded_rect", "connector"]
+            },
+            {
+              "index": 5,
+              "slide_type": "summary",
+              "title": "Decision Summary",
+              "key_message": "The requested deck now has the complete arc.",
+              "purpose": "Close with the decision.",
+              "content_blocks": [
+                {"type": "summary", "items": [{"title": "Approve", "body": "Move to pilot."}]}
+              ],
+              "layout_plan": {"body_layout_id": "numbered_list_card"},
+              "suggested_elements": ["rounded_rect", "icon"]
+            }
+          ]
+        }
+        """
+
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        async def ainvoke(self, messages):
+            self.prompt = messages[-1].content
+            return FakeResponse()
+
+    llm = FakeLLM()
+    result = await _repair_missing_slide_count_result(
+        llm=llm,
+        base_messages=[],
+        parsed_result={"title": "Deck", "slides": existing},
+        slide_blueprints=existing,
+        requested_count=5,
+        user_query="5 slides product brief",
+        ruleset=ruleset,
+        research_data=None,
+    )
+
+    assert result is not None
+    assert len(result["slides"]) == 5
+    assert [slide["index"] for slide in result["slides"]] == [1, 2, 3, 4, 5]
+    assert "Do NOT rewrite the whole deck" in llm.prompt
+    assert "containing exactly the 2 missing slide blueprints" in llm.prompt
 
 
 def test_visual_variant_request_infers_two_slide_scope() -> None:

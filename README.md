@@ -193,4 +193,4 @@ See `LICENSE` for details.
 
 ## Contact
 
-Suyeong Yoo — `ssu0416@gmail.com`
+For questions, bug reports, or feature suggestions, please open a [GitHub Issue](https://github.com/bespin/documind/issues) or start a [GitHub Discussion](https://github.com/bespin/documind/discussions).

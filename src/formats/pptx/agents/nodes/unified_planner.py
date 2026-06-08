@@ -89,7 +89,10 @@ async def unified_planner(state: DocuMindState) -> dict:
     ]
 
     if research_data:
-        research_summary = json.dumps(research_data, ensure_ascii=False, indent=2)[:3000]
+        research_summary = _response_excerpt(
+            json.dumps(research_data, ensure_ascii=False, indent=2),
+            6000,
+        )
         context_parts.append(f"\n## Research Data\n{research_summary}")
 
     if visual_intent:
@@ -139,7 +142,7 @@ async def unified_planner(state: DocuMindState) -> dict:
             "If the request is ambiguous, prefer no structural change and a minimal patch.\n"
             f"Selected parent version: v{base_version.get('version_number')}\n"
             f"Parent title and slide plan:\n"
-            f"{json.dumps(base_version.get('slide_plan', []), ensure_ascii=False, indent=2)[:7000]}"
+            f"{_compact_parent_slide_plan(base_version.get('slide_plan', []))}"
         )
         if explicit_slide_instructions:
             context_parts.append(
@@ -261,6 +264,24 @@ async def unified_planner(state: DocuMindState) -> dict:
             result = repaired_count_result
             slide_blueprints = _normalize_blueprints(result.get("slides", []), ruleset, user_query)
         if len(slide_blueprints) < requested_count:
+            missing_repair_result = await _repair_missing_slide_count_result(
+                llm=llm,
+                base_messages=messages,
+                parsed_result=result,
+                slide_blueprints=slide_blueprints,
+                requested_count=requested_count,
+                user_query=user_query,
+                ruleset=ruleset,
+                research_data=research_data,
+            )
+            if missing_repair_result is not None:
+                result = missing_repair_result
+                slide_blueprints = _normalize_blueprints(
+                    result.get("slides", []),
+                    ruleset,
+                    user_query,
+                )
+        if len(slide_blueprints) < requested_count:
             logger.error(
                 "unified_planner.slide_count_last_resort_extend",
                 requested=requested_count,
@@ -272,6 +293,7 @@ async def unified_planner(state: DocuMindState) -> dict:
                 requested_count,
                 user_query,
                 ruleset,
+                research_data,
             )
     elif requested_count and not base_version and len(slide_blueprints) > requested_count:
         logger.warning(
@@ -557,9 +579,9 @@ async def _repair_slide_count_result(
         f"{requested_count} slides. Preserve the same schema, theme, strategy, and intent. "
         "Do not use markdown fences or commentary.\n\n"
         "Original user request excerpt:\n"
-        f"{user_query[:1200]}\n\n"
+        f"{_response_excerpt(user_query, 6000)}\n\n"
         "Previous parsed JSON:\n"
-        f"{json.dumps(parsed_result, ensure_ascii=False, indent=2)[:16000]}"
+        f"{_response_excerpt(json.dumps(parsed_result, ensure_ascii=False, indent=2), 18000)}"
     )
     try:
         response = await llm.ainvoke([
@@ -604,6 +626,106 @@ async def _repair_slide_count_result(
     except Exception as exc:
         logger.error(
             "unified_planner.slide_count_repair_call_failed",
+            requested=requested_count,
+            planned=planned_count,
+            error=str(exc)[:300],
+        )
+    return None
+
+
+async def _repair_missing_slide_count_result(
+    *,
+    llm,
+    base_messages: list,
+    parsed_result: dict,
+    slide_blueprints: list[dict],
+    requested_count: int,
+    user_query: str,
+    ruleset,
+    research_data: object | None,
+) -> dict | None:
+    """Ask the model only for missing slides so large decks do not exceed output limits."""
+    planned_count = len(slide_blueprints)
+    if planned_count >= requested_count:
+        return None
+
+    missing_count = requested_count - planned_count
+    existing_indices = [
+        int(blueprint.get("index", position + 1))
+        for position, blueprint in enumerate(slide_blueprints)
+        if str(blueprint.get("index", position + 1)).isdigit()
+    ]
+    next_index = max(existing_indices or [planned_count]) + 1
+    expected_indices = list(range(next_index, next_index + missing_count))
+    source_context = _build_fallback_source_context(user_query, slide_blueprints, research_data)
+    repair_prompt = (
+        "The previous PPTX planner JSON still under-produced slides. "
+        "Do NOT rewrite the whole deck. Return ONLY one valid JSON object with a `slides` array "
+        f"containing exactly the {missing_count} missing slide blueprints. "
+        f"The missing slide indices must be exactly {expected_indices}. "
+        "Preserve the same narrative, theme, and schema style as the existing plan. "
+        "Do not include already-generated slides, markdown fences, or commentary.\n\n"
+        "Original user request excerpt:\n"
+        f"{_response_excerpt(user_query, 7000)}\n\n"
+        "Existing generated slide outline:\n"
+        f"{_compact_parent_slide_plan(slide_blueprints, max_chars=9000)}\n\n"
+        "Source segments available for the missing slides:\n"
+        f"{_response_excerpt(json.dumps(source_context, ensure_ascii=False, indent=2), 7000)}"
+    )
+    try:
+        response = await llm.ainvoke([
+            *base_messages[:1],
+            HumanMessage(content=repair_prompt),
+        ])
+        text = _message_text(response.content)
+        logger.info(
+            "unified_planner.slide_count_missing_repair_response",
+            chars=len(text),
+            sha=_short_sha(text),
+            requested_slides=requested_count,
+            planned=planned_count,
+            missing=missing_count,
+        )
+        result = _coerce_planner_result(
+            parse_llm_json(text),
+            source="slide_count_missing_repair",
+            requested_count=missing_count,
+        )
+        missing_slides = result.get("slides", [])
+        if not isinstance(missing_slides, list) or not missing_slides:
+            return None
+        normalized_missing = _normalize_blueprints(missing_slides, ruleset, user_query)
+        normalized_missing = normalized_missing[:missing_count]
+        for offset, slide in enumerate(normalized_missing):
+            slide["index"] = expected_indices[offset]
+
+        merged = dict(parsed_result)
+        merged["slides"] = [*slide_blueprints, *normalized_missing]
+        if len(merged["slides"]) >= requested_count:
+            logger.info(
+                "unified_planner.slide_count_missing_repair_success",
+                requested=requested_count,
+                planned=len(merged["slides"]),
+                added=len(normalized_missing),
+            )
+        else:
+            logger.warning(
+                "unified_planner.slide_count_missing_repair_partial",
+                requested=requested_count,
+                planned=len(merged["slides"]),
+                added=len(normalized_missing),
+            )
+        return merged
+    except (json.JSONDecodeError, TypeError) as exc:
+        _log_planner_parse_failure(
+            "unified_planner.slide_count_missing_repair_parse_failed",
+            _message_text(locals().get("text", "")),
+            exc,
+            requested_count=requested_count,
+        )
+    except Exception as exc:
+        logger.error(
+            "unified_planner.slide_count_missing_repair_call_failed",
             requested=requested_count,
             planned=planned_count,
             error=str(exc)[:300],
@@ -677,6 +799,103 @@ def _response_excerpt(text: str, limit: int) -> str:
         return value
     half = max(1, limit // 2)
     return value[:half] + "\n...[truncated]...\n" + value[-half:]
+
+
+def _compact_parent_slide_plan(slide_plan: object, max_chars: int = 18000) -> str:
+    """Keep long parent decks visible to revision planning without front-only truncation."""
+    slides = [slide for slide in _as_prompt_list(slide_plan) if isinstance(slide, dict)]
+    compact = [_compact_slide_plan_item(slide, include_blocks=True) for slide in slides]
+    text = json.dumps(compact, ensure_ascii=False, indent=2)
+    if len(text) <= max_chars:
+        return text
+
+    very_compact = [
+        _compact_slide_plan_item(slide, include_blocks=False)
+        for slide in slides
+    ]
+    text = json.dumps(very_compact, ensure_ascii=False, indent=2)
+    if len(text) <= max_chars:
+        return text
+    return _response_excerpt(text, max_chars)
+
+
+def _compact_slide_plan_item(slide: dict, *, include_blocks: bool) -> dict:
+    item = {
+        "index": slide.get("index"),
+        "slide_type": slide.get("slide_type"),
+        "title": _compact_prompt_text(slide.get("title"), 120),
+        "key_message": _compact_prompt_text(slide.get("key_message"), 220),
+        "purpose": _compact_prompt_text(slide.get("purpose"), 180),
+        "layout_hint": _compact_prompt_text(slide.get("layout_hint"), 100),
+    }
+    if include_blocks:
+        blocks = _compact_content_blocks(slide.get("content_blocks"), max_blocks=3)
+        if blocks:
+            item["content_blocks"] = blocks
+        data_points = _compact_data_points(slide.get("data_points"), max_items=4)
+        if data_points:
+            item["data_points"] = data_points
+    return {key: value for key, value in item.items() if value not in (None, "", [])}
+
+
+def _compact_content_blocks(value: object, *, max_blocks: int = 4) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    blocks = []
+    for block in value[:max_blocks]:
+        if not isinstance(block, dict):
+            continue
+        compact = {"type": _compact_prompt_text(block.get("type"), 80)}
+        items = []
+        raw_items = block.get("items")
+        if isinstance(raw_items, list):
+            for item in raw_items[:4]:
+                if isinstance(item, dict):
+                    items.append({
+                        "title": _compact_prompt_text(item.get("title"), 90),
+                        "body": _compact_prompt_text(item.get("body"), 180),
+                        "data": _compact_prompt_text(item.get("data"), 80),
+                    })
+                else:
+                    items.append({"body": _compact_prompt_text(item, 180)})
+        if items:
+            compact["items"] = [
+                {key: val for key, val in item.items() if val}
+                for item in items
+            ]
+        blocks.append({key: val for key, val in compact.items() if val})
+    return blocks
+
+
+def _compact_data_points(value: object, *, max_items: int = 4) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    points = []
+    for item in value[:max_items]:
+        if isinstance(item, dict):
+            points.append({
+                "label": _compact_prompt_text(item.get("label"), 80),
+                "value": _compact_prompt_text(item.get("value"), 80),
+                "context": _compact_prompt_text(item.get("context"), 140),
+            })
+        else:
+            points.append({"label": _compact_prompt_text(item, 140)})
+    return [{key: val for key, val in point.items() if val} for point in points]
+
+
+def _compact_prompt_text(value: object, limit: int = 200) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"
+
+
+def _as_prompt_list(value: object) -> list:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    return [value]
 
 
 def _raw_slide_indices(result: dict) -> list:
@@ -773,8 +992,10 @@ def _extract_slide_revision_instructions(user_query: str) -> dict[int, str]:
         return {}
     marker_pattern = re.compile(
         r"(?:^|[\s,;:()\[\]{}。])\s*"
-        r"(?:슬라이드|슬라|slide|slides|page|pages|p)\s*#?\s*"
-        r"(?P<targets>\d{1,2}(?:\s*(?:,|/|&|와|과|및|그리고|and|to|부터|에서|~|-|–|—)\s*\d{1,2})*)"
+        r"(?:슬라이드|슬라|slide|slides|page|pages|p\.)\s*#?\s*"
+        r"(?P<targets>\d{1,2}(?![A-Za-z가-힣])"
+        r"(?:\s*(?:,|/|&|와|과|및|그리고|and|to|부터|에서|~|-|–|—)\s*"
+        r"\d{1,2}(?![A-Za-z가-힣]))*)"
         r"\s*(?:장|페이지|쪽|번|p)?\s*(?:[:：.)\]-]|\s+)?",
         re.IGNORECASE,
     )
@@ -1353,11 +1574,13 @@ def _extend_blueprints_to_requested_count(
     requested_count: int,
     user_query: str,
     ruleset,
+    research_data: object | None = None,
 ) -> list[dict]:
-    """Deterministically add missing slides when the planner under-produces."""
+    """Deterministically add missing slides from source material when the planner under-produces."""
     if len(blueprints) >= requested_count:
         return blueprints
     existing = [dict(blueprint) for blueprint in blueprints]
+    source_context = _build_fallback_source_context(user_query, existing, research_data)
     existing_indices = [
         int(blueprint.get("index", position + 1))
         for position, blueprint in enumerate(existing)
@@ -1373,6 +1596,8 @@ def _extend_blueprints_to_requested_count(
             missing_number,
             requested_count,
             user_query,
+            existing,
+            source_context,
         )
         normalized = _normalize_blueprints([raw_slide], ruleset)
         existing.extend(normalized)
@@ -1386,53 +1611,316 @@ def _missing_slide_blueprint(
     missing_number: int,
     requested_count: int,
     user_query: str,
+    existing_blueprints: list[dict] | None = None,
+    source_context: dict | None = None,
 ) -> dict:
+    source_context = source_context or _build_fallback_source_context(
+        user_query,
+        existing_blueprints or [],
+        None,
+    )
+    segments = source_context.get("segments") or []
+    deck_topic = source_context.get("deck_topic") or _deck_topic_from_existing(
+        existing_blueprints or []
+    )
     if slide_type == "summary":
-        title = "실행 전환과 기대 효과"
-        key_message = "도입 판단에 필요한 효과와 다음 액션을 한 장에서 정리합니다."
-        purpose = "Summarize decision rationale and next steps."
+        title = _compact_prompt_text(f"{deck_topic} 핵심 요약", 70)
+        summary_segments = segments[-4:] or _segments_from_existing(existing_blueprints or [])[-4:]
+        items = []
+        for offset, segment in enumerate(summary_segments[:4], 1):
+            point = _segment_point_text(segment, offset)
+            items.append({
+                "title": _compact_prompt_text(segment.get("title") or f"Point {offset}", 42),
+                "body": _compact_prompt_text(point, 180),
+                "icon": ["target", "chart", "shield", "rocket"][(offset - 1) % 4],
+            })
+        if not items:
+            items = [{
+                "title": _compact_prompt_text(deck_topic, 42),
+                "body": _compact_prompt_text(user_query, 180),
+                "icon": "target",
+            }]
+        key_message = _compact_prompt_text(
+            " / ".join(item["title"] for item in items[:3]),
+            160,
+        )
+        purpose = "Summarize source-backed decision rationale and next steps."
         body_layout_id = "numbered_list_card"
         suggested = ["rounded_rect", "icon", "textbox", "connector"]
-        blocks = [
-            {
-                "type": "action_summary",
-                "items": [
-                    {"title": "도입 판단", "body": "비용, 품질, 일관성 관점의 효과 확인", "icon": "target"},
-                    {"title": "파일럿", "body": "핵심 문서 유형부터 적용 범위 검증", "icon": "rocket"},
-                    {"title": "확산", "body": "템플릿과 QA 기준을 표준 운영으로 전환", "icon": "checkmark"},
-                ],
-            }
-        ]
+        blocks = [{"type": "source_backed_summary", "items": items}]
     else:
-        title = f"핵심 설계 포인트 {missing_number}"
-        key_message = "사용자 요청의 남은 핵심 내용을 별도 슬라이드로 분리해 가독성을 확보합니다."
-        purpose = "Cover remaining requested content without crowding adjacent slides."
-        body_layout_id = "split_60_40"
+        segment = _segment_for_missing_slide(segments, missing_number)
+        title = _fallback_slide_title(segment, deck_topic, missing_number)
+        points = _segment_points(segment)
+        items = []
+        for offset, point in enumerate(points[:5], 1):
+            items.append({
+                "title": _point_title(point, offset),
+                "body": _compact_prompt_text(point, 190),
+                "icon": ["document", "layers", "chart", "shield", "gear"][(offset - 1) % 5],
+            })
+        if not items:
+            items = [{
+                "title": _compact_prompt_text(title, 42),
+                "body": _compact_prompt_text(user_query, 190),
+                "icon": "document",
+            }]
+        key_message = _compact_prompt_text(_segment_point_text(segment, 1), 180)
+        purpose = f"Cover source-backed material for {title} without crowding adjacent slides."
+        body_layout_id = _fallback_body_layout_for_missing_slide(missing_number)
         suggested = ["rounded_rect", "table", "icon", "textbox"]
-        blocks = [
-            {
-                "type": "supporting_points",
-                "items": [
-                    {"title": "요구사항", "body": "요청 범위와 제약을 구조화", "icon": "document"},
-                    {"title": "설계 기준", "body": "레이아웃, 요소, QA 기준을 명확화", "icon": "layers"},
-                    {"title": "운영 관점", "body": "반복 생성과 검증 흐름을 안정화", "icon": "gear"},
-                ],
-            }
-        ]
+        blocks = [{"type": "source_backed_supporting_points", "items": items}]
+    point_text = " ".join(
+        str(item.get("body", ""))
+        for block in blocks
+        for item in block.get("items", [])
+        if isinstance(item, dict)
+    )
     return {
         "index": index,
         "slide_type": slide_type,
-        "section_label": "보강 슬라이드",
+        "section_label": "Source-backed",
         "title": title,
         "key_message": key_message,
         "purpose": purpose,
         "content_blocks": blocks,
+        "data_points": _source_data_points(point_text),
         "layout_plan": {"body_layout_id": body_layout_id},
-        "layout_hint": "auto-filled to satisfy explicit slide count",
+        "layout_hint": "source-backed auto-extension to satisfy explicit slide count",
         "suggested_elements": suggested,
         "visual_density": "high",
         "source_citations": [],
     }
+
+
+def _build_fallback_source_context(
+    user_query: str,
+    existing_blueprints: list[dict],
+    research_data: object | None,
+) -> dict:
+    segments = _source_segments_from_text(user_query)
+    segments.extend(_source_segments_from_research(research_data))
+    if not segments:
+        segments = _segments_from_existing(existing_blueprints)
+    return {
+        "segments": segments,
+        "deck_topic": _deck_topic_from_sources(user_query, existing_blueprints, segments),
+    }
+
+
+def _source_segments_from_text(text: str) -> list[dict]:
+    lines = [line.strip() for line in str(text or "").splitlines()]
+    segments: list[dict] = []
+    current: dict | None = None
+    for line in lines:
+        if not line:
+            continue
+        heading = _source_heading(line)
+        if heading:
+            if current:
+                segments.append(current)
+            current = {"title": heading, "points": []}
+            continue
+        point = _clean_source_point(line)
+        if not point:
+            continue
+        if current is None:
+            current = {"title": _compact_prompt_text(point, 70), "points": []}
+        current.setdefault("points", []).append(point)
+    if current:
+        segments.append(current)
+
+    if segments:
+        return _dedupe_segments(segments)[:40]
+    sentence_points = [
+        _clean_source_point(item)
+        for item in re.split(r"(?<=[.!?。])\s+|\n+", str(text or ""))
+        if _clean_source_point(item)
+    ]
+    if not sentence_points:
+        return []
+    return [{"title": _compact_prompt_text(sentence_points[0], 70), "points": sentence_points[:8]}]
+
+
+def _source_heading(line: str) -> str:
+    text = str(line or "").strip()
+    markdown = re.match(r"^#{1,6}\s+(.+)$", text)
+    if markdown:
+        return _clean_source_point(markdown.group(1))[:90]
+    bracketed = re.match(r"^【(.{2,90})】", text)
+    if bracketed:
+        return _clean_source_point(bracketed.group(1))[:90]
+    numbered = re.match(r"^(?:\d{1,2}[.)]|[A-Z][.)])\s+(.{4,90})$", text)
+    if numbered:
+        return _clean_source_point(numbered.group(1))[:90]
+    return ""
+
+
+def _clean_source_point(text: object) -> str:
+    value = str(text or "").strip()
+    value = re.sub(r"^\s*(?:[-*+•]\s+|\d{1,2}[.)]\s+)", "", value)
+    value = re.sub(r"\*\*([^*]+)\*\*", r"\1", value)
+    value = re.sub(r"`([^`]+)`", r"\1", value)
+    value = re.sub(r"\s+", " ", value).strip(" -–—:")
+    return value
+
+
+def _source_segments_from_research(research_data: object | None) -> list[dict]:
+    if not isinstance(research_data, dict):
+        return []
+    segments = []
+    for key in ("facts", "statistics", "case_studies", "trends"):
+        items = research_data.get(key)
+        if not isinstance(items, list) or not items:
+            continue
+        points = [_compact_prompt_text(_research_item_text(item), 220) for item in items[:6]]
+        points = [point for point in points if point]
+        if points:
+            segments.append({"title": key.replace("_", " ").title(), "points": points})
+    return segments
+
+
+def _research_item_text(item: object) -> str:
+    if isinstance(item, dict):
+        parts = [
+            str(item.get(key) or "").strip()
+            for key in ("title", "metric", "value", "summary", "snippet", "source")
+            if str(item.get(key) or "").strip()
+        ]
+        return " | ".join(parts) if parts else json.dumps(item, ensure_ascii=False)
+    return str(item or "")
+
+
+def _segments_from_existing(existing_blueprints: list[dict]) -> list[dict]:
+    segments = []
+    for blueprint in existing_blueprints:
+        title = _compact_prompt_text(blueprint.get("title"), 70)
+        points = [
+            _compact_prompt_text(blueprint.get("key_message"), 180),
+            _compact_prompt_text(blueprint.get("purpose"), 180),
+        ]
+        points = [point for point in points if point]
+        if title or points:
+            segments.append({"title": title or "Existing slide", "points": points})
+    return segments
+
+
+def _dedupe_segments(segments: list[dict]) -> list[dict]:
+    result = []
+    seen = set()
+    for segment in segments:
+        title = _compact_prompt_text(segment.get("title"), 90)
+        points = [
+            _compact_prompt_text(point, 220)
+            for point in segment.get("points", [])
+            if _compact_prompt_text(point, 220)
+        ]
+        key = (title.lower(), tuple(points[:2]))
+        if not title and not points:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"title": title, "points": points})
+    return result
+
+
+def _deck_topic_from_sources(
+    user_query: str,
+    existing_blueprints: list[dict],
+    segments: list[dict],
+) -> str:
+    for blueprint in existing_blueprints:
+        title = _compact_prompt_text(blueprint.get("title"), 60)
+        if title and str(blueprint.get("slide_type")) == "cover":
+            return title
+    if segments:
+        return _compact_prompt_text(segments[0].get("title"), 60)
+    first_line = next(
+        (line.strip() for line in str(user_query or "").splitlines() if line.strip()),
+        "",
+    )
+    return _compact_prompt_text(first_line or "Presentation", 60)
+
+
+def _deck_topic_from_existing(existing_blueprints: list[dict]) -> str:
+    for blueprint in existing_blueprints:
+        title = _compact_prompt_text(blueprint.get("title"), 60)
+        if title:
+            return title
+    return "Presentation"
+
+
+def _segment_for_missing_slide(segments: list[dict], missing_number: int) -> dict:
+    if not segments:
+        return {"title": "Source Material", "points": []}
+    index = max(0, min(missing_number - 1, len(segments) - 1))
+    return segments[index]
+
+
+def _segment_points(segment: dict) -> list[str]:
+    points = [
+        _compact_prompt_text(point, 220)
+        for point in segment.get("points", [])
+        if _compact_prompt_text(point, 220)
+    ]
+    if points:
+        return points
+    title = _compact_prompt_text(segment.get("title"), 220)
+    return [title] if title else []
+
+
+def _segment_point_text(segment: dict, index: int) -> str:
+    points = _segment_points(segment)
+    if points:
+        return points[min(max(index - 1, 0), len(points) - 1)]
+    return _compact_prompt_text(segment.get("title"), 180)
+
+
+def _fallback_slide_title(segment: dict, deck_topic: str, missing_number: int) -> str:
+    title = _compact_prompt_text(segment.get("title"), 70)
+    if title and title.lower() not in {"source material", "presentation"}:
+        return title
+    return _compact_prompt_text(f"{deck_topic} - source point {missing_number}", 70)
+
+
+def _point_title(point: str, index: int) -> str:
+    text = _compact_prompt_text(point, 80)
+    for delimiter in (":", " - ", " — ", " – "):
+        if delimiter in text:
+            head = text.split(delimiter, 1)[0].strip()
+            if 3 <= len(head) <= 42:
+                return head
+    words = text.split()
+    title = " ".join(words[:5]) if words else f"Point {index}"
+    return _compact_prompt_text(title, 42)
+
+
+def _source_data_points(text: str) -> list[dict]:
+    metrics = []
+    pattern = re.compile(
+        r"\b\d+(?:[.,]\d+)?\s*(?:%|개월|년|장|개|종|억원|시간|배|명|건|원|달러|x|X|months?|years?)\b"
+    )
+    for match in pattern.finditer(str(text or "")):
+        value = match.group(0).strip()
+        if value in metrics:
+            continue
+        metrics.append(value)
+        if len(metrics) >= 4:
+            break
+    return [
+        {
+            "label": f"Source metric {index}",
+            "value": value,
+            "context": "Extracted from user/research material",
+        }
+        for index, value in enumerate(metrics, 1)
+    ]
+
+
+def _fallback_body_layout_for_missing_slide(missing_number: int) -> str:
+    layouts = ["split_60_40", "grid_2x2", "fact_sheet", "bullet_columns"]
+    return layouts[(missing_number - 1) % len(layouts)]
 
 
 def _load_theme_colors(theme_id: str) -> dict | None:

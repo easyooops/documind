@@ -193,4 +193,4 @@ Apache License 2.0
 
 ## Contact
 
-Suyeong Yoo — `ssu0416@gmail.com`
+질문, 버그 리포트, 기능 제안이 있다면 언제든지 [GitHub Issues](https://github.com/bespin/documind/issues)나 [GitHub Discussions](https://github.com/bespin/documind/discussions)에 남겨주세요.
