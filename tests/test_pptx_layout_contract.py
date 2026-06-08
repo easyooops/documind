@@ -2568,6 +2568,76 @@ def test_slide_html_normalizer_moves_label_off_table_edge_overlap() -> None:
     assert second_table.position["top"] >= label.position["top"] + label.position["height"]
 
 
+def test_slide_html_normalizer_drops_large_icon_only_empty_card() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:80px;top:120px;width:360px;height:150px;'
+        'background-color:#FFFFFF;border:1px solid #E5E7EB"></div>'
+        '<div data-pptx-type="icon" data-pptx-icon="check" '
+        'style="position:absolute;left:104px;top:140px;width:24px;height:24px;color:#10B981"></div>'
+        '</div>'
+    )
+
+    output = _normalize_slide_html(html)
+
+    assert 'data-pptx-shape="rounded_rect"' not in output
+    assert 'data-pptx-type="icon"' not in output
+
+
+def test_slide_html_normalizer_keeps_table_inside_backing_card() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:80px;top:120px;width:760px;height:250px;'
+        'background-color:#FFFFFF;border:1px solid #E5E7EB"></div>'
+        '<div data-pptx-type="table" data-pptx-table-data=\'{"headers":["구간","역할"],"rows":[["개발","회귀"],["운영","모니터링"]]}\' '
+        'style="position:absolute;left:104px;top:150px;width:712px;height:190px"></div>'
+        '</div>'
+    )
+
+    elements = parse_slide_html(_normalize_slide_html(html))
+    card = next(element for element in elements if element.pptx_type == "shape")
+    table = next(element for element in elements if element.pptx_type == "table")
+
+    assert table.position["left"] >= card.position["left"]
+    assert table.position["top"] >= card.position["top"]
+    assert table.position["left"] + table.position["width"] <= card.position["left"] + card.position["width"]
+    assert table.position["top"] + table.position["height"] <= card.position["top"] + card.position["height"]
+
+
+def test_slide_html_normalizer_forces_dark_text_on_light_card() -> None:
+    html = (
+        '<div data-slide="1" style="position:absolute;left:0;top:0;width:960px;height:540px">'
+        '<div data-pptx-type="shape" data-pptx-shape="rounded_rect" '
+        'style="position:absolute;left:80px;top:120px;width:360px;height:150px;'
+        'background-color:#FFF7ED;border:1px solid #FDBA74"></div>'
+        '<div data-pptx-type="textbox" style="position:absolute;left:112px;top:150px;'
+        'width:300px;height:72px;font-size:18px;font-weight:700;color:#FFFFFF">'
+        'LLM 테스트</div>'
+        '</div>'
+    )
+
+    output = _normalize_slide_html(html)
+    text = next(element for element in parse_slide_html(output) if element.pptx_type == "textbox")
+
+    assert text.styles["color"].lower() not in {"#ffffff", "ffffff", "#fff"}
+
+
+def test_pptx_text_parser_preserves_inline_special_character_flow() -> None:
+    html = (
+        '<div data-slide="1">'
+        '<div data-pptx-type="textbox" style="position:absolute;left:40px;top:80px;'
+        'width:820px;height:48px;font-size:28px;color:#111827">'
+        'Evaluation의 3가지 층위: 개발 ▶ 스테이징 ▶ 프로덕션</div>'
+        '</div>'
+    )
+
+    [element] = parse_slide_html(html)
+
+    assert element.text_content == "Evaluation의 3가지 층위: 개발 ▶ 스테이징 ▶ 프로덕션"
+
+
 def test_fallback_layout_keeps_many_unconnected_nodes_from_overlapping() -> None:
     graph = _parse_mermaid(
         "graph LR\n"

@@ -612,6 +612,9 @@ CRITICAL COLOR RULES:
 - Body text: use Text Primary or Text Secondary
 - Cover: use Cover Background gradient
 - Use Heading Font and Body Font exactly; do not substitute a default font
+- Never rely on the browser or PowerPoint default font color. Every visible
+  textbox, span, table option, chart label option, and icon must carry an
+  explicit non-inherited color from the design tokens.
 
 STYLE EXPRESSION RULES:
 - Specify full typography details on every textbox: font-family, font-size,
@@ -632,6 +635,9 @@ STYLE EXPRESSION RULES:
 - Prefer diverse slide objects: textboxes, independent icons, native tables,
   charts, connectors, arrows, rounded rectangles, badges, and rendered images
   when a visual asset is planned.
+- For architecture, pipeline, topology, system-flow, or decision-flow content,
+  use a compact diagram or flow arrangement when it clarifies the message. Do
+  not force diagrams into purely narrative or simple bullet-only slides.
 - No empty containers: every visible card, box, panel, or image frame must
   contain actual text, table/chart data, icons, or a rendered image. Never draw
   placeholder rectangles. If a planned image slot has no image, convert the

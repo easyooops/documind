@@ -2502,18 +2502,6 @@ def _quick_visual_signal(user_query: str, slide_blueprints: list[dict]) -> bool:
         return True
     return False
 
-    korean_signals = ("아키텍처", "인프라", "서비스 구조", "다이어그램", "이미지")
-    if any(token in user_text for token in korean_signals):
-        return True
-    signals = (
-        "architecture", "architect", "aws", "azure", "gcp", "cloud", "infra",
-        "infrastructure", "network", "service topology", "diagram", "diagrams",
-        "mermaid", "flowchart", "workflow", "system design",
-        "3-tier", "three tier", "tier", "아키텍", "아키텍처", "인프라", "서비스 구조",
-        "구조도", "구성도", "다이어그램", "머메이드", "이미지", "그림",
-    )
-    return any(signal in user_text for signal in signals)
-
 
 def _slide_context_requires_diagram(
     blueprint: dict,
@@ -2541,7 +2529,8 @@ def _slide_context_requires_diagram(
     }
     if require_explicit and not explicit:
         return False
-    if not explicit and not (suggested & {"diagram", "flowchart"}):
+    has_diagram_suggestion = bool(suggested & {"diagram", "flowchart", "architecture_diagram"})
+    if not explicit and not (has_diagram_suggestion and _has_required_diagram_context(text)):
         return False
     required_terms = (
         "architecture", "architect", "infrastructure", "infra", "network", "topology",
@@ -2557,8 +2546,26 @@ def _slide_context_requires_diagram(
         "suggested_elements", "diagram", "flowchart", "image",
     )
     return explicit or any(term in text for term in evidence_terms) or any(
-        str(item).lower() in {"diagram", "flowchart"}
+        str(item).lower() in {"diagram", "flowchart", "architecture_diagram"}
         for item in blueprint.get("suggested_elements", [])
+    )
+
+
+def _has_required_diagram_context(text: str) -> bool:
+    explicit_diagram_terms = (
+        "diagram", "flowchart", "architecture diagram", "pipeline diagram",
+        "topology diagram", "다이어그램", "흐름도", "구성도", "아키텍처 다이어그램",
+    )
+    requirement_terms = (
+        "required", "needed", "must show", "must explain", "필요", "필수", "보여줘야",
+    )
+    technical_terms = (
+        "architecture", "pipeline", "topology", "network", "service topology",
+        "아키텍처", "파이프라인", "토폴로지", "네트워크", "서비스 구조",
+    )
+    return any(term in text for term in explicit_diagram_terms) or (
+        any(term in text for term in requirement_terms)
+        and any(term in text for term in technical_terms)
     )
 
 

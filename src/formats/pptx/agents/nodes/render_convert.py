@@ -568,6 +568,8 @@ def _remove_empty_large_containers(elements: list) -> None:
 
     for item in parsed:
         node = item["node"]
+        if not getattr(node, "attrs", None):
+            continue
         styles = item["styles"]
         pptx_type = str(node.attrs.get("data-pptx-type", ""))
         if pptx_type not in {"shape", "textbox"}:
@@ -581,14 +583,20 @@ def _remove_empty_large_containers(elements: list) -> None:
             continue
         if _direct_text(node).strip():
             continue
-        if _large_container_has_owned_content(item, parsed):
+        owned_items = _large_container_owned_content(item, parsed)
+        if _owned_content_is_substantial(owned_items):
             continue
+        for owned in owned_items:
+            owned_type = str(owned["node"].attrs.get("data-pptx-type", ""))
+            if owned_type in {"icon", "connector"}:
+                owned["node"].decompose()
         node.decompose()
 
 
-def _large_container_has_owned_content(item: dict, parsed: list[dict]) -> bool:
+def _large_container_owned_content(item: dict, parsed: list[dict]) -> list[dict]:
     root_box = item["box"]
     root_area = root_box[2] * root_box[3]
+    owned: list[dict] = []
     for other in parsed:
         if other is item:
             continue
@@ -606,12 +614,23 @@ def _large_container_has_owned_content(item: dict, parsed: list[dict]) -> bool:
             continue
         other_type = str(other_node.attrs.get("data-pptx-type", ""))
         if other_type in {"image", "table", "chart", "icon", "connector"}:
-            return True
+            owned.append(other)
+            continue
         if _direct_text(other_node).strip():
-            return True
+            owned.append(other)
+            continue
         if _node_background_colors(other["styles"]) and other_area <= root_area * 0.55:
-            return True
-    return False
+            owned.append(other)
+    return owned
+
+
+def _owned_content_is_substantial(owned_items: list[dict]) -> bool:
+    has_text = any(_direct_text(item["node"]).strip() for item in owned_items)
+    has_data_or_media = any(
+        str(item["node"].attrs.get("data-pptx-type", "")) in {"image", "table", "chart"}
+        for item in owned_items
+    )
+    return has_text or has_data_or_media
 
 
 def _backing_fill_colors(item: dict, prior_items: list[dict]) -> list[str]:
@@ -1144,8 +1163,11 @@ def _is_subordinate_card_child(item: dict, other: dict) -> bool:
     """Only suppress small card parts, not large overlapping sibling cards."""
     item_box = item["box"]
     other_box = other["box"]
+    item_type = str(item["node"].attrs.get("data-pptx-type", ""))
     area = item_box[2] * item_box[3]
     other_area = other_box[2] * other_box[3]
+    if item_type in {"table", "chart", "image"}:
+        return area <= other_area * 0.92 and _box_within(item_box, other_box, tolerance=8)
     if area > other_area * 0.55:
         return False
     return _box_center_inside(item_box, other_box)
@@ -1361,6 +1383,9 @@ def _is_inside_larger_backing(item: dict, parsed: list[dict]) -> bool:
             continue
         if item_type in {"textbox", "icon"} and _box_center_inside(item_box, backing_box):
             return True
+        if item_type in {"table", "chart", "image"}:
+            if item_area <= backing_area * 0.92 and _box_within(item_box, backing_box, tolerance=8):
+                return True
         if item_area <= backing_area * 0.55 and _box_center_inside(item_box, backing_box):
             return True
     return False
@@ -1372,6 +1397,22 @@ def _box(styles: dict[str, str]) -> tuple[float, float, float, float]:
         _style_px(styles, "top"),
         _style_px(styles, "width", 100),
         _style_px(styles, "height", 50),
+    )
+
+
+def _box_within(
+    inner: tuple[float, float, float, float],
+    outer: tuple[float, float, float, float],
+    *,
+    tolerance: float = 0,
+) -> bool:
+    ix, iy, iw, ih = inner
+    ox, oy, ow, oh = outer
+    return (
+        ix >= ox - tolerance
+        and iy >= oy - tolerance
+        and ix + iw <= ox + ow + tolerance
+        and iy + ih <= oy + oh + tolerance
     )
 
 

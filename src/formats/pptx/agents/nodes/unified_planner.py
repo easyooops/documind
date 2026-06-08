@@ -1556,6 +1556,8 @@ def _slide_needs_visual_asset_slot(slide: dict, user_query: str = "") -> bool:
     )
     if any(signal in text for signal in method_signals):
         return True
+    if _slide_has_required_diagram_context(slide):
+        return True
     action_signals = (
         "draw", "redraw", "render", "visualize", "generate image",
         "그려", "다시 그려", "그려줘", "렌더", "시각화",
@@ -1566,6 +1568,33 @@ def _slide_needs_visual_asset_slot(slide: dict, user_query: str = "") -> bool:
     )
     return any(signal in text for signal in action_signals) and any(
         signal in text for signal in visual_objects
+    )
+
+
+def _slide_has_required_diagram_context(slide: dict) -> bool:
+    suggested = {
+        str(item).strip().lower()
+        for item in slide.get("suggested_elements", [])
+        if str(item).strip()
+    }
+    if not (suggested & {"diagram", "flowchart", "architecture_diagram"}):
+        return False
+    text = " ".join([
+        str(slide.get("title") or ""),
+        str(slide.get("key_message") or ""),
+        str(slide.get("purpose") or ""),
+        json.dumps(slide.get("content_blocks", []), ensure_ascii=False)[:2000],
+    ]).lower()
+    explicit_diagram_terms = (
+        "diagram", "flowchart", "architecture diagram", "pipeline diagram",
+        "topology diagram", "다이어그램", "흐름도", "구성도", "아키텍처 다이어그램",
+    )
+    requirement_terms = (
+        "required", "needed", "must show", "must explain", "필요", "필수", "보여줘야",
+    )
+    return any(term in text for term in explicit_diagram_terms) or (
+        any(term in text for term in requirement_terms)
+        and any(term in text for term in ("architecture", "pipeline", "topology", "아키텍처", "파이프라인", "토폴로지"))
     )
 
 
